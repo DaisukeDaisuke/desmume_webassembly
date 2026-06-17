@@ -440,7 +440,7 @@ Regarding `old\desmume`, commits are permitted on the `webassembly` branch. Also
 You need to keep detailed records of the deployment using GitHub Actions and future AI-related notes.
 system.md is always created
 GitHub Codespace is the ultimate sandbox for you, provided you don't make any quotation mistakes.
-The ROM for DQ9 is located at "D:\software\desmume-win-x64_2025_8_11\nds\dq9_new - copy .nds". Use this to debug. Do not dump this into context.
+The ROM for DQ9 is located at "D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds". Use this to debug. Do not dump this into context.
 The save data for DQ9 is located at "D:\software\desmume-win-x64_2025_8_11\dq9_save-main\dq9_save\re一人旅_v2\28_ends.sav".
 The save state is located at "D:\software\state.dst".
 You are not an AI designed for gaming, so you will only be testing button functionality. Please do not try to enjoy the game.
@@ -511,6 +511,19 @@ AIによるありとあらゆる操作の実現
 - webassembly jsはシングルファイルにすること。ファイル分けすること。
 - main.cppは関係ない。
 - read handoff.md and Addend to the handoff.md
+- gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3　gh run watch ???? --repo DaisukeDaisuke/desmume_webassembly --exit-statusで、actionsが終わるまで待機すること。codespaceでのbuildと構文チェックはそこまで重要ではない。軽い変更ならテストも本番環境でやればいい。ただしビルドはリアルタイムで5分かかるので、できれば複数の問題をまとめてすること。
+- ローカルは、ssh認証済み(リポジトリはsshモード)、https未認証、gpg設定済み。gh一部権限使用可能(リポジトリ削除などははく奪済み)。ローカルなので認証情報を変えるな、ghのトークンダンプするな。sshフォルダはワークスペース外なのでいじるな。鍵をコンテキストにダンプするな。
+- (ローカルコミットで、gpgがコミットで落ちた場合は、"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe"を常駐無し引数で1回起動し、"C:\Program Files\GnuPG\bin\gpg-agent.exe"を5回同時起動(自動終了、エラー吐くが無視すればいい)すれば　その後20秒待機すればたいていの場合うまくいく。勝手にgpg再構成するな。)
+- github actionsのデプロイは毎回してると遅いので、可能であれば最終提出ですること、cp転送後、npxなどなどdockerなどなどのキャッシュ無し即時リロードができる、サーバーをローカルかプレビューページにポートフォワーディングして、ローカルでアクセスしたほうがキャッシュもあいまって2倍ほど速い。github 本番デプロイで前回1時間以上作業してたので、これが速くなると嬉しい。
+- pythonで127.0.0.1にサーバーを立てるのがおすすめ
+- もしくはnodejs(Windows ディフェンダー未許可)に配信をやらせればいい。
+- また、codespaceはランダムに電源が落ちるのでそういうものだと思って再起動する。ぶっ壊れた場合は応答しなくなるので再作成する。gh codespace cp失敗はただ電源が落ちてるだけ。
+- ローカル、codespaceデバックの場合でもコミットは毎回すること。push+待機は最終提出まで保留すること
+- 絶対に検証ごとに毎回デプロイしないこと。ただし軽い変更はこの通りではない。前回のように120分も待ってられないので、codespaceホストか、ローカルホストで高速サイクルを回すこと。
+- pushに失敗するときはhttp pushと、ssh push両方試すこと。基本的にcodespaceでhttps pushすれば、ホストの影響を受けず、いろんな意味で安全。
+- デプロイは毎回cache-bustすること。
+- 時間かかるので絶対に毎回github pageにデプロイせず、ローカルサーバーで確認すること。html変更の場合即座に、cpp変更は2分なので段違いに速い。
+- 積極的にwebassembly/build_safe_heap.sh、webassembly/build_sanitize.shを活用すること。というより開発はこっちですること。
 
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file

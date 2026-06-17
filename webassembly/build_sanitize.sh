@@ -103,7 +103,9 @@ emcc "${OBJECTS[@]}" \
   -sMAXIMUM_MEMORY=2147483648 \
   -sMODULARIZE=1 \
   -sUSE_ZLIB=1 \
-  -O3 \
+  -fsanitize=address \
+  -O0 \
+  -g2 \
   -sEXPORT_NAME=CreateDesmumeModule \
   -sENVIRONMENT=web,worker \
   -sEXPORTED_RUNTIME_METHODS='["FS","ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \

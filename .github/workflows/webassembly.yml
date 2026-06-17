@@ -31,6 +31,23 @@ jobs:
           sudo apt-get update > /dev/null 2>&1
           sudo apt-get install -y emscripten > /dev/null 2>&1
 
+      - name: Get Emscripten cache path
+        id: em-cache-path
+        run: echo "path=$(em-config CACHE)" >> $GITHUB_OUTPUT
+
+      - name: Cache Emscripten system libraries
+        uses: actions/cache@v5
+        id: em-cache
+        with:
+          path: ${{ steps.em-cache-path.outputs.path }}
+          key: emscripten-cache-${{ runner.os }}-${{ hashFiles('/usr/share/emscripten/emscripten-version.txt', '/usr/lib/emscripten/emscripten-version.txt') }}
+          restore-keys: |
+            emscripten-cache-${{ runner.os }}-
+
+      - name: Warm up Emscripten cache
+        if: steps.em-cache.outputs.cache-hit != 'true'
+        run: embuilder build MINIMAL
+
       - name: Build WebAssembly
         env:
           OUTPUT_DIR: ${{ github.workspace }}/public
