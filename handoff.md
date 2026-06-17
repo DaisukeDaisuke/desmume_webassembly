@@ -34,3 +34,4 @@
 - 2026-06-17: `MMU_new.backupDevice.importData()` をROM実行後に呼んでも同じPC破壊が起きた。Webのセーブ入力は `importData()` を使わず、WASM FSの `rom.sav` / `rom.dsv` を置き換えてから `loadROM()` し直す方式にする。
 - 2026-06-17: 外部ステートは `stateGetPointer(size)` 後にJSがHEAPへ書く。`loadStateFromBuffer(size)` 側で再度 `truncate(size)` するとEMUEFILE_MEMORY内の読み込み済みバイトが壊れ、`savestate_load()` が `-1` になる。ロード側はサイズ一致確認と `fseek(0)` のみにする。
 - 2026-06-17: `.dst` は `DeSmuME SState` version 12 で圧縮ありだった。`-sUSE_ZLIB=1` だけでは `saves.cpp` の `#ifdef HAVE_LIBZ` が有効にならないため、圧縮savestateは即falseになる。`webassembly/build.sh` のcompileで `-DHAVE_LIBZ` を付ける。
+- 2026-06-17: 圧縮展開後、`EMUFILE_MEMORY` 経由の `savestate_load(*stateFile)` は `memory access out of bounds` を起こした。外部 `.dst` はWASM FSの `import.dst` に書いて `savestate_load("import.dst")` する `loadStateFromFile()` 経路へ変更。

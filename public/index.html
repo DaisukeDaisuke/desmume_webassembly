@@ -567,7 +567,7 @@
         ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
         ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
-        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["pauseEmu", "number", ["number"]],
+        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
         ["traceSetPrivilegeCheck", "number", ["number"]], ["traceGetDepth", "number", []],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
@@ -1038,9 +1038,8 @@
         try {
           if (params.slot) bytes = await idbGet(String(params.slot));
           if (bytes) {
-            const ptr = state.fns.stateGetPointer(bytes.length);
-            state.module.HEAPU8.set(bytes, ptr);
-            state.fns.loadStateFromBuffer(bytes.length);
+            state.module.FS.writeFile("import.dst", bytes);
+            state.fns.loadStateFromFile();
           } else {
             const size = state.fns.stateGetSize();
             state.fns.loadStateFromBuffer(size);
@@ -1057,9 +1056,8 @@
         const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
         const runState = pauseForFileLoad();
         try {
-          const ptr = state.fns.stateGetPointer(bytes.length);
-          state.module.HEAPU8.set(bytes, ptr);
-          const ret = state.fns.loadStateFromBuffer(bytes.length);
+          state.module.FS.writeFile("import.dst", bytes);
+          const ret = state.fns.loadStateFromFile();
           state.frame = 0;
           drawFrame();
           await recordRecentFile("state", file.name, bytes);
@@ -1092,9 +1090,8 @@
         }
         const runState = pauseForFileLoad();
         try {
-          const ptr = state.fns.stateGetPointer(bytes.length);
-          state.module.HEAPU8.set(bytes, ptr);
-          const ret = state.fns.loadStateFromBuffer(bytes.length);
+          state.module.FS.writeFile("import.dst", bytes);
+          const ret = state.fns.loadStateFromFile();
           state.frame = 0;
           drawFrame();
           return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };

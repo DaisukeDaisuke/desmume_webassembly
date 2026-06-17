@@ -290,6 +290,10 @@ int loadStateFromBuffer(int size) {
   return savestate_load(*stateFile) ? 0 : -1;
 }
 
+int loadStateFromFile() {
+  return savestate_load("import.dst") ? 0 : -1;
+}
+
 int zlibCompress(u8 *srcBuffer, size_t srcLen, u8 *dstBuffer, size_t dstLen,
                  int level) {
   int ret = compress2(dstBuffer, &dstLen, srcBuffer, srcLen, level);
