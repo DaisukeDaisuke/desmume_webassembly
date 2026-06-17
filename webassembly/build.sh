@@ -25,6 +25,7 @@ emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
   -I"${SRC_DIR}/utils" \
   -I"${SRC_DIR}/utils/tinyxml" \
   -I"${SRC_DIR}/utils/libfat" \
+  -I"${SRC_DIR}/libretro-common/include" \
   -O3 \
   -std=c++17 \
   -sWASM=1 \
@@ -40,4 +41,4 @@ emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
   -lz \
   -o "${OUT_DIR}/desmume.js"
 
-cp "${ROOT_DIR}/old/coi-serviceworker/coi-serviceworker.js" "${OUT_DIR}/coi-serviceworker.js"
+cp "${ROOT_DIR}/public/coi-serviceworker.js" "${OUT_DIR}/coi-serviceworker.js"
