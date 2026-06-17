@@ -185,9 +185,7 @@ void *savGetPointer(int desiredSize) {
 }
 
 int savUpdateChangeFlag() {
-  int ret = savFile->changed ? 1 : 0;
-  savFile->changed = 0;
-  return ret;
+  return 1;
 }
 
 int stateGetSize() { return stateFile->size(); }
