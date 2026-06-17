@@ -18,5 +18,10 @@
 ## Follow-up Notes
 
 - Native memory read/write breakpoints currently have exported registration points and browser-side lists. Full trap integration should be wired into DeSmuME MMU debug access paths in the `old/desmume` submodule.
-- `dbgDisassemble()` currently returns address plus opcode words/halfwords. A full mnemonic disassembler should be connected to DeSmuME's internal disassembler or a compact ARM/Thumb decoder.
-- Stack trace mode currently exposes SP-relative words. The heavier next-call/call-stack mechanism from `D:\lua_new\lua\callstack_test.lua` should be ported behind the existing `traceSetEnabled()` switch.
+- `dbgDisassemble()` is wired to DeSmuME's `frontend/modules/Disassembler.cpp`; keep that file explicitly included in `webassembly/build.sh` because the generic core file scan excludes `frontend/`.
+- `step` is CPU-instruction stepping through `armcpu_exec<0/1>()`. `stepFrames` is the frame-level operation.
+- `NDS_setPad()` does not accept the same order exposed by MCP. The browser bit order remains `A,B,Select,Start,Right,Left,Up,Down,R,L,X,Y`, and `wasm-port.cpp` maps it to native `right,left,down,up,select,start,B,A,Y,X,L,R`.
+- Save imports use `MMU_new.backupDevice.importData("import.sav")`; save exports use `exportData("export.sav")`. Imports reset the ROM because dynamic backup-device swapping is unreliable.
+- State imports and slot loads reset before `savestate_load()` and restore the previous pause state after loading.
+- Canvas layout must reserve real scaled dimensions for the rotated DS screen. Do not use only `transform: scale()` with guessed margins; it causes adjacent GUI drift.
+- Stack trace mode currently exposes SP-relative words plus a lightweight possible-LR disassembly heuristic. The heavier next-call/call-stack mechanism from `D:\lua_new\lua\callstack_test.lua` still needs a native port behind `traceSetEnabled()`.

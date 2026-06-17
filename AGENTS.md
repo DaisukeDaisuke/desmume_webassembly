@@ -140,7 +140,6 @@ git gc --prune=now           # 到達不能オブジェクトの即時削除
 ### Codespace インフラ系
 
 ```
-gh codespace delete      # Codespace削除（gh * delete に含まれるが明示）
 gh codespace rebuild     # 環境再構築（devcontainerが変わりデータ消失の可能性）
                          # ※ユーザーが明示的に指示した場合のみ実行可
 ```
@@ -363,6 +362,15 @@ gh codespace ssh -c <name> "rm -rf /tmp/workdir/"
 > C:\Users\<user>\AppData\Local\Temp\work.log
 ```
 
+- ファイルの転送はcsp使うな。gh codespace cp使え。cpが失敗する場合おそらくサーバーが落ちてる。編集だけしてあとはすぐに私に助けを求めろ。
+- もし助けを求めるのが癪なら、codespace消していいので、再作成すること。おかしいと思ったらすぐに再作成すること。
+```
+gh codespace list
+gh codespace stop -c <name>
+gh codespace delete -c <name>
+gh codespace create --idle-timeout "15m" -r DaisukeDaisuke/desmume_webassembly -b main --machine basicLinux32gb 
+```
+
 ---
 
 ## チェックリスト（タスク実行前）
@@ -449,7 +457,48 @@ You can evaluate any JavaScript code and test it with the emulator.
 - git@github.com:DaisukeDaisuke/desmume_webassembly.git
 - 公開repositoryなので、機密情報アップロード不可。
 - 細かくコミット、push、して、codespace git pullで同期することを許可
+- コミットはcodespace側ですること。転送したい場合はローカルでしてもいいが、AI経由だとなぜかうまくいかない
+- /home/codespace
 
 - The pioneering implementation can be found at old/desmume-wasm/desmume/wasm-port/main.cpp
+
+
+# Project Overview
+old/desmumeについて、このフォークをサブモジュール化してから、desmumeウェブ版を実装してほしい。本家同様フルデバック対応、webmcpによるAIデバック対応。
+シングルファイルで。メモリ制限2GB?
+github actionsによるデプロイはC:\Users\owner\Documents\BattleEmulator\.github\workflows\webassembly.ymlを参考
+必要な機能
+AIによるありとあらゆる操作の実現
+- ステートのインポート、ローカルストレージへのステート保存?(ただし256mb)、ステートエクスポート。
+- 0.25倍速~4倍速までの倍速機能(mcpあり)
+- 状態取得mcp
+- Nフレーム進めるmcp
+- 画面の描写をoffにできる
+- 音量をさげることができる。無効化可能
+- js evalまたは、wab mcp経由で様々な機能の実現。
+- 内臓ディスアセンブラによるネアーpcダンプ、キー入力(ボタン or 任意キー(人間用))
+- セーブデータのインポート、エクスポート
+- AIが操作できる、デバッカー、レジスタの取得、pc付近の取得、指定メモリのディスアセンブル、指定レジスタの変更、ステップ、ステップオーバー、メモリブレイクポイント、メモリ書き込みブレイクポイント、メモリ読み取りブレイクポイント、メモリのダンプ、アセンブリの取得(アドレスあり、正規表現あり)、ステートの読み込み、ステートの保存、外部ステートの読み込み、jsコードインジェクションによるlua相当の機能の提供によるこれらの達成、web mcpによる達成、コード解析自体はghidra mcpでするので、ある程度のダンプがあればok、実行ブレイクポイントの作成、削除、人間が操作できるデバッカー。N回ステップする、contする、ramの範囲ダンプ、メモリ全ダンプ？メモリとディスアセンブラのautoアップデート機能、画面の回転、ロムのアップロード(ただしローカルで処理)、mcpによるスクリプト注入(ただし安全な隔離で)、thumb、auto、armの自動判別(ディスアセンブラ)、arm7ディスアセンブラ、arm9ディスアセンブラ、指定レジスタの取得、ブレイクポイント位置に赤の目印をリアルタイムで。メモリブレイクポイントとメモリビュワーによる読み込みは競合するので注意する。ブレイクポイント一覧、スタックトレースモードon/off、スタックトレースダンプ、
+- エミュレーターの停止、再開(停止中にロードステートした場合は停止したままロードする)
+- ホットキー設定
+- bois、ファームウェアアップロード？(基本的にフリーbios使いたい。どっかに含まれてるはず)
+- メモリビュワー、スタックトレースは重いのでon offできるようにする。
+  本番はgithub actionsでビルドする
+- テストはcodespaceでする。git pull+コミット術を使ってファイルを同期するか、ghでコピーする。
+  agents.mdにいろいろ書いてるのでそれに従う。
+  nextcall: "D:\lua_new\lua\callstack_test.lua"で使われてる仕組みで実現可能
+  info registers cpsr
+  continue: 再開
+- エミュレーターサイズの指定(1x 1.5x 2x 2.5x 3.0x 3.5x 4.0x)
+- 実行速度の指定
+- ありとあらゆるmcp(安全なコードインジェクションを含む、ただし隔離環境ネットワーク無効が望ましい)
+- ミラーメモリに対するデバック。メモリブレイクポイント(本家は非対応)
+- 機能セットを丸ごとオフにできるmcp、ボタンで高速動作。ただ遊びたい場合のみにも対応する。
+- ソースコードはサブモジュールを使う。old\desmumeはスタックトレース改造版である。
+- 音量の設定(デフォルトで爆音であるため)
+- 実装はまとめてせず、試しながら実装する。ただしchrome mcpはめちゃくちゃトークン食うので注意すること。
+- webassembly jsはシングルファイルにすること。ファイル分けすること。
+- main.cppは関係ない。
+
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file

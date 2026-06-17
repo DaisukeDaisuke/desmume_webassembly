@@ -88,9 +88,23 @@
       background: #050607;
       border-radius: var(--radius);
       padding: 8px;
-      transform-origin: top center;
+      width: calc(var(--screen-w, 256px) + 18px);
+      height: calc(var(--screen-h, 384px) + 18px);
+      position: relative;
+      touch-action: none;
     }
-    canvas { display: block; width: 256px; height: 384px; image-rendering: pixelated; background: #030303; }
+    canvas {
+      display: block;
+      width: var(--canvas-w, 512px);
+      height: var(--canvas-h, 768px);
+      image-rendering: pixelated;
+      background: #030303;
+      position: absolute;
+      left: calc(8px + (var(--screen-w, 512px) - var(--canvas-w, 512px)) / 2);
+      top: calc(8px + (var(--screen-h, 768px) - var(--canvas-h, 768px)) / 2);
+      transform: rotate(var(--screen-rotation, 0deg));
+      transform-origin: center center;
+    }
     .pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
     .pad button[data-down="true"] { color: var(--bench); background: var(--trace); border-color: var(--trace); }
     .mono { font-family: var(--mono); }
@@ -117,6 +131,9 @@
       font: 12px/1.45 var(--mono);
       white-space: pre-wrap;
     }
+    .disasm-line { display: block; padding: 1px 4px; border-left: 2px solid transparent; white-space: pre; }
+    .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
+    .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
     .breakpoint-line { color: var(--fault); }
     .hidden-input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
     .switch { display: flex; align-items: center; gap: 8px; min-height: 32px; color: var(--solder); }
@@ -189,6 +206,7 @@
             <label>Frames<input id="frames-input" type="number" min="1" max="1000000" value="60"></label>
             <button id="step-n-btn" type="button">Step N Frames</button>
           </div>
+          <p class="tiny">タッチは画面上をクリックまたはドラッグします。回転時も表示上の位置からDS座標へ変換します。</p>
         </div>
         <div class="section">
           <h2>Input</h2>
@@ -246,6 +264,19 @@
             <button id="memory-write-btn" type="button">Write</button>
           </div>
           <pre id="memory-output"></pre>
+        </div>
+        <div class="section">
+          <h2>Memory Freeze</h2>
+          <div class="grid three">
+            <label>Address<input id="freeze-address" class="mono" value="0x02000000"></label>
+            <label>Value<input id="freeze-value" class="mono" value="0x00"></label>
+            <label>Size<select id="freeze-size"><option value="1">u8</option><option value="2">u16</option><option value="4">u32</option></select></label>
+          </div>
+          <div class="row">
+            <button id="freeze-add-btn" type="button">Freeze</button>
+            <button id="freeze-remove-btn" type="button">Remove</button>
+          </div>
+          <pre id="freeze-output"></pre>
         </div>
       </section>
 
@@ -308,11 +339,15 @@
       rotation: 0,
       frame: 0,
       keys: 0,
+      touch: { active: false, x: 0, y: 0 },
       selectedCpu: "arm9",
       breakpoints: [],
+      freezes: [],
       keymap: { KeyZ: "A", KeyX: "B", KeyA: "Y", KeyS: "X", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
       buttons: { A: 0, B: 1, Select: 2, Start: 3, Right: 4, Left: 5, Up: 6, Down: 7, R: 8, L: 9, X: 10, Y: 11 },
       fns: {},
+      audioContext: null,
+      audioNextTime: 0,
       imageData: null,
       lastTick: performance.now(),
       frameBudget: 0
@@ -334,6 +369,8 @@
       stepFrames: "指定フレーム数だけ進めます。",
       setRenderEnabled: "画面描画を有効または無効にします。",
       setAudio: "音声の有効化と音量を設定します。",
+      setMemoryFreeze: "指定アドレスに値を書き戻し続けるメモリフリーズを追加または削除します。",
+      listMemoryFreezes: "現在有効なメモリフリーズ一覧を返します。",
       setScale: "画面倍率を指定します。",
       setRotation: "画面回転を指定します。",
       setInput: "AIまたはUIからDSボタンを押下/解放します。",
@@ -394,8 +431,8 @@
       state.module = await CreateDesmumeModule({ noInitialRun: false });
       [
         ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
-        ["runFrames", "number", ["number", "number", "number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
-        ["savGetPointer", "number", ["number"]], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
+        ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
+        ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", []], ["savExportToFile", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
         ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
@@ -462,6 +499,40 @@
       ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
     }
 
+    function pumpAudio() {
+      if (!state.audio || !state.ready) return;
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) return;
+      if (!state.audioContext) state.audioContext = new AudioCtor({ sampleRate: 48000 });
+      const ctx = state.audioContext;
+      const sampleCount = state.fns.fillAudioBuffer(1024);
+      if (sampleCount <= 0) return;
+      const ptr = state.fns.getSymbol(6);
+      const samples = state.module.HEAP16.subarray(ptr >> 1, (ptr >> 1) + sampleCount * 2);
+      const buffer = ctx.createBuffer(2, sampleCount, ctx.sampleRate);
+      const volume = Number(ui.volumeRange.value);
+      const left = buffer.getChannelData(0);
+      const right = buffer.getChannelData(1);
+      for (let i = 0; i < sampleCount; i++) {
+        left[i] = (samples[i * 2] / 32768) * volume;
+        right[i] = (samples[i * 2 + 1] / 32768) * volume;
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      state.audioNextTime = Math.max(ctx.currentTime, state.audioNextTime);
+      source.start(state.audioNextTime);
+      state.audioNextTime += sampleCount / ctx.sampleRate;
+    }
+
+    function applyFreezes() {
+      if (!state.ready || state.freezes.length === 0) return;
+      for (const item of state.freezes) {
+        const fn = item.size === 4 ? "dbgWrite32" : item.size === 2 ? "dbgWrite16" : "dbgWrite8";
+        state.fns[fn](cpuIndex(item.cpu), item.address, item.value);
+      }
+    }
+
     function tick(now) {
       if (state.ready && state.running && !state.paused) {
         const elapsed = Math.min(250, now - state.lastTick);
@@ -469,9 +540,18 @@
         const frames = Math.min(12, Math.floor(state.frameBudget));
         if (frames > 0) {
           state.frameBudget -= frames;
-          state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          applyFreezes();
+          if (state.touch.active) {
+            for (let i = 0; i < frames; i++) {
+              state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y);
+            }
+          } else {
+            state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          }
+          applyFreezes();
           state.frame += frames;
           drawFrame();
+          pumpAudio();
           updateStatus();
         }
       }
@@ -507,6 +587,21 @@
 
     function renderBreakpoints() {
       ui.bpOutput.textContent = state.breakpoints.map((bp) => `${bp.cpu} ${bp.type} ${hex(bp.address)}`).join("\n") || "no breakpoints";
+    }
+
+    function renderFreezes() {
+      ui.freezeOutput.textContent = state.freezes.map((item) => `${item.cpu} ${hex(item.address)} ${item.size === 4 ? "u32" : item.size === 2 ? "u16" : "u8"} = ${hex(item.value, item.size * 2)}`).join("\n") || "no freezes";
+    }
+
+    function renderDisassembly(text) {
+      const lines = String(text || "").split("\n").filter(Boolean);
+      ui.disasmOutput.innerHTML = lines.map((line) => {
+        const current = line.startsWith("=>");
+        const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
+        const hasBp = state.breakpoints.some((bp) => bp.type === "exec" && bp.cpu === state.selectedCpu && bp.address === address);
+        const cls = ["disasm-line", current ? "current" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
+      }).join("");
     }
 
     function modeNumber(mode) {
@@ -565,18 +660,21 @@
       async importSaveFile() {
         ensureReady();
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
-        const ptr = state.fns.savGetPointer(bytes.length);
-        state.module.HEAPU8.set(bytes, ptr);
-        log(`save imported: ${file.name}`);
-        return { ok: true, size: bytes.length };
+        state.module.FS.writeFile("import.sav", bytes);
+        const ret = state.fns.savImportFromFile();
+        state.fns.reset();
+        state.frame = 0;
+        drawFrame();
+        log(`save imported and reset: ${file.name}`);
+        return { ok: ret === 0, ret, size: bytes.length, reset: true };
       },
       async exportSaveFile() {
         ensureReady();
-        const size = state.fns.savGetSize();
-        const ptr = state.fns.savGetPointer(0);
-        const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
+        const ret = state.fns.savExportToFile();
+        if (ret !== 0) throw new Error("save export failed");
+        const bytes = state.module.FS.readFile("export.sav");
         download("desmume-save.sav", bytes);
-        return { ok: true, size };
+        return { ok: true, size: bytes.length };
       },
       async saveState(params = {}) {
         ensureReady();
@@ -598,13 +696,17 @@
         if (bytes) {
           const ptr = state.fns.stateGetPointer(bytes.length);
           state.module.HEAPU8.set(bytes, ptr);
+          state.fns.reset();
           state.fns.loadStateFromBuffer(bytes.length);
         } else {
           const size = state.fns.stateGetSize();
+          state.fns.reset();
           state.fns.loadStateFromBuffer(size);
         }
+        state.frame = 0;
+        drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
-        return { ok: true, paused: state.paused };
+        return { ok: true, paused: state.paused, reset: true };
       },
       async importStateFile() {
         ensureReady();
@@ -612,10 +714,13 @@
         const wasPaused = state.paused;
         const ptr = state.fns.stateGetPointer(bytes.length);
         state.module.HEAPU8.set(bytes, ptr);
+        state.fns.reset();
         const ret = state.fns.loadStateFromBuffer(bytes.length);
+        state.frame = 0;
+        drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
-        log(`state imported: ${file.name}`);
-        return { ok: ret === 0, ret, size: bytes.length };
+        log(`state imported and reset: ${file.name}`);
+        return { ok: ret === 0, ret, size: bytes.length, reset: true };
       },
       async exportStateFile() {
         const result = await commands.saveState();
@@ -632,16 +737,31 @@
         const frames = Math.max(1, Number(params.frames ?? 1));
         const wasPaused = state.paused;
         state.fns.pauseEmu(0);
-        state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+        applyFreezes();
+        if (state.touch.active) {
+          for (let i = 0; i < frames; i++) {
+            state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y);
+          }
+        } else {
+          state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+        }
+        applyFreezes();
         state.frame += frames;
         drawFrame();
+        pumpAudio();
         if (wasPaused) state.fns.pauseEmu(1);
         state.paused = wasPaused;
         updateStatus();
         return { frames };
       },
       async setRenderEnabled(params) { state.render = !!params.enabled; ui.renderToggle.checked = state.render; return { render: state.render }; },
-      async setAudio(params) { state.audio = !!params.enabled; ui.audioToggle.checked = state.audio; ui.volumeRange.value = Number(params.volume ?? ui.volumeRange.value); return { audio: state.audio, volume: Number(ui.volumeRange.value) }; },
+      async setAudio(params) {
+        state.audio = !!params.enabled;
+        ui.audioToggle.checked = state.audio;
+        ui.volumeRange.value = Number(params.volume ?? ui.volumeRange.value);
+        if (state.audio && state.audioContext && state.audioContext.state === "suspended") await state.audioContext.resume();
+        return { audio: state.audio, volume: Number(ui.volumeRange.value) };
+      },
       async setScale(params) { state.scale = Number(params.scale ?? params.value ?? 2); ui.scaleSelect.value = String(state.scale); applyScaleRotation(); return { scale: state.scale }; },
       async setRotation(params) { state.rotation = Number(params.rotation ?? params.value ?? 0); ui.rotationSelect.value = String(state.rotation); applyScaleRotation(); return { rotation: state.rotation }; },
       async setInput(params) { setKey(params.button, !!params.pressed); return { keys: state.keys }; },
@@ -682,6 +802,22 @@
         const fn = size === 4 ? "dbgWrite32" : size === 2 ? "dbgWrite16" : "dbgWrite8";
         return { ok: state.fns[fn](cpuIndex(params.cpu), addr, value) === 0 };
       },
+      async setMemoryFreeze(params) {
+        ensureReady();
+        const item = {
+          cpu: String(params.cpu ?? state.selectedCpu),
+          address: parseNumber(params.address),
+          value: parseNumber(params.value),
+          size: Number(params.size ?? 1),
+          enabled: params.enabled !== false
+        };
+        state.freezes = state.freezes.filter((x) => !(x.cpu === item.cpu && x.address === item.address && x.size === item.size));
+        if (item.enabled) state.freezes.push(item);
+        applyFreezes();
+        renderFreezes();
+        return { freezes: state.freezes };
+      },
+      async listMemoryFreezes() { return state.freezes; },
       async setBreakpoint(params) {
         ensureReady();
         const bp = { cpu: String(params.cpu ?? state.selectedCpu), type: String(params.type ?? "exec"), address: parseNumber(params.address), enabled: params.enabled !== false };
@@ -693,8 +829,8 @@
         return { breakpoints: state.breakpoints };
       },
       async listBreakpoints() { return state.breakpoints; },
-      async step(params = {}) { ensureReady(); return { count: state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)) }; },
-      async stepOver(params = {}) { ensureReady(); return { ret: state.fns.dbgStepOver(cpuIndex(params.cpu)) }; },
+      async step(params = {}) { ensureReady(); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); updateStatus(); return { count, pc: getPc(params.cpu) }; },
+      async stepOver(params = {}) { ensureReady(); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); updateStatus(); return { ret, pc: getPc(params.cpu) }; },
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
       async stackTrace(params = {}) { ensureReady(); return { text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
@@ -708,8 +844,35 @@
     };
 
     function applyScaleRotation() {
-      ui.screenShell.style.transform = `scale(${state.scale}) rotate(${state.rotation}deg)`;
-      ui.screenShell.style.margin = `${Math.max(0, state.scale - 1) * 200}px 0`;
+      const vertical = state.rotation % 180 === 0;
+      const canvasW = 256 * state.scale;
+      const canvasH = 384 * state.scale;
+      ui.screenShell.style.setProperty("--canvas-w", `${canvasW}px`);
+      ui.screenShell.style.setProperty("--canvas-h", `${canvasH}px`);
+      ui.screenShell.style.setProperty("--screen-w", `${(vertical ? 256 : 384) * state.scale}px`);
+      ui.screenShell.style.setProperty("--screen-h", `${(vertical ? 384 : 256) * state.scale}px`);
+      ui.screenShell.style.setProperty("--screen-rotation", `${state.rotation}deg`);
+    }
+
+    function eventToTouch(e) {
+      const rect = ui.screenShell.getBoundingClientRect();
+      const sx = Math.min(1, Math.max(0, (e.clientX - rect.left - 8) / Math.max(1, rect.width - 16)));
+      const sy = Math.min(1, Math.max(0, (e.clientY - rect.top - 8) / Math.max(1, rect.height - 16)));
+      let x = sx;
+      let y = sy;
+      if (state.rotation === 90) { x = sy; y = 1 - sx; }
+      else if (state.rotation === 180) { x = 1 - sx; y = 1 - sy; }
+      else if (state.rotation === 270) { x = 1 - sy; y = sx; }
+      return {
+        x: Math.round(Math.min(255, Math.max(0, x * 255))),
+        y: Math.round(Math.min(191, Math.max(0, y * 191)))
+      };
+    }
+
+    function updateTouch(e, active) {
+      const pos = eventToTouch(e);
+      state.touch = { active, x: pos.x, y: pos.y };
+      if (state.ready && active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
     }
 
     async function runCommand(name, params = {}) {
@@ -797,14 +960,16 @@
     ui.refreshDebugBtn.addEventListener("click", () => {
       try {
         renderRegisters();
-        runCommand("disassemble", {}).then((r) => ui.disasmOutput.textContent = r.text);
+        runCommand("disassemble", {}).then((r) => renderDisassembly(r.text));
       } catch (e) { log(e.message); }
     });
-    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(renderRegisters).catch((e) => log(e.message)));
-    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(renderRegisters).catch((e) => log(e.message)));
+    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
+    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
     ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch((e) => log(e.message)));
     ui.memoryWriteBtn.addEventListener("click", () => runCommand("writeMemory", { address: ui.memoryAddress.value, value: ui.memoryWriteValue.value, size: Number(ui.memoryWriteSize.value) }).catch((e) => log(e.message)));
+    ui.freezeAddBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, value: ui.freezeValue.value, size: Number(ui.freezeSize.value), enabled: true }).catch((e) => log(e.message)));
+    ui.freezeRemoveBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, size: Number(ui.freezeSize.value), enabled: false }).catch((e) => log(e.message)));
     ui.bpAddBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: true }).catch((e) => log(e.message)));
     ui.bpRemoveBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: false }).catch((e) => log(e.message)));
     ui.stateSaveBtn.addEventListener("click", () => runCommand("saveState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
@@ -821,12 +986,19 @@
     ui.pad.addEventListener("pointerleave", () => Object.keys(state.buttons).forEach((button) => setKey(button, false)));
     window.addEventListener("keydown", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], true); } });
     window.addEventListener("keyup", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], false); } });
+    ui.screenShell.addEventListener("pointerdown", (e) => { ui.screenShell.setPointerCapture(e.pointerId); updateTouch(e, true); });
+    ui.screenShell.addEventListener("pointermove", (e) => { if (state.touch.active) updateTouch(e, true); });
+    ui.screenShell.addEventListener("pointerup", () => { state.touch.active = false; });
+    ui.screenShell.addEventListener("pointercancel", () => { state.touch.active = false; });
+    ui.volumeRange.addEventListener("input", () => { if (state.audioContext) state.audioNextTime = state.audioContext.currentTime; });
 
     setInterval(() => {
       if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch(() => {});
+      applyFreezes();
     }, 750);
 
     renderBreakpoints();
+    renderFreezes();
     initWasm().catch((error) => log(error.stack || error.message));
   </script>
 </body>

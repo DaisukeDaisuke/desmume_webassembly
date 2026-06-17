@@ -43,6 +43,7 @@ mapfile -t CORE_CPP < <(
 
 EXTRA_CPP=(
   "${SRC_DIR}/metaspu/metaspu.cpp"
+  "${SRC_DIR}/frontend/modules/Disassembler.cpp"
 )
 
 EXTRA_C=(
@@ -63,6 +64,7 @@ INCLUDES=(
   -I"${SRC_DIR}/utils/tinyxml" \
   -I"${SRC_DIR}/utils/libfat" \
   -I"${SRC_DIR}/libretro-common/include" \
+  -I"${SRC_DIR}/frontend/modules" \
   -I"${ROOT_DIR}/webassembly/include"
 )
 
@@ -104,7 +106,7 @@ emcc "${OBJECTS[@]}" \
   -sEXPORT_NAME=CreateDesmumeModule \
   -sENVIRONMENT=web,worker \
   -sEXPORTED_RUNTIME_METHODS='["FS","ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
-  -sEXPORTED_FUNCTIONS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_runFrames","_fillAudioBuffer","_getSymbol","_setSampleRate","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_stateGetSize","_stateGetPointer","_saveStateToBuffer","_loadStateFromBuffer","_zlibCompress","_zlibDecompress","_pauseEmu","_isPaused","_debuggerSetEnabled","_traceSetEnabled","_dbgGetReg","_dbgSetReg","_dbgRead8","_dbgRead16","_dbgRead32","_dbgWrite8","_dbgWrite16","_dbgWrite32","_dbgDumpMemory","_dbgSetExecBreakpoint","_dbgSetReadBreakpoint","_dbgSetWriteBreakpoint","_dbgStep","_dbgStepOver","_dbgGetStatusJson","_dbgDisassemble","_dbgStackTrace","_chtGetList","_chtAddItem","_utilStrLen","_emuSetOpt"]' \
+  -sEXPORTED_FUNCTIONS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_runFrames","_fillAudioBuffer","_getSymbol","_setSampleRate","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_savImportFromFile","_savExportToFile","_stateGetSize","_stateGetPointer","_saveStateToBuffer","_loadStateFromBuffer","_zlibCompress","_zlibDecompress","_pauseEmu","_isPaused","_debuggerSetEnabled","_traceSetEnabled","_dbgGetReg","_dbgSetReg","_dbgRead8","_dbgRead16","_dbgRead32","_dbgWrite8","_dbgWrite16","_dbgWrite32","_dbgDumpMemory","_dbgSetExecBreakpoint","_dbgSetReadBreakpoint","_dbgSetWriteBreakpoint","_dbgStep","_dbgStepOver","_dbgGetStatusJson","_dbgDisassemble","_dbgStackTrace","_chtGetList","_chtAddItem","_utilStrLen","_emuSetOpt"]' \
   -o "${OUT_DIR}/desmume.js"
 
 if [ "${ROOT_DIR}/public/coi-serviceworker.js" != "${OUT_DIR}/coi-serviceworker.js" ]; then

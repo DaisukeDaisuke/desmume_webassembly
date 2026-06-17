@@ -16,6 +16,7 @@
 #include "SPU.h"
 #include "armcpu.h"
 #include "debug.h"
+#include "frontend/modules/Disassembler.h"
 #include "emufile.h"
 #include "mc.h"
 #include "rasterize.h"
@@ -148,10 +149,10 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   } else {
     NDS_releaseTouch();
   }
-  NDS_setPad(keys & (1 << 0), keys & (1 << 1), keys & (1 << 2), keys & (1 << 3),
-             keys & (1 << 4), keys & (1 << 5), keys & (1 << 6), keys & (1 << 7),
-             keys & (1 << 8), keys & (1 << 9), keys & (1 << 10),
-             keys & (1 << 11), keys & (1 << 12), keys & (1 << 13));
+  NDS_setPad(keys & (1 << 4), keys & (1 << 5), keys & (1 << 7), keys & (1 << 6),
+             keys & (1 << 2), keys & (1 << 3), keys & (1 << 1), keys & (1 << 0),
+             keys & (1 << 11), keys & (1 << 10), keys & (1 << 9),
+             keys & (1 << 8), keys & (1 << 12), keys & (1 << 13));
   NDS_beginProcessingInput();
   NDS_endProcessingInput();
   NDS_exec<false>();
@@ -185,6 +186,16 @@ void *savGetPointer(int desiredSize) {
 
 int savUpdateChangeFlag() {
   return 1;
+}
+
+int savImportFromFile() {
+  bool ok = MMU_new.backupDevice.importData("import.sav");
+  return ok ? 0 : -1;
+}
+
+int savExportToFile() {
+  bool ok = MMU_new.backupDevice.exportData("export.sav");
+  return ok ? 0 : -1;
 }
 
 int stateGetSize() { return stateFile->size(); }
@@ -314,12 +325,24 @@ int dbgStep(int proc, int count) {
   if (count < 1) count = 1;
   bool wasPaused = paused;
   paused = false;
-  for (int i = 0; i < count; i++) NDS_exec<false>();
+  for (int i = 0; i < count; i++) {
+    if (proc == 0) armcpu_exec<0>();
+    else armcpu_exec<1>();
+  }
   paused = wasPaused;
   return count;
 }
 
-int dbgStepOver(int proc) { return dbgStep(proc, 1); }
+int dbgStepOver(int proc) {
+  armcpu_t *cpu = cpuFor(proc);
+  const u32 next = cpu->instruct_adr + (cpu->CPSR.bits.T ? 2 : 4);
+  int count = 0;
+  do {
+    dbgStep(proc, 1);
+    count++;
+  } while (cpu->instruct_adr != next && count < 4096);
+  return count;
+}
 
 const char *dbgGetStatusJson() {
   std::ostringstream os;
@@ -337,13 +360,19 @@ const char *dbgDisassemble(int proc, u32 addr, int count, int mode) {
   if (count < 1) count = 1;
   if (count > 256) count = 256;
   std::ostringstream os;
+  u32 pc = cpuFor(proc)->instruct_adr;
   for (int i = 0; i < count; i++) {
     bool thumb = mode == 1 || (mode == 0 && (cpuFor(proc)->CPSR.bits.T != 0));
     u32 at = addr + (thumb ? i * 2 : i * 4);
+    char txt[128] = {0};
     if (thumb) {
-      os << std::hex << at << ": .hword 0x" << dbgRead16(proc, at) << "\n";
+      u32 op = dbgRead16(proc, at);
+      des_thumb_instructions_set[(op & 0xffff) >> 6](at, op, txt);
+      os << (at == pc ? "=> " : "   ") << std::hex << at << ": " << op << "  " << txt << "\n";
     } else {
-      os << std::hex << at << ": .word 0x" << dbgRead32(proc, at) << "\n";
+      u32 op = dbgRead32(proc, at);
+      des_arm_instructions_set[INSTRUCTION_INDEX(op)](at, op, txt);
+      os << (at == pc ? "=> " : "   ") << std::hex << at << ": " << op << "  " << txt << "\n";
     }
   }
   textScratch = os.str();
@@ -355,10 +384,24 @@ const char *dbgStackTrace(int proc, int words) {
   if (words > 256) words = 256;
   u32 sp = dbgGetReg(proc, 13);
   std::ostringstream os;
-  os << "sp=0x" << std::hex << sp << "\n";
+  os << "trace=" << (traceEnabled ? "on" : "off") << " sp=0x" << std::hex << sp << "\n";
   for (int i = 0; i < words; i++) {
     u32 at = sp + i * 4;
-    os << "0x" << std::hex << at << ": 0x" << dbgRead32(proc, at) << "\n";
+    u32 value = dbgRead32(proc, at);
+    os << "0x" << std::hex << at << ": 0x" << value;
+    if ((value & 0x0f000000) == 0x02000000 || (value & 0x0f000000) == 0x00000000) {
+      u32 target = value & ~1U;
+      char txt[128] = {0};
+      if (value & 1) {
+        u32 op = dbgRead16(proc, target);
+        des_thumb_instructions_set[(op & 0xffff) >> 6](target, op, txt);
+      } else {
+        u32 op = dbgRead32(proc, target);
+        des_arm_instructions_set[INSTRUCTION_INDEX(op)](target, op, txt);
+      }
+      os << "  possible_lr 0x" << target << "  " << txt;
+    }
+    os << "\n";
   }
   textScratch = os.str();
   return textScratch.c_str();
