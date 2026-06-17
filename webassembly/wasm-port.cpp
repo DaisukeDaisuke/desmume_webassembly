@@ -258,10 +258,11 @@ int fillAudioBuffer(int bufLenToFill) {
 int savGetSize() { return savFile->size(); }
 
 void *savGetPointer(int desiredSize) {
-  // desiredSize は無視する。
   // truncate() はバッファを再アロケートし BackupDevice 内部の状態と食い違うため使用禁止。
   // セーブデータの書き込みは必ず savImportFromFile() 経由で行うこと。
-  (void)desiredSize;
+  if (desiredSize > savFile->size()) {
+    return NULL;
+  }
   return savFile->buf();
 }
 

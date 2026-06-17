@@ -42,3 +42,9 @@
 - 2026-06-18: デバッグ用に `status().romLoaded` / `status().loadingFile`、`reloadRom`、WebMCP `batch`、GUIのReset hold/ROM wait/Reload ROM/Batch JSONを追加した。リセットクラッシュ再現時は新規ページでROMを読み、`DesmumeMCP.call("reset", { holdPaused: true, waitMs: 1000 })` の結果と `status` を見る。
 - 2026-06-18: WebMCPからROMロード手順を確認できるよう `loadRomBytes` を追加した。`bytes` 配列または `base64` を受け取るが、公開チャットに実ROMを流さないこと。通常のDQ9検証はGUI file pickerで読む。
 - 2026-06-18: ネイティブ `loadROM()` は極小/不正バイト列でも成功扱いになり得るため、JS側 `writeRomFile()` で `0x200` 未満とヘッダ先頭 `0x200` 全ゼロを拒否する。ゼロ埋めROM状態の再発防止なので外さない。
+- 2026-06-18: `BackupDevice::data_command()` の `table index is out of bounds` はJS自動flushではなく、ARM7実行中のセーブSPIアクセスで発生していた。`tick()`/`stepFrames()` の `runFrame(s)` はWASM RuntimeError時に即停止・30秒save flush抑止・ログ保存した後、必ずrethrowする。例外を握りつぶすとフリーズ型クラッシュになる。
+- 2026-06-18: savestate load/recent state load/import state後は既定30秒 `saveSaveSlot()` の自動flushを止める。ROM reload後は既定10秒止める。`saveFlushBlockMs` で上書き可能。
+- 2026-06-18: ブラウザが `navigator.modelContext` または `document.modelContext` を持つ場合、WebMCPとして `desmume.<command>` と `desmume.call` を `registerTool()` する。ローカル `D:\software\WebMCP.html` では `Document.modelContext` が仕様記載だが、実装差異を見て navigator も先に見る。
+- 2026-06-18: Chrome MCPで実ROMを読むため、同一origin/CORS URLからROMを読む `loadRomUrl` を追加した。ローカル検証では一時HTTPサーバーで `D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds` を `/dq9.nds` として返し、ROM本文をチャットに出さない。
+- 2026-06-18: `savGetPointer(desiredSize)` は `EMUFILE_MEMORY::truncate()` を呼ばない。要求サイズが現セーブバッファより大きい場合は `NULL` を返し、書き込みは `savImportFromFile()` 経由に限定する。
+- 2026-06-18: Chrome MCP検証用に `loadStateBytes` / `loadStateUrl` を追加した。`D:\software\state.dst` を一時PHPルーターで `/state.dst` として返し、ROMロード→stateロード→20F実行→Resetボタンクリックを確認。`table index is out of bounds` は出ず、reset後も `romLoaded=true`、PCは0ではない。

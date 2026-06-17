@@ -453,9 +453,6 @@ The important Lua code is as follows (this will run on the web emulator with fea
 - "D:\lua_new\lua\enc_jp.lua": (Optional) fully functional pre-encounter emulator
 You need to write a description for every API.
 You can evaluate any JavaScript code and test it with the emulator.
-- It would be good to support standards like WebMCP.
-  - "D:\software\WebMCPについて調べて、動きを確認してみた _ DevelopersIO.html"
-  - "D:\software\WebMCP.html"
 - Use chrome-devtools-mcp for debugging.
 - It is also allowed to do git commit, git pull in codespace, and synchronize the repository (but do not upload old, make it a submodule)
 - vs22, vs26, vs26 build tools are installed.
@@ -515,7 +512,6 @@ AIによるありとあらゆる操作の実現
 - ローカルは、ssh認証済み(リポジトリはsshモード)、https未認証、gpg設定済み。gh一部権限使用可能(リポジトリ削除などははく奪済み)。ローカルなので認証情報を変えるな、ghのトークンダンプするな。sshフォルダはワークスペース外なのでいじるな。鍵をコンテキストにダンプするな。
 - (ローカルコミットで、gpgがコミットで落ちた場合は、"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe"を常駐無し引数で1回起動し、"C:\Program Files\GnuPG\bin\gpg-agent.exe"を5回同時起動(自動終了、エラー吐くが無視すればいい)すれば　その後20秒待機すればたいていの場合うまくいく。勝手にgpg再構成するな。)
 - github actionsのデプロイは毎回してると遅いので、可能であれば最終提出ですること、cp転送後、npxなどなどdockerなどなどのキャッシュ無し即時リロードができる、サーバーをローカルかプレビューページにポートフォワーディングして、ローカルでアクセスしたほうがキャッシュもあいまって2倍ほど速い。github 本番デプロイで前回1時間以上作業してたので、これが速くなると嬉しい。
-- pythonで127.0.0.1にサーバーを立てるのがおすすめ
 - もしくはnodejs(Windows ディフェンダー未許可)に配信をやらせればいい。
 - また、codespaceはランダムに電源が落ちるのでそういうものだと思って再起動する。ぶっ壊れた場合は応答しなくなるので再作成する。gh codespace cp失敗はただ電源が落ちてるだけ。
 - ローカル、codespaceデバックの場合でもコミットは毎回すること。push+待機は最終提出まで保留すること
@@ -524,7 +520,15 @@ AIによるありとあらゆる操作の実現
 - デプロイは毎回cache-bustすること。
 - 時間かかるので絶対に毎回github pageにデプロイせず、ローカルサーバーで確認すること。html変更の場合即座に、cpp変更は2分なので段違いに速い。
 - 積極的にwebassembly/build_safe_heap.sh、webassembly/build_sanitize.shを活用すること。というより開発はこっちですること。
-- テスト用サーバーはローカル実機のpython非同期建てろ、127.0.0.1バインドで。
+- テストサーバーはphpでたてろ。
+```
+(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id    
+```
+
+```
+http://localhost:8766/
+```
+
 
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file

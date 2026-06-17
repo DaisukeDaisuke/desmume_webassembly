@@ -469,6 +469,7 @@
       loadingFile: false,
       lastTick: performance.now(),
       lastSaveFlush: 0,
+      saveFlushBlockedUntil: 0,
       romSize: 0,
       romName: "",
       romBytes: null,
@@ -480,12 +481,15 @@
       status: "現在の停止状態、フレーム、速度、描画/音声/デバッグ設定、PC/CPSRを返します。",
       loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
       loadRomBytes: "MCPから渡されたROMバイトをブラウザ内だけで読み込みます。bytes配列またはbase64を指定します。",
+      loadRomUrl: "同一originまたはCORS許可済みURLからROMを取得し、ブラウザ内だけで読み込みます。",
       importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
       exportSaveFile: "現在のセーブデータをファイルとして保存します。",
       saveSaveSlot: "現在のカートリッジ保存領域をブラウザの指定スロットに保存します。",
       loadSaveSlot: "ブラウザの指定スロットからカートリッジ保存領域を読み込み、ROMを再読み込みして反映します。",
       saveState: "現在のエミュレーター状態を保存し、slot指定時はブラウザストレージにも保存します。",
       loadState: "保存済みステートを読み込みます。停止中なら停止したまま読み込みます。",
+      loadStateBytes: "MCPから渡されたステートバイトを読み込みます。bytes配列またはbase64を指定します。",
+      loadStateUrl: "同一originまたはCORS許可済みURLからステートを取得して読み込みます。",
       listRecentFiles: "最近読み込んだセーブ/ステートを最大6件返します。",
       reloadRecentFile: "最近読み込んだセーブ/ステートをid指定で再読み込みします。",
       importStateFile: "外部ステートファイルを読み込みます。",
@@ -603,6 +607,7 @@
       applyScaleRotation();
       updateStatus();
       scheduleTick();
+      registerBrowserModelContextTools().catch((error) => log(error.message || String(error)));
     }
 
     function download(name, bytes, type = "application/octet-stream") {
@@ -627,6 +632,23 @@
 
     function bootWaitMs(params = {}) {
       return Math.max(0, Math.min(10000, Number(params.waitMs ?? params.romWaitMs ?? ui.romWaitMs.value ?? 600)));
+    }
+
+    function blockSaveFlush(ms = 10000) {
+      const until = performance.now() + Math.max(0, Number(ms) || 0);
+      state.saveFlushBlockedUntil = Math.max(state.saveFlushBlockedUntil, until);
+      state.lastSaveFlush = performance.now();
+    }
+
+    function handleNativeFault(error, where) {
+      state.paused = true;
+      state.running = false;
+      state.frameBudget = 0;
+      if (state.ready) state.fns.pauseEmu(1);
+      state.breakLabel = `native fault ${where}`;
+      blockSaveFlush(30000);
+      log(`${where}: ${error && (error.stack || error.message) || error}`);
+      updateStatus();
     }
 
     async function reloadSelectedRom() {
@@ -701,6 +723,7 @@
         state.running = options.resume === true;
         state.paused = options.resume === true ? false : true;
         state.fns.pauseEmu(options.resume === true ? 0 : 1);
+        blockSaveFlush(Number(options.saveFlushBlockMs ?? 10000));
         drawFrame();
       }
       return ret;
@@ -825,13 +848,18 @@
           state.frameBudget -= frames;
           applyFreezes();
           let ran = 0;
-          if (state.touch.active) {
-            for (let i = 0; i < frames; i++) {
-              ran++;
-              if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+          try {
+            if (state.touch.active) {
+              for (let i = 0; i < frames; i++) {
+                ran++;
+                if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+              }
+            } else {
+              ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
             }
-          } else {
-            ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          } catch (error) {
+            handleNativeFault(error, "runFrame");
+            throw error;
           }
           if (ran < frames) {
             state.paused = true;
@@ -1101,6 +1129,15 @@
           restoreAfterFileLoad({ running: params.resume !== false, paused: params.resume === false });
         }
       },
+      async loadRomUrl(params = {}) {
+        ensureReady();
+        const url = String(params.url || "");
+        if (!url) throw new Error("url is required");
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`ROM fetch failed: ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        return commands.loadRomBytes({ ...params, bytes, name: params.name || url.split("/").pop() || "url-rom.nds" });
+      },
       async importSaveFile() {
         ensureReady();
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
@@ -1180,6 +1217,7 @@
             state.fns.loadStateFromBuffer(size);
           }
           state.frame = 0;
+          blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
           return { ok: true, paused: runState.paused, reset: false };
         } finally {
@@ -1194,6 +1232,7 @@
           state.module.FS.writeFile("import.dst", bytes);
           const ret = state.fns.loadStateFromFile();
           state.frame = 0;
+          blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
           await recordRecentFile("state", file.name, bytes);
           log(`state imported: ${file.name}`);
@@ -1201,6 +1240,31 @@
         } finally {
           restoreAfterFileLoad(runState);
         }
+      },
+      async loadStateBytes(params = {}) {
+        ensureReady();
+        const bytes = bytesFromParams(params);
+        const runState = pauseForFileLoad();
+        try {
+          state.module.FS.writeFile("import.dst", bytes);
+          const ret = state.fns.loadStateFromFile();
+          state.frame = 0;
+          blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
+          drawFrame();
+          log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
+          return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
+        } finally {
+          restoreAfterFileLoad(runState);
+        }
+      },
+      async loadStateUrl(params = {}) {
+        ensureReady();
+        const url = String(params.url || "");
+        if (!url) throw new Error("url is required");
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        return commands.loadStateBytes({ ...params, bytes, name: params.name || url.split("/").pop() || "url-state.dst" });
       },
       async listRecentFiles() { renderRecentFiles(); return { recentFiles: state.recentFiles }; },
       async reloadRecentFile(params = {}) {
@@ -1225,6 +1289,7 @@
           state.module.FS.writeFile("import.dst", bytes);
           const ret = state.fns.loadStateFromFile();
           state.frame = 0;
+          blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
           return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
         } finally {
@@ -1271,13 +1336,18 @@
         state.fns.pauseEmu(0);
         applyFreezes();
         let ran = 0;
-        if (state.touch.active) {
-          for (let i = 0; i < frames; i++) {
-            ran++;
-            if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+        try {
+          if (state.touch.active) {
+            for (let i = 0; i < frames; i++) {
+              ran++;
+              if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+            }
+          } else {
+            ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
           }
-        } else {
-          ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+        } catch (error) {
+          handleNativeFault(error, "stepFrames");
+          throw error;
         }
         applyFreezes();
         state.frame += ran;
@@ -1638,6 +1708,51 @@
       list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""]))
     };
 
+    async function registerBrowserModelContextTools() {
+      const modelContext = ("modelContext" in navigator && navigator.modelContext)
+        || ("modelContext" in document && document.modelContext);
+      if (!modelContext || typeof modelContext.registerTool !== "function") return false;
+      const baseSchema = {
+        type: "object",
+        additionalProperties: true,
+        description: "Parameters passed to the matching DeSmuME Web Debugger MCP command."
+      };
+      const registrations = Object.keys(commands).map((name) => ({
+        name: `desmume.${name}`,
+        title: `DeSmuME ${name}`,
+        description: apiDescriptions[name] || `Run DeSmuME command ${name}.`,
+        inputSchema: baseSchema,
+        annotations: { readOnlyHint: ["status", "getRegisters", "disassemble", "dumpMemory", "listBreakpoints", "listMemoryFreezes", "callStack", "stackTrace", "listRecentFiles"].includes(name) },
+        execute: async (input = {}) => runCommand(name, input || {})
+      }));
+      registrations.push({
+        name: "desmume.call",
+        title: "DeSmuME command",
+        description: "Runs one DeSmuME Web Debugger command by name. Use this when an agent wants to choose a command dynamically.",
+        inputSchema: {
+          type: "object",
+          required: ["command"],
+          properties: {
+            command: { type: "string" },
+            params: { type: "object", additionalProperties: true }
+          },
+          additionalProperties: false
+        },
+        execute: async (input = {}) => runCommand(String(input.command || ""), input.params || {})
+      });
+      let ok = 0;
+      for (const tool of registrations) {
+        try {
+          await modelContext.registerTool(tool);
+          ok++;
+        } catch (error) {
+          if (!String(error && error.message || error).includes("already")) console.warn("WebMCP register failed", tool.name, error);
+        }
+      }
+      log(`WebMCP registered ${ok} tools`);
+      return ok > 0;
+    }
+
     window.addEventListener("message", async (event) => {
       const msg = event.data || {};
       if (msg.type !== "desmume-mcp") return;
@@ -1760,7 +1875,7 @@
     setInterval(() => {
       if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then(renderMemoryDump).catch(() => {});
       applyFreezes();
-      if (state.ready && state.running && !state.loadingFile && performance.now() - state.lastSaveFlush > 5000) {
+      if (state.ready && state.running && !state.loadingFile && performance.now() >= state.saveFlushBlockedUntil && performance.now() - state.lastSaveFlush > 5000) {
         state.lastSaveFlush = performance.now();
         commands.saveSaveSlot({ slot: ui.stateSlot.value }).catch(() => {});
       }
