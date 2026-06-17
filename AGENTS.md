@@ -524,6 +524,7 @@ AIによるありとあらゆる操作の実現
 - デプロイは毎回cache-bustすること。
 - 時間かかるので絶対に毎回github pageにデプロイせず、ローカルサーバーで確認すること。html変更の場合即座に、cpp変更は2分なので段違いに速い。
 - 積極的にwebassembly/build_safe_heap.sh、webassembly/build_sanitize.shを活用すること。というより開発はこっちですること。
+- テスト用サーバーはローカル実機のpython非同期建てろ、127.0.0.1バインドで。
 
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file
