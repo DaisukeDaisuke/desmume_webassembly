@@ -74,8 +74,6 @@ void SNDWasmFetchSamples(s16 *sampleBuffer, size_t sampleCount,
   }
 }
 
-u8 Mic_ReadSample() { return 64; }
-
 SoundInterface_struct SndWasm = {1,
                                  "Wasm Sound Interface",
                                  SNDWasmInit,

@@ -34,6 +34,7 @@ mapfile -t CORE_CPP < <(
     ! -name "*_SSE*.cpp" \
     ! -name "*_NEON.cpp" \
     ! -name "*_AltiVec.cpp" \
+    ! -name "GPU_Operations.cpp" \
     ! -name "OGLRender*.cpp" \
     ! -name "ogl_collector.cpp" \
     ! -name "wifi.cpp" \
