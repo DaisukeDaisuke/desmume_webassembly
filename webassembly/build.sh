@@ -41,8 +41,11 @@ mapfile -t CORE_CPP < <(
     | sort
 )
 
-EXTRA_SOURCES=(
+EXTRA_CPP=(
   "${SRC_DIR}/metaspu/metaspu.cpp"
+)
+
+EXTRA_C=(
   "${SRC_DIR}/libretro-common/compat/compat_strl.c"
   "${SRC_DIR}/libretro-common/encodings/encoding_utf.c"
   "${SRC_DIR}/libretro-common/file/file_path.c"
@@ -51,18 +54,44 @@ EXTRA_SOURCES=(
   "${SRC_DIR}/libretro-common/string/stdstring.c"
 )
 
-emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" "${EXTRA_SOURCES[@]}" \
+INCLUDES=(
   -I"${SRC_DIR}" \
   -I"${SRC_DIR}/addons" \
   -I"${SRC_DIR}/utils" \
   -I"${SRC_DIR}/utils/tinyxml" \
   -I"${SRC_DIR}/utils/libfat" \
   -I"${SRC_DIR}/libretro-common/include" \
-  -I"${ROOT_DIR}/webassembly/include" \
-  -O3 \
-  -std=c++17 \
-  -include algorithm \
-  -include cassert \
+  -I"${ROOT_DIR}/webassembly/include"
+)
+
+BUILD_DIR="${ROOT_DIR}/.wasm-obj"
+rm -rf "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}"
+
+OBJECTS=()
+compile_cpp() {
+  local src="$1"
+  local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
+  emcc "${INCLUDES[@]}" -O3 -std=c++17 -include algorithm -include cassert -c "${src}" -o "${obj}"
+  OBJECTS+=("${obj}")
+}
+
+compile_c() {
+  local src="$1"
+  local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
+  emcc "${INCLUDES[@]}" -O3 -c "${src}" -o "${obj}"
+  OBJECTS+=("${obj}")
+}
+
+compile_cpp "${ROOT_DIR}/webassembly/wasm-port.cpp"
+for src in "${CORE_CPP[@]}" "${EXTRA_CPP[@]}"; do
+  compile_cpp "${src}"
+done
+for src in "${EXTRA_C[@]}"; do
+  compile_c "${src}"
+done
+
+emcc "${OBJECTS[@]}" \
   -sWASM=1 \
   -sSINGLE_FILE=1 \
   -sALLOW_MEMORY_GROWTH=1 \
