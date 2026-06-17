@@ -74,14 +74,14 @@ OBJECTS=()
 compile_cpp() {
   local src="$1"
   local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
-  emcc "${INCLUDES[@]}" -O3 -std=c++17 -include algorithm -include cassert -c "${src}" -o "${obj}"
+  emcc "${INCLUDES[@]}" -O3 -std=c++17 -include algorithm -include cassert -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
   OBJECTS+=("${obj}")
 }
 
 compile_c() {
   local src="$1"
   local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
-  emcc "${INCLUDES[@]}" -O3 -c "${src}" -o "${obj}"
+  emcc "${INCLUDES[@]}" -O3 -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
   OBJECTS+=("${obj}")
 }
 
