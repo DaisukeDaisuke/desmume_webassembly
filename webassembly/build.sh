@@ -50,8 +50,10 @@ EXTRA_C=(
   "${SRC_DIR}/libretro-common/encodings/encoding_utf.c"
   "${SRC_DIR}/libretro-common/file/file_path.c"
   "${SRC_DIR}/libretro-common/file/retro_dirent.c"
+  "${SRC_DIR}/libretro-common/file/retro_stat.c"
   "${SRC_DIR}/libretro-common/rthreads/rthreads.c"
   "${SRC_DIR}/libretro-common/string/stdstring.c"
+  "${ROOT_DIR}/webassembly/support.c"
 )
 
 INCLUDES=(
