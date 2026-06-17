@@ -285,7 +285,7 @@ int saveStateToBuffer() {
 
 int loadStateFromBuffer(int size) {
   if (size < 0) return -1;
-  stateFile->truncate(size);
+  if (size > 0 && stateFile->size() != size) return -2;
   stateFile->fseek(0, SEEK_SET);
   return savestate_load(*stateFile) ? 0 : -1;
 }
