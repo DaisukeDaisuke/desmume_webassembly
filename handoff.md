@@ -25,3 +25,7 @@
 - ブレークポイントは UI/API とも id 管理。アドレス文字列 `20cb6c4` / `020cb6c4` は 10進ではなく16進として扱う。
 - `setCTable_jp.lua` 相当は JS/API の `setCTableSeed` で実装可能。既定では `0x02385f0c = 0x4b539adb`, `0x02385f10 = 0` を書く。
 - 最近読み込んだ save/state は最大6件を id 付きで保持し、`reloadRecentFile` から再ロードできる。
+- ステートロード前に `reset()` しないこと。ステートは CPU/PC を含む完全状態なので、reset 後に読むと PC や周辺状態が壊れて無限ループ化しやすい。セーブロードだけは、カートリッジ保存領域を反映するため import 後に `reset()` する。
+- ブレークポイントはヒットしたら必ず `paused=true` にする。実行ブレークは `armcpu_exec()` の命令実行前、read/write は MMU の実アクセスで止める。GUI のメモリビューワーは `MMU_AT_DEBUG` 読みなので read breakpoint を発火させない。
+- data abort / prefetch abort / undefined instruction はエミュレーター破棄ではなく、最後の発生元 PC/CPSR を `status().native.lastBreak` に残して停止する。
+- call stack UI は SP ダンプではなく `dbgCallStackJson()` の `frames` を表で出す。callee の Jump は disassembler address に入れるだけで、PC は変更しない。

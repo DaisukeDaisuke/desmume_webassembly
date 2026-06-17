@@ -9,6 +9,7 @@
 
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <map>
 #include <vector>
 
@@ -41,11 +42,25 @@ static bool debuggerEnabled = true;
 static bool traceEnabled = false;
 static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
+static bool specialBreakpoints[3] = {false, false, false};
 
 static std::vector<u32> execBreakpoints[2];
 static std::vector<u32> readBreakpoints[2];
 static std::vector<u32> writeBreakpoints[2];
 static std::string textScratch;
+
+struct BreakStatus {
+  bool hit;
+  int proc;
+  int kind;
+  u32 address;
+  int size;
+  u32 value;
+  u32 pc;
+  u32 cpsr;
+};
+
+static BreakStatus lastBreak = {false, 0, -1, 0, 0, 0, 0, 0};
 
 struct CallStackEntry {
   u32 caller;
@@ -64,6 +79,29 @@ u32 dstFrameBuffer[2][256 * 192];
 extern "C" unsigned cpu_features_get_core_amount(void) { return 1; }
 
 static armcpu_t *cpuFor(int proc) { return proc == 0 ? &NDS_ARM9 : &NDS_ARM7; }
+
+static bool hasBreakpoint(const std::vector<u32> &list, u32 addr) {
+  return std::find(list.begin(), list.end(), addr) != list.end();
+}
+
+static void recordBreak(int proc, int kind, u32 address, int size, u32 value) {
+  armcpu_t *cpu = cpuFor(proc);
+  lastBreak = {true, proc, kind, address, size, value, cpu->instruct_adr, cpu->CPSR.val};
+  paused = true;
+}
+
+extern "C" int wasmDebuggerShouldBreak(int proc, int kind, u32 address, int size, u32 value) {
+  if (!debuggerEnabled) return 0;
+  const int idx = proc == 0 ? 0 : 1;
+  bool hit = false;
+  if (kind == 0) hit = hasBreakpoint(execBreakpoints[idx], address);
+  else if (kind == 1) hit = hasBreakpoint(readBreakpoints[idx], address);
+  else if (kind == 2) hit = hasBreakpoint(writeBreakpoints[idx], address);
+  else if (kind >= 3 && kind <= 5) hit = specialBreakpoints[kind - 3];
+  if (!hit) return 0;
+  recordBreak(idx, kind, address, size, value);
+  return 1;
+}
 
 extern "C" void wasmEnterFunctionHook(int proc) {
   if (!traceEnabled || proc != 0) return;
@@ -184,13 +222,17 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   NDS_exec<false>();
   frameCounter++;
   if (shouldDraw) gpu_screen_to_rgb((u32 *)dstFrameBuffer);
-  return 0;
+  return paused ? 1 : 0;
 }
 
 int runFrames(int count, int shouldDraw, u32 keys) {
   if (count < 0) return -1;
-  for (int i = 0; i < count; i++) runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0);
-  return count;
+  int ran = 0;
+  for (int i = 0; i < count; i++) {
+    ran++;
+    if (runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0) != 0) break;
+  }
+  return ran;
 }
 
 int fillAudioBuffer(int bufLenToFill) {
@@ -358,6 +400,17 @@ int dbgSetWriteBreakpoint(int proc, u32 addr, int enabled) {
   return setBreakpoint(writeBreakpoints[proc == 0 ? 0 : 1], addr, enabled);
 }
 
+int dbgSetSpecialBreakpoint(int kind, int enabled) {
+  if (kind < 3 || kind > 5) return -1;
+  specialBreakpoints[kind - 3] = enabled != 0;
+  return 0;
+}
+
+int dbgClearBreakStatus() {
+  lastBreak.hit = false;
+  return 0;
+}
+
 int dbgStep(int proc, int count) {
   if (count < 1) count = 1;
   bool wasPaused = paused;
@@ -365,8 +418,12 @@ int dbgStep(int proc, int count) {
   for (int i = 0; i < count; i++) {
     if (proc == 0) armcpu_exec<0>();
     else armcpu_exec<1>();
+    if (paused) {
+      count = i + 1;
+      break;
+    }
   }
-  paused = wasPaused;
+  paused = paused || wasPaused;
   return count;
 }
 
@@ -388,7 +445,18 @@ const char *dbgGetStatusJson() {
      << ",\"traceEnabled\":" << (traceEnabled ? "true" : "false")
      << ",\"frame\":" << frameCounter
      << ",\"arm9\":{\"pc\":" << NDS_ARM9.instruct_adr << ",\"cpsr\":" << NDS_ARM9.CPSR.val << "}"
-     << ",\"arm7\":{\"pc\":" << NDS_ARM7.instruct_adr << ",\"cpsr\":" << NDS_ARM7.CPSR.val << "}}";
+     << ",\"arm7\":{\"pc\":" << NDS_ARM7.instruct_adr << ",\"cpsr\":" << NDS_ARM7.CPSR.val << "}"
+     << ",\"lastBreak\":{\"hit\":" << (lastBreak.hit ? "true" : "false")
+     << ",\"cpu\":\"" << (lastBreak.proc == 0 ? "arm9" : "arm7") << "\""
+     << ",\"kind\":" << lastBreak.kind
+     << ",\"address\":" << lastBreak.address
+     << ",\"size\":" << lastBreak.size
+     << ",\"value\":" << lastBreak.value
+     << ",\"pc\":" << lastBreak.pc
+     << ",\"cpsr\":" << lastBreak.cpsr << "}"
+     << ",\"specialBreakpoints\":{\"dataAbort\":" << (specialBreakpoints[0] ? "true" : "false")
+     << ",\"prefetchAbort\":" << (specialBreakpoints[1] ? "true" : "false")
+     << ",\"undefinedInstruction\":" << (specialBreakpoints[2] ? "true" : "false") << "}}";
   textScratch = os.str();
   return textScratch.c_str();
 }

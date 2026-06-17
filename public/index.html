@@ -119,6 +119,18 @@
       font: 12px var(--mono);
     }
     .registers div { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line-soft); padding: 3px 0; }
+    .registers div.changed { background: rgba(240, 179, 90, 0.12); border-bottom-color: rgba(240, 179, 90, 0.34); }
+    .table-wrap {
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #090b0d;
+    }
+    table { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+    th, td { padding: 5px 7px; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
+    th { position: sticky; top: 0; background: #0d1013; color: var(--muted); z-index: 1; }
+    td button { min-height: 24px; padding: 0 7px; font-size: 11px; }
     pre {
       margin: 0;
       padding: 8px;
@@ -135,6 +147,15 @@
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
     .breakpoint-line { color: var(--fault); }
+    .memory-line { display: block; white-space: pre; }
+    .memory-byte { border: 0; border-radius: 3px; padding: 0 1px; cursor: pointer; }
+    .memory-byte:hover { background: rgba(124, 255, 155, 0.14); color: #eff7f0; }
+    .memory-editor {
+      width: 42px;
+      min-height: 20px;
+      padding: 1px 3px;
+      font: 12px var(--mono);
+    }
     .hidden-input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
     .switch { display: flex; align-items: center; gap: 8px; min-height: 32px; color: var(--solder); }
     .switch input { min-height: 0; }
@@ -243,6 +264,23 @@
           </div>
         </div>
         <div class="section">
+          <h2>Call Stack</h2>
+          <div class="row">
+            <button id="stack-refresh-btn" type="button">Refresh Stack</button>
+            <button id="stack-clear-btn" type="button">Clear Trace</button>
+          </div>
+          <div class="table-wrap" aria-live="polite">
+            <table>
+              <thead>
+                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>jump</th></tr>
+              </thead>
+              <tbody id="callstack-body">
+                <tr><td colspan="6">stack trace disabled</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section">
           <h2>Disassembly</h2>
           <div class="grid three">
             <label>Address<input id="disasm-address" class="mono" value="pc"></label>
@@ -266,6 +304,10 @@
             <label>Write<input id="memory-write-value" class="mono" placeholder="0x00"></label>
             <select id="memory-write-size"><option value="1">u8</option><option value="2">u16</option><option value="4">u32</option></select>
             <button id="memory-write-btn" type="button">Write</button>
+          </div>
+          <div class="row">
+            <label class="file-button">Inject File<input id="memory-inject-file" class="hidden-input" type="file"></label>
+            <button id="memory-inject-btn" type="button">Inject Bytes</button>
           </div>
           <pre id="memory-output"></pre>
         </div>
@@ -316,6 +358,11 @@
           <div class="row">
             <button id="bp-add-btn" type="button">Add</button>
             <button id="bp-remove-btn" type="button">Remove</button>
+          </div>
+          <div class="row">
+            <label class="switch"><input id="bp-data-abort-toggle" type="checkbox"> data abort</label>
+            <label class="switch"><input id="bp-prefetch-abort-toggle" type="checkbox"> prefetch abort</label>
+            <label class="switch"><input id="bp-undefined-toggle" type="checkbox"> undefined</label>
           </div>
           <div class="grid">
             <label>Breakpoint ID<select id="bp-id-select"><option value="">none</option></select></label>
@@ -400,6 +447,9 @@
       freezes: [],
       recentFiles: [],
       nextRecentId: 1,
+      previousRegisters: null,
+      lastBreakKey: "",
+      breakLabel: "",
       keymap: { KeyX: "A", KeyZ: "B", KeyA: "X", KeyS: "Y", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
       buttons: { A: 0, B: 1, Select: 2, Start: 3, Right: 4, Left: 5, Up: 6, Down: 7, R: 8, L: 9, X: 10, Y: 11 },
       fns: {},
@@ -442,12 +492,15 @@
       setRegister: "指定レジスタを書き換えます。",
       disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
       dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
+      injectMemoryFile: "指定アドレスから、選択したローカルファイルのバイト列でメモリを上書きします。",
       searchMemory: "指定範囲のメモリを値または前回検索との差分条件で検索します。",
       resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
       writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
       setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
+      setSpecialBreakpoint: "data abort、prefetch abort、undefined instruction で停止する特殊ブレークポイントを切り替えます。",
       listBreakpoints: "現在のブレークポイント一覧を返します。",
       removeBreakpoint: "ブレークポイントをid指定で削除します。",
+      clearBreakStatus: "最後にヒットしたブレークポイント表示をクリアします。",
       step: "CPUステップを指定回数実行します。",
       stepOver: "ステップオーバーを1回実行します。",
       continue: "デバッグ停止から再開します。",
@@ -521,7 +574,8 @@
         ["dbgWrite8", "number", ["number", "number", "number"]], ["dbgWrite16", "number", ["number", "number", "number"]],
         ["dbgWrite32", "number", ["number", "number", "number"]], ["dbgDumpMemory", "number", ["number", "number", "number"]],
         ["dbgSetExecBreakpoint", "number", ["number", "number", "number"]], ["dbgSetReadBreakpoint", "number", ["number", "number", "number"]],
-        ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgStep", "number", ["number", "number"]],
+        ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgSetSpecialBreakpoint", "number", ["number", "number"]],
+        ["dbgClearBreakStatus", "number", []], ["dbgStep", "number", ["number", "number"]],
         ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
         ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []]
       ].forEach(([name, ret, args]) => wrap(name, ret, args));
@@ -624,17 +678,24 @@
         if (frames > 0) {
           state.frameBudget -= frames;
           applyFreezes();
+          let ran = 0;
           if (state.touch.active) {
             for (let i = 0; i < frames; i++) {
-              state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y);
+              ran++;
+              if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
             }
           } else {
-            state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+            ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          }
+          if (ran < frames) {
+            state.paused = true;
+            state.running = false;
+            syncNativeBreakStatus();
           }
           applyFreezes();
-          state.frame += frames;
+          state.frame += ran;
           drawFrame();
-          pumpAudio(frames);
+          pumpAudio(ran);
           updateStatus();
         }
       }
@@ -652,7 +713,29 @@
       ui.speedStatus.textContent = `speed ${state.speed.toFixed(2)}x`;
       if (state.ready) ui.pcStatus.textContent = `${state.selectedCpu} pc ${hex(getPc())}`;
       ui.readyLed.className = state.ready ? `led ${state.paused ? "paused" : "ready"}` : "led";
-      ui.readyText.textContent = state.ready ? (state.paused ? "paused" : "running") : ui.readyText.textContent;
+      ui.readyText.textContent = state.ready ? (state.breakLabel || (state.paused ? "paused" : "running")) : ui.readyText.textContent;
+    }
+
+    function breakpointKindName(kind) {
+      return ["exec", "read", "write", "dataAbort", "prefetchAbort", "undefinedInstruction"][Number(kind)] || "unknown";
+    }
+
+    function syncNativeBreakStatus(native = null) {
+      if (!state.ready) return null;
+      const status = native || JSON.parse(state.fns.dbgGetStatusJson());
+      const bp = status.lastBreak;
+      if (bp && bp.hit) {
+        state.paused = true;
+        state.running = false;
+        state.fns.pauseEmu(1);
+        state.breakLabel = `break ${breakpointKindName(bp.kind)}`;
+        const key = `${bp.cpu}:${bp.kind}:${bp.address}:${bp.pc}:${bp.value}`;
+        if (state.lastBreakKey !== key) {
+          state.lastBreakKey = key;
+          log(`break ${breakpointKindName(bp.kind)} ${bp.cpu} at ${hex(bp.address)} pc ${hex(bp.pc)}`);
+        }
+      }
+      return status;
     }
 
     function getRegisters(cpu = state.selectedCpu) {
@@ -668,8 +751,11 @@
       const regs = getRegisters();
       [...ui.registers.querySelectorAll("div")].forEach((row) => {
         const name = row.querySelector("span").textContent;
+        const changed = state.previousRegisters && state.previousRegisters[name] !== regs[name];
+        row.classList.toggle("changed", !!changed);
         row.querySelector("b").textContent = hex(regs[name] ?? 0);
       });
+      state.previousRegisters = regs;
       return regs;
     }
 
@@ -718,6 +804,31 @@
         const cls = ["disasm-line", current ? "current" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
+    }
+
+    function renderCallStack(data) {
+      const frames = data && Array.isArray(data.frames) ? data.frames : [];
+      if (!frames.length) {
+        ui.callstackBody.innerHTML = `<tr><td colspan="6">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
+        return;
+      }
+      ui.callstackBody.innerHTML = frames.map((frame, index) => {
+        const callee = hex(frame.callee);
+        return `<tr><td>${index}</td><td>${hex(frame.caller)}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${callee}">Jump</button></td></tr>`;
+      }).join("");
+    }
+
+    function renderMemoryDump(result) {
+      const bytes = result.bytes || [];
+      const lines = [];
+      for (let i = 0; i < bytes.length; i += 16) {
+        const cells = bytes.slice(i, i + 16).map((b, j) => {
+          const addr = result.address + i + j;
+          return `<span class="memory-byte" data-memory-address="${hex(addr)}" data-memory-value="${b.toString(16).padStart(2, "0")}">${b.toString(16).padStart(2, "0")}</span>`;
+        }).join(" ");
+        lines.push(`<span class="memory-line">${hex(result.address + i)}  ${cells}</span>`);
+      }
+      ui.memoryOutput.innerHTML = lines.join("\n");
     }
 
     function modeNumber(mode) {
@@ -785,6 +896,7 @@
         const waitMs = Math.max(0, Math.min(600000, Number(arguments[0]?.waitMs ?? arguments[0]?.ms ?? 0)));
         if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
+        if (native) syncNativeBreakStatus(native);
         return { ready: state.ready, paused: state.paused, running: state.running, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
       },
       async loadRomFile() {
@@ -869,17 +981,15 @@
         if (bytes) {
           const ptr = state.fns.stateGetPointer(bytes.length);
           state.module.HEAPU8.set(bytes, ptr);
-          if (params.resetBefore !== false) state.fns.reset();
           state.fns.loadStateFromBuffer(bytes.length);
         } else {
           const size = state.fns.stateGetSize();
-          if (params.resetBefore !== false) state.fns.reset();
           state.fns.loadStateFromBuffer(size);
         }
         state.frame = 0;
         drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
-        return { ok: true, paused: state.paused, reset: true };
+        return { ok: true, paused: state.paused, reset: false };
       },
       async importStateFile(params = {}) {
         ensureReady();
@@ -887,7 +997,6 @@
         const wasPaused = state.paused;
         const ptr = state.fns.stateGetPointer(bytes.length);
         state.module.HEAPU8.set(bytes, ptr);
-        if (params.resetBefore !== false) state.fns.reset();
         const ret = state.fns.loadStateFromBuffer(bytes.length);
         state.frame = 0;
         drawFrame();
@@ -915,7 +1024,6 @@
         const wasPaused = state.paused;
         const ptr = state.fns.stateGetPointer(bytes.length);
         state.module.HEAPU8.set(bytes, ptr);
-        if (params.resetBefore !== false) state.fns.reset();
         const ret = state.fns.loadStateFromBuffer(bytes.length);
         state.frame = 0;
         drawFrame();
@@ -929,8 +1037,8 @@
         return result;
       },
       async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
-      async resume() { ensureReady(); state.paused = false; state.running = true; state.fns.pauseEmu(0); updateStatus(); return { ok: true }; },
-      async reset() { ensureReady(); state.fns.reset(); state.frame = 0; return { ok: true }; },
+      async resume() { ensureReady(); state.breakLabel = ""; state.paused = false; state.running = true; state.fns.dbgClearBreakStatus(); state.fns.pauseEmu(0); updateStatus(); return { ok: true }; },
+      async reset() { ensureReady(); state.breakLabel = ""; state.fns.dbgClearBreakStatus(); state.fns.reset(); state.frame = 0; return { ok: true }; },
       async setSpeed(params) { state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1))); ui.speedSelect.value = String(state.speed); updateStatus(); return { speed: state.speed }; },
       async stepFrames(params) {
         ensureReady();
@@ -938,21 +1046,24 @@
         const wasPaused = state.paused;
         state.fns.pauseEmu(0);
         applyFreezes();
+        let ran = 0;
         if (state.touch.active) {
           for (let i = 0; i < frames; i++) {
-            state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y);
+            ran++;
+            if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
           }
         } else {
-          state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
         }
         applyFreezes();
-        state.frame += frames;
+        state.frame += ran;
         drawFrame();
-        pumpAudio(frames);
-        if (wasPaused) state.fns.pauseEmu(1);
-        state.paused = wasPaused;
+        pumpAudio(ran);
+        if (ran < frames) syncNativeBreakStatus();
+        if (wasPaused || ran < frames) state.fns.pauseEmu(1);
+        state.paused = wasPaused || ran < frames;
         updateStatus();
-        return { frames };
+        return { frames: ran, requested: frames, paused: state.paused };
       },
       async setRenderEnabled(params) { state.render = !!params.enabled; ui.renderToggle.checked = state.render; return { render: state.render }; },
       async setAudio(params) {
@@ -1006,6 +1117,21 @@
           lines.push(`${hex(addr + i)}  ${bytes.slice(i, i + 16).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
         }
         return { address: addr, bytes, text: lines.join("\n") };
+      },
+      async injectMemoryFile(params = {}) {
+        ensureReady();
+        const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
+        const { file, bytes } = params.bytes
+          ? { file: { name: params.name || "api-bytes" }, bytes: new Uint8Array(params.bytes) }
+          : ui.memoryInjectFile.files && ui.memoryInjectFile.files[0]
+            ? await readFileFromInput(ui.memoryInjectFile)
+            : await openPicker(ui.memoryInjectFile);
+        for (let i = 0; i < bytes.length; i++) state.fns.dbgWrite8(cpuIndex(params.cpu), addr + i, bytes[i]);
+        log(`memory injected: ${file.name} -> ${hex(addr)} (${bytes.length} bytes)`);
+        const visibleStart = parseAddress(ui.memoryAddress.value, 0, params.cpu);
+        const visibleLength = Number(ui.memoryLength.value);
+        if (addr >= visibleStart && addr < visibleStart + visibleLength) renderMemoryDump(await commands.dumpMemory({ cpu: params.cpu }));
+        return { ok: true, address: addr, size: bytes.length, name: file.name };
       },
       async searchMemory(params = {}) {
         ensureReady();
@@ -1085,6 +1211,16 @@
         renderBreakpoints();
         return { id: bp.id, breakpoints: state.breakpoints };
       },
+      async setSpecialBreakpoint(params = {}) {
+        ensureReady();
+        const kindMap = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5, undefined: 5 };
+        const kind = kindMap[String(params.kind)] ?? Number(params.kind);
+        const ret = state.fns.dbgSetSpecialBreakpoint(kind, params.enabled ? 1 : 0);
+        ui.bpDataAbortToggle.checked = params.kind === "dataAbort" ? !!params.enabled : ui.bpDataAbortToggle.checked;
+        ui.bpPrefetchAbortToggle.checked = params.kind === "prefetchAbort" ? !!params.enabled : ui.bpPrefetchAbortToggle.checked;
+        ui.bpUndefinedToggle.checked = (params.kind === "undefinedInstruction" || params.kind === "undefined") ? !!params.enabled : ui.bpUndefinedToggle.checked;
+        return { ok: ret === 0, kind, enabled: !!params.enabled };
+      },
       async listBreakpoints() { return state.breakpoints; },
       async removeBreakpoint(params = {}) {
         ensureReady();
@@ -1097,13 +1233,14 @@
         renderBreakpoints();
         return { ok: true, removed: bp, breakpoints: state.breakpoints };
       },
-      async step(params = {}) { ensureReady(); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); updateStatus(); return { count, pc: getPc(params.cpu) }; },
-      async stepOver(params = {}) { ensureReady(); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); updateStatus(); return { ret, pc: getPc(params.cpu) }; },
+      async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
+      async step(params = {}) { ensureReady(); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { count, pc: getPc(params.cpu), paused: state.paused }; },
+      async stepOver(params = {}) { ensureReady(); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
       async continue() { return commands.resume(); },
-      async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
+      async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
       async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-      async stackTrace(params = {}) { ensureReady(); return { callStack: JSON.parse(state.fns.dbgCallStackJson()), text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-      async callStack() { ensureReady(); return JSON.parse(state.fns.dbgCallStackJson()); },
+      async stackTrace(params = {}) { ensureReady(); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+      async callStack() { ensureReady(); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return callStack; },
       async runUntilReturn(params = {}) {
         ensureReady();
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
@@ -1296,18 +1433,57 @@
     });
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
+    ui.stackRefreshBtn.addEventListener("click", () => runCommand("callStack").catch((e) => log(e.message)));
+    ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
+    ui.callstackBody.addEventListener("click", (e) => {
+      const button = e.target.closest("button[data-jump-address]");
+      if (!button) return;
+      ui.disasmAddress.value = button.dataset.jumpAddress;
+      runCommand("disassemble", { address: button.dataset.jumpAddress }).then((r) => renderDisassembly(r.text)).catch((error) => log(error.message));
+    });
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
     ui.tracePrivilegeToggle.addEventListener("change", () => runCommand("setStackTracePrivilegeCheck", { enabled: ui.tracePrivilegeToggle.checked }).catch((e) => log(e.message)));
-    ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch((e) => log(e.message)));
+    ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then(renderMemoryDump).catch((e) => log(e.message)));
+    ui.memoryOutput.addEventListener("click", (e) => {
+      const cell = e.target.closest(".memory-byte");
+      if (!cell || cell.querySelector("input")) return;
+      const input = document.createElement("input");
+      input.className = "memory-editor mono";
+      input.value = cell.dataset.memoryValue;
+      cell.textContent = "";
+      cell.append(input);
+      input.focus();
+      input.select();
+      let committed = false;
+      const commit = () => {
+        if (committed) return;
+        committed = true;
+        return runCommand("writeMemory", { address: cell.dataset.memoryAddress, value: `0x${input.value}`, size: 1 })
+        .then(() => runCommand("dumpMemory", {}).then(renderMemoryDump))
+        .catch((error) => log(error.message));
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") commit();
+        if (event.key === "Escape") {
+          committed = true;
+          runCommand("dumpMemory", {}).then(renderMemoryDump).catch((error) => log(error.message));
+        }
+      });
+      input.addEventListener("blur", commit, { once: true });
+    });
     ui.searchNewBtn.addEventListener("click", () => runCommand("searchMemory", { refine: false }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
     ui.searchRefineBtn.addEventListener("click", () => runCommand("searchMemory", { refine: true }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
     ui.searchResetBtn.addEventListener("click", () => runCommand("resetMemorySearch").catch((e) => log(e.message)));
-    ui.memoryWriteBtn.addEventListener("click", () => runCommand("writeMemory", { address: ui.memoryAddress.value, value: ui.memoryWriteValue.value, size: Number(ui.memoryWriteSize.value) }).catch((e) => log(e.message)));
+    ui.memoryWriteBtn.addEventListener("click", () => runCommand("writeMemory", { address: ui.memoryAddress.value, value: ui.memoryWriteValue.value, size: Number(ui.memoryWriteSize.value) }).then(() => runCommand("dumpMemory", {}).then(renderMemoryDump)).catch((e) => log(e.message)));
+    ui.memoryInjectBtn.addEventListener("click", () => runCommand("injectMemoryFile", { address: ui.memoryAddress.value }).catch((e) => log(e.message)));
     ui.freezeAddBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, value: ui.freezeValue.value, size: Number(ui.freezeSize.value), enabled: true }).catch((e) => log(e.message)));
     ui.freezeRemoveBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, size: Number(ui.freezeSize.value), enabled: false }).catch((e) => log(e.message)));
     ui.bpAddBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: true }).catch((e) => log(e.message)));
     ui.bpRemoveBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: false }).catch((e) => log(e.message)));
     ui.bpRemoveIdBtn.addEventListener("click", () => runCommand("removeBreakpoint", { id: Number(ui.bpIdSelect.value) }).catch((e) => log(e.message)));
+    ui.bpDataAbortToggle.addEventListener("change", () => runCommand("setSpecialBreakpoint", { kind: "dataAbort", enabled: ui.bpDataAbortToggle.checked }).catch((e) => log(e.message)));
+    ui.bpPrefetchAbortToggle.addEventListener("change", () => runCommand("setSpecialBreakpoint", { kind: "prefetchAbort", enabled: ui.bpPrefetchAbortToggle.checked }).catch((e) => log(e.message)));
+    ui.bpUndefinedToggle.addEventListener("change", () => runCommand("setSpecialBreakpoint", { kind: "undefinedInstruction", enabled: ui.bpUndefinedToggle.checked }).catch((e) => log(e.message)));
     ui.stateSaveBtn.addEventListener("click", () => runCommand("saveState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.stateLoadBtn.addEventListener("click", () => runCommand("loadState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.saveSlotSaveBtn.addEventListener("click", () => runCommand("saveSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
@@ -1335,7 +1511,7 @@
     ui.volumeRange.addEventListener("input", () => { if (state.audioContext) state.audioNextTime = state.audioContext.currentTime; });
 
     setInterval(() => {
-      if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch(() => {});
+      if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then(renderMemoryDump).catch(() => {});
       applyFreezes();
       if (state.ready && state.running && performance.now() - state.lastSaveFlush > 5000) {
         state.lastSaveFlush = performance.now();

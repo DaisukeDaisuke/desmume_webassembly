@@ -38,14 +38,17 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setRegister`: Changes one register with `{ "cpu": "arm9", "register": "r0".."r15"|"pc"|"cpsr", "value": number|string }`.
 - `disassemble`: Uses DeSmuME's ARM/Thumb disassembler and returns address/opcode/mnemonic rows with `{ "cpu": "arm9", "address": number|string, "count": number, "before": number, "mode": "auto"|"arm"|"thumb" }`. `before` dumps a small number of instructions above the address; the current PC row is prefixed with `=>`.
 - `dumpMemory`: Returns a byte array and hex text for `{ "cpu": "arm9", "address": number|string, "length": number }`.
+- `injectMemoryFile`: Opens a file picker and writes the selected local file into emulated memory starting at `{ "cpu": "arm9", "address": number|string }`. Script/API callers may pass `{ "bytes": [0, 1, ...], "name": "patch.bin" }` instead of using the picker.
 - `searchMemory`: Searches memory with `{ "cpu": "arm9"|"arm7", "address": number|string, "length": number, "size": 1|2|4, "condition": "equal"|"notEqual"|"greater"|"less"|"changed"|"unchanged"|"increased"|"decreased", "value": number|string, "refine": boolean, "limit": number }`. Use `refine: true` to filter the previous result set against the new condition.
 - `resetMemorySearch`: Clears the previous memory search snapshot and candidate list so the next search starts from the full range.
 - `writeMemory`: Writes one value with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string }`.
 - `setMemoryFreeze`: Adds or removes a repeated memory write with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string, "enabled": boolean }`.
 - `listMemoryFreezes`: Returns the current repeated memory writes used by Memory Freeze.
-- `setBreakpoint`: Adds or removes execution/read/write breakpoints with `{ "cpu": "arm9", "type": "exec"|"read"|"write", "address": number|string, "enabled": boolean }`. Addresses without `0x`, such as `20cb6c4`, are treated as hexadecimal addresses.
+- `setBreakpoint`: Adds or removes execution/read/write breakpoints with `{ "cpu": "arm9", "type": "exec"|"read"|"write", "address": number|string, "enabled": boolean }`. Addresses without `0x`, such as `20cb6c4`, are treated as hexadecimal addresses. Execution breakpoints stop before the matched instruction; read/write breakpoints stop the emulator as soon as the native memory hook observes the access. Debug memory viewer reads do not trigger memory breakpoints.
+- `setSpecialBreakpoint`: Enables exception breakpoints with `{ "kind": "dataAbort"|"prefetchAbort"|"undefinedInstruction", "enabled": boolean }`. These stop the emulator and preserve the recorded call stack near the exception source; they do not destroy the emulator instance.
 - `listBreakpoints`: Returns the browser-side breakpoint list used for UI markers. Each item has an `id` for deletion.
 - `removeBreakpoint`: Removes one breakpoint by `{ "id": number }`.
+- `clearBreakStatus`: Clears the last breakpoint hit shown by `status.native.lastBreak`.
 - `step`: Runs `{ "count": N }` CPU instructions through `armcpu_exec` for ARM9 or ARM7.
 - `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping.
 - `continue`: Resumes from a debugger stop.
