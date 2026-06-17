@@ -44,6 +44,8 @@ emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
   -I"${SRC_DIR}/libretro-common/include" \
   -O3 \
   -std=c++17 \
+  -include algorithm \
+  -include cassert \
   -sWASM=1 \
   -sSINGLE_FILE=1 \
   -sALLOW_MEMORY_GROWTH=1 \
