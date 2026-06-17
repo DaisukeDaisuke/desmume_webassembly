@@ -33,6 +33,7 @@ static int romLen = 0;
 static s16 audioBuffer[16384 * 2];
 static int samplesRead = 0;
 static int samplesDesired = 0;
+volatile bool execute = true;
 static bool paused = true;
 static bool debuggerEnabled = true;
 static bool traceEnabled = false;
