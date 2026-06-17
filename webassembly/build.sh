@@ -28,6 +28,7 @@ mapfile -t CORE_CPP < <(
     ! -path "*/frontend/*" \
     ! -path "*/gdbstub/*" \
     ! -path "*/metaspu/*" \
+    ! -path "*/utils/arm_jit/*" \
     ! -path "*/utils/AsmJit/*" \
     ! -name "*_AVX*.cpp" \
     ! -name "*_SSE*.cpp" \
