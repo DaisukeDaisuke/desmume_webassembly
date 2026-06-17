@@ -46,9 +46,9 @@ emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
   -I"${SRC_DIR}/utils/tinyxml" \
   -I"${SRC_DIR}/utils/libfat" \
   -I"${SRC_DIR}/libretro-common/include" \
+  -I"${ROOT_DIR}/webassembly/include" \
   -O3 \
   -std=c++17 \
-  -DDESMUME_COCOA \
   -include algorithm \
   -include cassert \
   -sWASM=1 \
