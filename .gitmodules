@@ -1,0 +1,4 @@
+[submodule "old/desmume"]
+	path = old/desmume
+	url = git@github.com:DaisukeDaisukeForks/desmume.git
+	branch = webassembly

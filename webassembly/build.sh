@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC_DIR="${ROOT_DIR}/old/desmume/desmume/src"
+OUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/public}"
+
+mkdir -p "${OUT_DIR}"
+
+mapfile -t CORE_CPP < <(
+  find "${SRC_DIR}" -type f -name "*.cpp" \
+    ! -path "*/frontend/*" \
+    ! -path "*/gdbstub/*" \
+    ! -path "*/utils/AsmJit/*" \
+    ! -name "OGLRender*.cpp" \
+    ! -name "ogl_collector.cpp" \
+    ! -name "lua-engine.cpp" \
+    ! -name "movie.cpp" \
+    | sort
+)
+
+emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
+  -I"${SRC_DIR}" \
+  -I"${SRC_DIR}/addons" \
+  -I"${SRC_DIR}/utils" \
+  -I"${SRC_DIR}/utils/tinyxml" \
+  -I"${SRC_DIR}/utils/libfat" \
+  -O3 \
+  -std=c++17 \
+  -sWASM=1 \
+  -sSINGLE_FILE=1 \
+  -sALLOW_MEMORY_GROWTH=1 \
+  -sINITIAL_MEMORY=268435456 \
+  -sMAXIMUM_MEMORY=2147483648 \
+  -sMODULARIZE=1 \
+  -sEXPORT_NAME=CreateDesmumeModule \
+  -sENVIRONMENT=web,worker \
+  -sEXPORTED_RUNTIME_METHODS='["FS","HEAPU8","HEAPU16","HEAPU32","HEAP32","ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+  -sEXPORTED_FUNCTIONS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_runFrames","_fillAudioBuffer","_getSymbol","_setSampleRate","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_stateGetSize","_stateGetPointer","_saveStateToBuffer","_loadStateFromBuffer","_zlibCompress","_zlibDecompress","_pauseEmu","_isPaused","_debuggerSetEnabled","_traceSetEnabled","_dbgGetReg","_dbgSetReg","_dbgRead8","_dbgRead16","_dbgRead32","_dbgWrite8","_dbgWrite16","_dbgWrite32","_dbgDumpMemory","_dbgSetExecBreakpoint","_dbgSetReadBreakpoint","_dbgSetWriteBreakpoint","_dbgStep","_dbgStepOver","_dbgGetStatusJson","_dbgDisassemble","_dbgStackTrace","_chtGetList","_chtAddItem","_utilStrLen","_emuSetOpt"]' \
+  -lz \
+  -o "${OUT_DIR}/desmume.js"
+
+cp "${ROOT_DIR}/old/coi-serviceworker/coi-serviceworker.js" "${OUT_DIR}/coi-serviceworker.js"

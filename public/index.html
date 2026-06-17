@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeSmuME Web Debugger</title>
+  <script src="coi-serviceworker.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bench: #0b0d0f;
+      --panel: #111417;
+      --panel-2: #15191d;
+      --panel-3: #1a2025;
+      --trace: #7cff9b;
+      --amber: #f0b35a;
+      --fault: #ff6b6b;
+      --solder: #c7d0d7;
+      --muted: #7f8b94;
+      --line: rgba(199, 208, 215, 0.16);
+      --line-soft: rgba(199, 208, 215, 0.08);
+      --focus: rgba(124, 255, 155, 0.42);
+      --radius: 6px;
+      --mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bench); color: var(--solder); font-family: var(--sans); }
+    body { overflow: hidden; }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    button, .file-button {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: var(--radius);
+      min-height: 32px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover, .file-button:hover { border-color: rgba(124, 255, 155, 0.42); background: var(--panel-3); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    input, select, textarea {
+      background: #0d1013;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      min-height: 32px;
+      padding: 6px 8px;
+    }
+    textarea { resize: vertical; min-height: 92px; }
+    label { color: var(--muted); font-size: 12px; display: grid; gap: 4px; }
+    .app { height: 100vh; display: grid; grid-template-rows: 48px 1fr; }
+    .topbar {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bench);
+    }
+    .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .brand strong { color: #eff7f0; letter-spacing: 0; }
+    .brand span, .status-strip span { color: var(--muted); font: 12px var(--mono); }
+    .status-strip { display: flex; gap: 12px; min-width: 0; overflow: hidden; }
+    .status-strip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 42vw) minmax(360px, 1fr) 360px;
+    }
+    .pane { min-height: 0; border-right: 1px solid var(--line); background: var(--bench); overflow: auto; }
+    .pane:last-child { border-right: 0; }
+    .section { padding: 12px; border-bottom: 1px solid var(--line-soft); }
+    .section h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: #edf3ef; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .grid { display: grid; gap: 8px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .stage-wrap { display: grid; place-items: start center; padding: 12px; min-height: 0; }
+    .screen-shell {
+      border: 1px solid var(--line);
+      background: #050607;
+      border-radius: var(--radius);
+      padding: 8px;
+      transform-origin: top center;
+    }
+    canvas { display: block; width: 256px; height: 384px; image-rendering: pixelated; background: #030303; }
+    .pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .pad button[data-down="true"] { color: var(--bench); background: var(--trace); border-color: var(--trace); }
+    .mono { font-family: var(--mono); }
+    .tiny { color: var(--muted); font-size: 12px; }
+    .led { width: 8px; height: 8px; border-radius: 50%; background: var(--fault); display: inline-block; }
+    .led.ready { background: var(--trace); }
+    .led.paused { background: var(--amber); }
+    .registers {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px 10px;
+      font: 12px var(--mono);
+    }
+    .registers div { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line-soft); padding: 3px 0; }
+    pre {
+      margin: 0;
+      padding: 8px;
+      min-height: 96px;
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #090b0d;
+      font: 12px/1.45 var(--mono);
+      white-space: pre-wrap;
+    }
+    .breakpoint-line { color: var(--fault); }
+    .hidden-input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+    .switch { display: flex; align-items: center; gap: 8px; min-height: 32px; color: var(--solder); }
+    .switch input { min-height: 0; }
+    .mcp-command { grid-template-columns: minmax(0, 1fr) auto; }
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; }
+      .workspace { grid-template-columns: 1fr; }
+      .pane { border-right: 0; border-bottom: 1px solid var(--line); }
+      .topbar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <strong>DeSmuME Web Debugger</strong>
+        <span><i id="ready-led" class="led"></i> <span id="ready-text">wasm 未読込</span></span>
+      </div>
+      <div class="status-strip">
+        <span id="frame-status">frame 0</span>
+        <span id="pc-status">arm9 pc --</span>
+        <span id="speed-status">speed 1.00x</span>
+        <span id="storage-status">state storage idle</span>
+      </div>
+      <div class="row">
+        <button id="pause-btn" type="button">Pause</button>
+        <button id="resume-btn" type="button">Run</button>
+        <button id="step-frame-btn" type="button">+1F</button>
+        <button id="reset-btn" type="button">Reset</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="pane">
+        <div class="stage-wrap">
+          <div id="screen-shell" class="screen-shell">
+            <canvas id="screen" width="256" height="384"></canvas>
+          </div>
+        </div>
+        <div class="section">
+          <h2>Files</h2>
+          <div class="row">
+            <label class="file-button">ROM<input id="rom-file" class="hidden-input" type="file" accept=".nds,.ids"></label>
+            <label class="file-button">Save In<input id="save-file" class="hidden-input" type="file" accept=".sav,.dsv"></label>
+            <button id="save-export-btn" type="button">Save Out</button>
+            <label class="file-button">State In<input id="state-file" class="hidden-input" type="file" accept=".dst,.ds*"></label>
+            <button id="state-export-btn" type="button">State Out</button>
+          </div>
+        </div>
+        <div class="section">
+          <h2>Run Controls</h2>
+          <div class="grid three">
+            <label>Speed<select id="speed-select">
+              <option>0.25</option><option>0.5</option><option selected>1</option><option>1.5</option><option>2</option><option>3</option><option>4</option>
+            </select></label>
+            <label>Scale<select id="scale-select">
+              <option>1</option><option>1.5</option><option selected>2</option><option>2.5</option><option>3</option><option>3.5</option><option>4</option>
+            </select></label>
+            <label>Rotate<select id="rotation-select">
+              <option selected>0</option><option>90</option><option>180</option><option>270</option>
+            </select></label>
+          </div>
+          <div class="row">
+            <label class="switch"><input id="render-toggle" type="checkbox" checked> render</label>
+            <label class="switch"><input id="audio-toggle" type="checkbox"> audio</label>
+            <label>Volume<input id="volume-range" type="range" min="0" max="1" step="0.01" value="0.18"></label>
+            <label>Frames<input id="frames-input" type="number" min="1" max="1000000" value="60"></label>
+            <button id="step-n-btn" type="button">Step N Frames</button>
+          </div>
+        </div>
+        <div class="section">
+          <h2>Input</h2>
+          <div class="pad" id="pad">
+            <button data-button="Up" type="button">Up</button><button data-button="Down" type="button">Down</button><button data-button="Left" type="button">Left</button><button data-button="Right" type="button">Right</button>
+            <button data-button="A" type="button">A</button><button data-button="B" type="button">B</button><button data-button="X" type="button">X</button><button data-button="Y" type="button">Y</button>
+            <button data-button="L" type="button">L</button><button data-button="R" type="button">R</button><button data-button="Start" type="button">Start</button><button data-button="Select" type="button">Select</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="pane">
+        <div class="section">
+          <h2>Debugger</h2>
+          <div class="row">
+            <label>CPU<select id="cpu-select"><option value="arm9">ARM9</option><option value="arm7">ARM7</option></select></label>
+            <button id="refresh-debug-btn" type="button">Refresh</button>
+            <button id="cpu-step-btn" type="button">Step</button>
+            <button id="cpu-step-over-btn" type="button">Step Over</button>
+            <label class="switch"><input id="debug-toggle" type="checkbox" checked> debugger</label>
+            <label class="switch"><input id="trace-toggle" type="checkbox"> stack trace</label>
+          </div>
+          <div id="registers" class="registers" aria-live="polite">
+            <div><span>r0</span><b>--------</b></div><div><span>r1</span><b>--------</b></div>
+            <div><span>r2</span><b>--------</b></div><div><span>r3</span><b>--------</b></div>
+            <div><span>r4</span><b>--------</b></div><div><span>r5</span><b>--------</b></div>
+            <div><span>r6</span><b>--------</b></div><div><span>r7</span><b>--------</b></div>
+            <div><span>r8</span><b>--------</b></div><div><span>r9</span><b>--------</b></div>
+            <div><span>r10</span><b>--------</b></div><div><span>r11</span><b>--------</b></div>
+            <div><span>r12</span><b>--------</b></div><div><span>sp</span><b>--------</b></div>
+            <div><span>lr</span><b>--------</b></div><div><span>pc</span><b>--------</b></div>
+            <div><span>cpsr</span><b>--------</b></div><div><span>spsr</span><b>--------</b></div>
+          </div>
+        </div>
+        <div class="section">
+          <h2>Disassembly</h2>
+          <div class="grid three">
+            <label>Address<input id="disasm-address" class="mono" value="pc"></label>
+            <label>Count<input id="disasm-count" type="number" min="1" max="256" value="24"></label>
+            <label>Mode<select id="disasm-mode"><option>auto</option><option>arm</option><option>thumb</option></select></label>
+          </div>
+          <pre id="disasm-output"></pre>
+        </div>
+        <div class="section">
+          <h2>Memory</h2>
+          <div class="grid three">
+            <label>Address<input id="memory-address" class="mono" value="0x02000000"></label>
+            <label>Length<input id="memory-length" type="number" min="1" max="65536" value="256"></label>
+            <label>Auto<select id="memory-auto"><option value="0">off</option><option value="1">on</option></select></label>
+          </div>
+          <div class="row">
+            <button id="memory-dump-btn" type="button">Dump</button>
+            <label>Write<input id="memory-write-value" class="mono" placeholder="0x00"></label>
+            <select id="memory-write-size"><option value="1">u8</option><option value="2">u16</option><option value="4">u32</option></select>
+            <button id="memory-write-btn" type="button">Write</button>
+          </div>
+          <pre id="memory-output"></pre>
+        </div>
+      </section>
+
+      <aside class="pane">
+        <div class="section">
+          <h2>Breakpoints</h2>
+          <div class="grid">
+            <label>Address<input id="bp-address" class="mono" value="pc"></label>
+            <label>Type<select id="bp-type"><option value="exec">exec</option><option value="read">read</option><option value="write">write</option></select></label>
+          </div>
+          <div class="row">
+            <button id="bp-add-btn" type="button">Add</button>
+            <button id="bp-remove-btn" type="button">Remove</button>
+          </div>
+          <pre id="bp-output"></pre>
+        </div>
+        <div class="section">
+          <h2>State Slots</h2>
+          <div class="row">
+            <label>Slot<input id="state-slot" class="mono" value="dq9-debug"></label>
+            <button id="state-save-btn" type="button">Save</button>
+            <button id="state-load-btn" type="button">Load</button>
+          </div>
+        </div>
+        <div class="section">
+          <h2>WebMCP</h2>
+          <div class="grid mcp-command">
+            <label>Command<input id="mcp-command" class="mono" value="status"></label>
+            <button id="mcp-run-btn" type="button">Run</button>
+          </div>
+          <label>Params JSON<textarea id="mcp-params" class="mono">{}</textarea></label>
+          <pre id="mcp-output"></pre>
+        </div>
+        <div class="section">
+          <h2>Script Injection</h2>
+          <label>Isolated script<textarea id="script-code" class="mono">return await mcp.call("status", {});</textarea></label>
+          <button id="script-run-btn" type="button">Run Script</button>
+          <pre id="script-output"></pre>
+        </div>
+        <div class="section">
+          <h2>Log</h2>
+          <pre id="log-output"></pre>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="desmume.js"></script>
+  <script>
+    const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
+    const state = {
+      module: null,
+      ready: false,
+      running: false,
+      paused: true,
+      render: true,
+      audio: false,
+      speed: 1,
+      scale: 2,
+      rotation: 0,
+      frame: 0,
+      keys: 0,
+      selectedCpu: "arm9",
+      breakpoints: [],
+      keymap: { KeyZ: "A", KeyX: "B", KeyA: "Y", KeyS: "X", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
+      buttons: { A: 0, B: 1, Select: 2, Start: 3, Right: 4, Left: 5, Up: 6, Down: 7, R: 8, L: 9, X: 10, Y: 11 },
+      fns: {},
+      imageData: null,
+      lastTick: performance.now(),
+      frameBudget: 0
+    };
+
+    const apiDescriptions = {
+      status: "現在の停止状態、フレーム、速度、描画/音声/デバッグ設定、PC/CPSRを返します。",
+      loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
+      importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
+      exportSaveFile: "現在のセーブデータをファイルとして保存します。",
+      saveState: "現在のエミュレーター状態を保存し、slot指定時はブラウザストレージにも保存します。",
+      loadState: "保存済みステートを読み込みます。停止中なら停止したまま読み込みます。",
+      importStateFile: "外部ステートファイルを読み込みます。",
+      exportStateFile: "現在のステートをファイルとして保存します。",
+      pause: "エミュレーターを停止します。",
+      resume: "エミュレーターを再開します。",
+      reset: "ロード済みROMをリセットします。",
+      setSpeed: "実行速度を0.25倍から4倍までで指定します。",
+      stepFrames: "指定フレーム数だけ進めます。",
+      setRenderEnabled: "画面描画を有効または無効にします。",
+      setAudio: "音声の有効化と音量を設定します。",
+      setScale: "画面倍率を指定します。",
+      setRotation: "画面回転を指定します。",
+      setInput: "AIまたはUIからDSボタンを押下/解放します。",
+      setKeyBinding: "人間用ホットキー割り当てを変更します。",
+      getRegisters: "ARM9/ARM7のレジスタを取得します。",
+      setRegister: "指定レジスタを書き換えます。",
+      disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
+      dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
+      writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
+      setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
+      listBreakpoints: "現在のブレークポイント一覧を返します。",
+      step: "CPUステップを指定回数実行します。",
+      stepOver: "ステップオーバーを1回実行します。",
+      continue: "デバッグ停止から再開します。",
+      setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
+      stackTrace: "SP付近のスタックワードを取得します。",
+      injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
+      setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
+    };
+
+    function log(message) {
+      const line = `[${new Date().toLocaleTimeString()}] ${message}\n`;
+      ui.logOutput.textContent = (line + ui.logOutput.textContent).slice(0, 12000);
+    }
+
+    function hex(value, width = 8) {
+      const n = Number(value) >>> 0;
+      return "0x" + n.toString(16).padStart(width, "0");
+    }
+
+    function parseNumber(value, fallback = 0) {
+      if (typeof value === "number") return value;
+      if (value === "pc") return getPc();
+      const text = String(value ?? "").trim();
+      if (!text) return fallback;
+      return Number(text.startsWith("0x") ? parseInt(text, 16) : parseInt(text, 10));
+    }
+
+    function cpuIndex(cpu = state.selectedCpu) {
+      return String(cpu).toLowerCase() === "arm7" ? 1 : 0;
+    }
+
+    function ensureReady() {
+      if (!state.ready) throw new Error("wasm is not ready");
+    }
+
+    function wrap(name, ret, args) {
+      state.fns[name] = state.module.cwrap(name, ret, args);
+    }
+
+    async function initWasm() {
+      if (typeof CreateDesmumeModule !== "function") {
+        ui.readyText.textContent = "desmume.js がありません";
+        log("Run webassembly/build.sh first.");
+        return;
+      }
+      window.wasmReady = () => log("native module signaled ready");
+      state.module = await CreateDesmumeModule({ noInitialRun: false });
+      [
+        ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
+        ["runFrames", "number", ["number", "number", "number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
+        ["savGetPointer", "number", ["number"]], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
+        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["pauseEmu", "number", ["number"]],
+        ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
+        ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
+        ["dbgRead8", "number", ["number", "number"]], ["dbgRead16", "number", ["number", "number"]], ["dbgRead32", "number", ["number", "number"]],
+        ["dbgWrite8", "number", ["number", "number", "number"]], ["dbgWrite16", "number", ["number", "number", "number"]],
+        ["dbgWrite32", "number", ["number", "number", "number"]], ["dbgDumpMemory", "number", ["number", "number", "number"]],
+        ["dbgSetExecBreakpoint", "number", ["number", "number", "number"]], ["dbgSetReadBreakpoint", "number", ["number", "number", "number"]],
+        ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgStep", "number", ["number", "number"]],
+        ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
+        ["dbgStackTrace", "string", ["number", "number"]]
+      ].forEach(([name, ret, args]) => wrap(name, ret, args));
+      state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
+      state.ready = true;
+      ui.readyLed.className = "led ready";
+      ui.readyText.textContent = "ready";
+      applyScaleRotation();
+      updateStatus();
+      requestAnimationFrame(tick);
+    }
+
+    function download(name, bytes, type = "application/octet-stream") {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([bytes], { type }));
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    function readFileFromInput(input) {
+      return new Promise((resolve, reject) => {
+        const file = input.files && input.files[0];
+        if (!file) return reject(new Error("file not selected"));
+        file.arrayBuffer().then((buf) => resolve({ file, bytes: new Uint8Array(buf) }), reject);
+      });
+    }
+
+    async function openPicker(input) {
+      input.value = "";
+      input.click();
+      return new Promise((resolve, reject) => {
+        input.onchange = () => readFileFromInput(input).then(resolve, reject);
+      });
+    }
+
+    function getPc(cpu = state.selectedCpu) {
+      ensureReady();
+      return state.fns.dbgGetReg(cpuIndex(cpu), 18) >>> 0;
+    }
+
+    function setKey(button, pressed) {
+      const bit = state.buttons[button];
+      if (bit === undefined) return;
+      if (pressed) state.keys |= (1 << bit);
+      else state.keys &= ~(1 << bit);
+      document.querySelectorAll(`[data-button="${button}"]`).forEach((el) => el.dataset.down = pressed ? "true" : "false");
+    }
+
+    function drawFrame() {
+      if (!state.ready || !state.render) return;
+      const ptr = state.fns.getSymbol(4);
+      if (!ptr) return;
+      const bytes = state.module.HEAPU8.subarray(ptr, ptr + 256 * 384 * 4);
+      state.imageData.data.set(bytes);
+      ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
+    }
+
+    function tick(now) {
+      if (state.ready && state.running && !state.paused) {
+        const elapsed = Math.min(250, now - state.lastTick);
+        state.frameBudget += elapsed * 59.8261 * state.speed / 1000;
+        const frames = Math.min(12, Math.floor(state.frameBudget));
+        if (frames > 0) {
+          state.frameBudget -= frames;
+          state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+          state.frame += frames;
+          drawFrame();
+          updateStatus();
+        }
+      }
+      state.lastTick = now;
+      requestAnimationFrame(tick);
+    }
+
+    function updateStatus() {
+      ui.frameStatus.textContent = `frame ${state.frame}`;
+      ui.speedStatus.textContent = `speed ${state.speed.toFixed(2)}x`;
+      if (state.ready) ui.pcStatus.textContent = `${state.selectedCpu} pc ${hex(getPc())}`;
+      ui.readyLed.className = state.ready ? `led ${state.paused ? "paused" : "ready"}` : "led";
+      ui.readyText.textContent = state.ready ? (state.paused ? "paused" : "running") : ui.readyText.textContent;
+    }
+
+    function getRegisters(cpu = state.selectedCpu) {
+      ensureReady();
+      const idx = cpuIndex(cpu);
+      const names = ["r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12","sp","lr","pc","cpsr","spsr"];
+      const values = {};
+      for (let i = 0; i < names.length; i++) values[names[i]] = state.fns.dbgGetReg(idx, i) >>> 0;
+      return values;
+    }
+
+    function renderRegisters() {
+      const regs = getRegisters();
+      [...ui.registers.querySelectorAll("div")].forEach((row) => {
+        const name = row.querySelector("span").textContent;
+        row.querySelector("b").textContent = hex(regs[name] ?? 0);
+      });
+      return regs;
+    }
+
+    function renderBreakpoints() {
+      ui.bpOutput.textContent = state.breakpoints.map((bp) => `${bp.cpu} ${bp.type} ${hex(bp.address)}`).join("\n") || "no breakpoints";
+    }
+
+    function modeNumber(mode) {
+      return mode === "thumb" ? 1 : mode === "arm" ? 2 : 0;
+    }
+
+    async function idbPut(key, bytes) {
+      const db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open("desmume-web-debugger", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("states");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("states", "readwrite");
+        tx.objectStore("states").put(bytes, key);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+    }
+
+    async function idbGet(key) {
+      const db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open("desmume-web-debugger", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("states");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const value = await new Promise((resolve, reject) => {
+        const tx = db.transaction("states", "readonly");
+        const req = tx.objectStore("states").get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      db.close();
+      return value;
+    }
+
+    const commands = {
+      async status() {
+        const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
+        return { ready: state.ready, paused: state.paused, running: state.running, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, native };
+      },
+      async loadRomFile() {
+        ensureReady();
+        const { file, bytes } = ui.romFile.files && ui.romFile.files[0] ? await readFileFromInput(ui.romFile) : await openPicker(ui.romFile);
+        state.module.FS.writeFile("rom.nds", bytes);
+        const ret = state.fns.loadROM(bytes.length);
+        state.running = ret === 0;
+        state.paused = false;
+        state.frame = 0;
+        log(`ROM loaded: ${file.name} (${bytes.length} bytes)`);
+        return { ok: ret === 0, ret, name: file.name, size: bytes.length };
+      },
+      async importSaveFile() {
+        ensureReady();
+        const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
+        const ptr = state.fns.savGetPointer(bytes.length);
+        state.module.HEAPU8.set(bytes, ptr);
+        log(`save imported: ${file.name}`);
+        return { ok: true, size: bytes.length };
+      },
+      async exportSaveFile() {
+        ensureReady();
+        const size = state.fns.savGetSize();
+        const ptr = state.fns.savGetPointer(0);
+        const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
+        download("desmume-save.sav", bytes);
+        return { ok: true, size };
+      },
+      async saveState(params = {}) {
+        ensureReady();
+        const size = state.fns.saveStateToBuffer();
+        const ptr = state.fns.stateGetPointer(0);
+        const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
+        if (params.slot) {
+          if (bytes.length > 256 * 1024 * 1024) throw new Error("state exceeds 256MB browser storage limit");
+          await idbPut(String(params.slot), bytes);
+          ui.storageStatus.textContent = `state saved ${params.slot}`;
+        }
+        return { ok: true, size };
+      },
+      async loadState(params = {}) {
+        ensureReady();
+        const wasPaused = state.paused;
+        let bytes = null;
+        if (params.slot) bytes = await idbGet(String(params.slot));
+        if (bytes) {
+          const ptr = state.fns.stateGetPointer(bytes.length);
+          state.module.HEAPU8.set(bytes, ptr);
+          state.fns.loadStateFromBuffer(bytes.length);
+        } else {
+          const size = state.fns.stateGetSize();
+          state.fns.loadStateFromBuffer(size);
+        }
+        await commands[wasPaused ? "pause" : "resume"]();
+        return { ok: true, paused: state.paused };
+      },
+      async importStateFile() {
+        ensureReady();
+        const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
+        const wasPaused = state.paused;
+        const ptr = state.fns.stateGetPointer(bytes.length);
+        state.module.HEAPU8.set(bytes, ptr);
+        const ret = state.fns.loadStateFromBuffer(bytes.length);
+        await commands[wasPaused ? "pause" : "resume"]();
+        log(`state imported: ${file.name}`);
+        return { ok: ret === 0, ret, size: bytes.length };
+      },
+      async exportStateFile() {
+        const result = await commands.saveState();
+        const ptr = state.fns.stateGetPointer(0);
+        download("desmume-state.dst", state.module.HEAPU8.slice(ptr, ptr + result.size));
+        return result;
+      },
+      async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
+      async resume() { ensureReady(); state.paused = false; state.running = true; state.fns.pauseEmu(0); updateStatus(); return { ok: true }; },
+      async reset() { ensureReady(); state.fns.reset(); state.frame = 0; return { ok: true }; },
+      async setSpeed(params) { state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1))); ui.speedSelect.value = String(state.speed); updateStatus(); return { speed: state.speed }; },
+      async stepFrames(params) {
+        ensureReady();
+        const frames = Math.max(1, Number(params.frames ?? 1));
+        const wasPaused = state.paused;
+        state.fns.pauseEmu(0);
+        state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+        state.frame += frames;
+        drawFrame();
+        if (wasPaused) state.fns.pauseEmu(1);
+        state.paused = wasPaused;
+        updateStatus();
+        return { frames };
+      },
+      async setRenderEnabled(params) { state.render = !!params.enabled; ui.renderToggle.checked = state.render; return { render: state.render }; },
+      async setAudio(params) { state.audio = !!params.enabled; ui.audioToggle.checked = state.audio; ui.volumeRange.value = Number(params.volume ?? ui.volumeRange.value); return { audio: state.audio, volume: Number(ui.volumeRange.value) }; },
+      async setScale(params) { state.scale = Number(params.scale ?? params.value ?? 2); ui.scaleSelect.value = String(state.scale); applyScaleRotation(); return { scale: state.scale }; },
+      async setRotation(params) { state.rotation = Number(params.rotation ?? params.value ?? 0); ui.rotationSelect.value = String(state.rotation); applyScaleRotation(); return { rotation: state.rotation }; },
+      async setInput(params) { setKey(params.button, !!params.pressed); return { keys: state.keys }; },
+      async setKeyBinding(params) { state.keymap[String(params.key)] = String(params.button); return { keymap: state.keymap }; },
+      async getRegisters(params = {}) { return getRegisters(params.cpu); },
+      async setRegister(params) {
+        ensureReady();
+        const names = { pc: 15, cpsr: 16, spsr: 17 };
+        const reg = names[params.register] ?? Number(String(params.register).replace("r", ""));
+        const ret = state.fns.dbgSetReg(cpuIndex(params.cpu), reg, parseNumber(params.value));
+        renderRegisters();
+        return { ok: ret === 0, ret };
+      },
+      async disassemble(params = {}) {
+        ensureReady();
+        const addr = parseNumber(params.address ?? ui.disasmAddress.value, getPc(params.cpu));
+        const count = Number(params.count ?? ui.disasmCount.value);
+        const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count, modeNumber(params.mode ?? ui.disasmMode.value));
+        return { address: addr, text };
+      },
+      async dumpMemory(params = {}) {
+        ensureReady();
+        const addr = parseNumber(params.address ?? ui.memoryAddress.value);
+        const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
+        const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
+        const bytes = [...state.module.HEAPU8.slice(ptr, ptr + length)];
+        const lines = [];
+        for (let i = 0; i < bytes.length; i += 16) {
+          lines.push(`${hex(addr + i)}  ${bytes.slice(i, i + 16).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+        }
+        return { address: addr, bytes, text: lines.join("\n") };
+      },
+      async writeMemory(params) {
+        ensureReady();
+        const addr = parseNumber(params.address);
+        const value = parseNumber(params.value);
+        const size = Number(params.size ?? 1);
+        const fn = size === 4 ? "dbgWrite32" : size === 2 ? "dbgWrite16" : "dbgWrite8";
+        return { ok: state.fns[fn](cpuIndex(params.cpu), addr, value) === 0 };
+      },
+      async setBreakpoint(params) {
+        ensureReady();
+        const bp = { cpu: String(params.cpu ?? state.selectedCpu), type: String(params.type ?? "exec"), address: parseNumber(params.address), enabled: params.enabled !== false };
+        const fn = bp.type === "read" ? "dbgSetReadBreakpoint" : bp.type === "write" ? "dbgSetWriteBreakpoint" : "dbgSetExecBreakpoint";
+        state.fns[fn](cpuIndex(bp.cpu), bp.address, bp.enabled ? 1 : 0);
+        state.breakpoints = state.breakpoints.filter((x) => !(x.cpu === bp.cpu && x.type === bp.type && x.address === bp.address));
+        if (bp.enabled) state.breakpoints.push(bp);
+        renderBreakpoints();
+        return { breakpoints: state.breakpoints };
+      },
+      async listBreakpoints() { return state.breakpoints; },
+      async step(params = {}) { ensureReady(); return { count: state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)) }; },
+      async stepOver(params = {}) { ensureReady(); return { ret: state.fns.dbgStepOver(cpuIndex(params.cpu)) }; },
+      async continue() { return commands.resume(); },
+      async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
+      async stackTrace(params = {}) { ensureReady(); return { text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+      async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value)); },
+      async setFeatureSet(params = {}) {
+        ui.debugToggle.checked = params.debugger !== false;
+        ui.memoryAuto.value = params.memory === false ? "0" : ui.memoryAuto.value;
+        state.fns.debuggerSetEnabled(ui.debugToggle.checked ? 1 : 0);
+        return { debugger: ui.debugToggle.checked, memoryAuto: ui.memoryAuto.value };
+      }
+    };
+
+    function applyScaleRotation() {
+      ui.screenShell.style.transform = `scale(${state.scale}) rotate(${state.rotation}deg)`;
+      ui.screenShell.style.margin = `${Math.max(0, state.scale - 1) * 200}px 0`;
+    }
+
+    async function runCommand(name, params = {}) {
+      if (!commands[name]) throw new Error(`unknown command: ${name}`);
+      const result = await commands[name](params);
+      updateStatus();
+      return result;
+    }
+
+    function runIsolatedScript(code) {
+      return new Promise((resolve, reject) => {
+        const workerCode = `
+          const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
+          onmessage = async (event) => {
+            const { code } = event.data;
+            const mcp = { call: (command, params) => new Promise((resolve) => {
+              const id = Math.random().toString(36).slice(2);
+              const handler = (reply) => {
+                if (reply.data && reply.data.id === id) {
+                  removeEventListener("message", handler);
+                  resolve(reply.data.result);
+                }
+              };
+              addEventListener("message", handler);
+              postMessage({ type: "call", id, command, params });
+            }) };
+            try {
+              const result = await eval("(async (mcp) => { " + code + "\\n})(mcp)");
+              postMessage({ type: "done", result });
+            } catch (error) {
+              postMessage({ type: "error", error: String(error && error.message || error) });
+            }
+          };
+        `;
+        const worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: "text/javascript" })));
+        const timeout = setTimeout(() => { worker.terminate(); reject(new Error("script timeout")); }, 3000);
+        worker.onmessage = async (event) => {
+          const msg = event.data;
+          if (msg.type === "call") {
+            const result = await runCommand(msg.command, msg.params || {});
+            worker.postMessage({ id: msg.id, result });
+          } else if (msg.type === "done") {
+            clearTimeout(timeout); worker.terminate(); resolve(msg.result);
+          } else if (msg.type === "error") {
+            clearTimeout(timeout); worker.terminate(); reject(new Error(msg.error));
+          }
+        };
+        worker.postMessage({ code });
+      });
+    }
+
+    window.DesmumeMCP = {
+      call: runCommand,
+      list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""]))
+    };
+
+    window.addEventListener("message", async (event) => {
+      const msg = event.data || {};
+      if (msg.type !== "desmume-mcp") return;
+      try {
+        const result = await runCommand(msg.command, msg.params || {});
+        event.source.postMessage({ type: "desmume-mcp-result", id: msg.id, result }, event.origin || "*");
+      } catch (error) {
+        event.source.postMessage({ type: "desmume-mcp-result", id: msg.id, error: String(error.message || error) }, event.origin || "*");
+      }
+    });
+
+    ui.romFile.closest("label").addEventListener("click", () => {});
+    ui.saveExportBtn.addEventListener("click", () => runCommand("exportSaveFile").catch((e) => log(e.message)));
+    ui.stateExportBtn.addEventListener("click", () => runCommand("exportStateFile").catch((e) => log(e.message)));
+    ui.romFile.addEventListener("change", () => runCommand("loadRomFile").catch((e) => log(e.message)));
+    ui.saveFile.addEventListener("change", () => runCommand("importSaveFile").catch((e) => log(e.message)));
+    ui.stateFile.addEventListener("change", () => runCommand("importStateFile").catch((e) => log(e.message)));
+    ui.pauseBtn.addEventListener("click", () => runCommand("pause").catch((e) => log(e.message)));
+    ui.resumeBtn.addEventListener("click", () => runCommand("resume").catch((e) => log(e.message)));
+    ui.resetBtn.addEventListener("click", () => runCommand("reset").catch((e) => log(e.message)));
+    ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).catch((e) => log(e.message)));
+    ui.stepNBtn.addEventListener("click", () => runCommand("stepFrames", { frames: Number(ui.framesInput.value) }).catch((e) => log(e.message)));
+    ui.speedSelect.addEventListener("change", () => runCommand("setSpeed", { speed: Number(ui.speedSelect.value) }).catch((e) => log(e.message)));
+    ui.scaleSelect.addEventListener("change", () => runCommand("setScale", { scale: Number(ui.scaleSelect.value) }).catch((e) => log(e.message)));
+    ui.rotationSelect.addEventListener("change", () => runCommand("setRotation", { rotation: Number(ui.rotationSelect.value) }).catch((e) => log(e.message)));
+    ui.renderToggle.addEventListener("change", () => runCommand("setRenderEnabled", { enabled: ui.renderToggle.checked }).catch((e) => log(e.message)));
+    ui.audioToggle.addEventListener("change", () => runCommand("setAudio", { enabled: ui.audioToggle.checked, volume: Number(ui.volumeRange.value) }).catch((e) => log(e.message)));
+    ui.cpuSelect.addEventListener("change", () => { state.selectedCpu = ui.cpuSelect.value; renderRegisters(); updateStatus(); });
+    ui.refreshDebugBtn.addEventListener("click", () => {
+      try {
+        renderRegisters();
+        runCommand("disassemble", {}).then((r) => ui.disasmOutput.textContent = r.text);
+      } catch (e) { log(e.message); }
+    });
+    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(renderRegisters).catch((e) => log(e.message)));
+    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(renderRegisters).catch((e) => log(e.message)));
+    ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
+    ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch((e) => log(e.message)));
+    ui.memoryWriteBtn.addEventListener("click", () => runCommand("writeMemory", { address: ui.memoryAddress.value, value: ui.memoryWriteValue.value, size: Number(ui.memoryWriteSize.value) }).catch((e) => log(e.message)));
+    ui.bpAddBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: true }).catch((e) => log(e.message)));
+    ui.bpRemoveBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: false }).catch((e) => log(e.message)));
+    ui.stateSaveBtn.addEventListener("click", () => runCommand("saveState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.stateLoadBtn.addEventListener("click", () => runCommand("loadState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.mcpRunBtn.addEventListener("click", () => {
+      let params = {};
+      try { params = JSON.parse(ui.mcpParams.value || "{}"); } catch (e) { ui.mcpOutput.textContent = e.message; return; }
+      runCommand(ui.mcpCommand.value, params).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
+    });
+    ui.scriptRunBtn.addEventListener("click", () => runCommand("injectScript", { code: ui.scriptCode.value }).then((r) => ui.scriptOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.scriptOutput.textContent = e.message));
+
+    ui.pad.addEventListener("pointerdown", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, true); });
+    ui.pad.addEventListener("pointerup", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, false); });
+    ui.pad.addEventListener("pointerleave", () => Object.keys(state.buttons).forEach((button) => setKey(button, false)));
+    window.addEventListener("keydown", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], true); } });
+    window.addEventListener("keyup", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], false); } });
+
+    setInterval(() => {
+      if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch(() => {});
+    }, 750);
+
+    renderBreakpoints();
+    initWasm().catch((error) => log(error.stack || error.message));
+  </script>
+</body>
+</html>
