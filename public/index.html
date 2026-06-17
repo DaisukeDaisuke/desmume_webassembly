@@ -615,6 +615,18 @@
       return ret;
     }
 
+    function unlinkWasmFile(path) {
+      try { state.module.FS.unlink(path); } catch (_) {}
+    }
+
+    function writeSaveForRom(name, bytes) {
+      unlinkWasmFile("rom.dsv");
+      unlinkWasmFile("rom.sav");
+      const path = String(name).toLowerCase().endsWith(".dsv") ? "rom.dsv" : "rom.sav";
+      state.module.FS.writeFile(path, bytes);
+      return path;
+    }
+
     async function openPicker(input) {
       input.value = "";
       input.click();
@@ -955,15 +967,15 @@
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
         const runState = pauseForFileLoad();
         try {
-          state.module.FS.writeFile("import.sav", bytes);
-          const ret = state.fns.savImportFromFile(bytes.length);
+          const savePath = writeSaveForRom(file.name, bytes);
+          let ret = 0;
           if (ret === 0) {
             await idbPut(`save:${ui.stateSlot.value}`, bytes);
             await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
-            await reloadSelectedRom();
+            ret = await reloadSelectedRom();
           }
-          log(`save imported and ROM reloaded: ${file.name}`);
-          return { ok: ret === 0, ret, size: bytes.length, reset: false, reloaded: ret === 0 };
+          log(`save imported via ${savePath} and ROM reloaded: ${file.name}`);
+          return { ok: ret === 0, ret, size: bytes.length, reset: false, reloaded: ret === 0, path: savePath };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -994,14 +1006,14 @@
         if (!bytes) throw new Error(`save slot not found: ${slot}`);
         const runState = pauseForFileLoad();
         try {
-          state.module.FS.writeFile("import.sav", bytes);
-          const ret = state.fns.savImportFromFile(bytes.length);
+          const savePath = writeSaveForRom(slot, bytes);
+          let ret = 0;
           if (ret === 0) {
-            await reloadSelectedRom();
+            ret = await reloadSelectedRom();
           }
           ui.storageStatus.textContent = `save loaded ${slot}`;
           await recordRecentFile("save", slot, bytes, slot);
-          return { ok: ret === 0, ret, slot, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused };
+          return { ok: ret === 0, ret, slot, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused, path: savePath };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -1068,12 +1080,12 @@
         if (item.kind === "save") {
           const runState = pauseForFileLoad();
           try {
-            state.module.FS.writeFile("import.sav", bytes);
-            const ret = state.fns.savImportFromFile(bytes.length);
+            const savePath = writeSaveForRom(item.name || item.slot || "save.sav", bytes);
+            let ret = 0;
             if (ret === 0) {
-              await reloadSelectedRom();
+              ret = await reloadSelectedRom();
             }
-            return { ok: ret === 0, ret, item, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused };
+            return { ok: ret === 0, ret, item, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused, path: savePath };
           } finally {
             restoreAfterFileLoad(runState);
           }

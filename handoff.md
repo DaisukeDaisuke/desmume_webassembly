@@ -1,10 +1,5 @@
 # Handoff Notes
 
-- gh run watch 27697732925 --repo DaisukeDaisuke/desmume_webassemblyで、actionsが終わるまで待機すること。codespaceでのbuildはそこまで重要ではない。軽い変更ならテストも本番環境でやればいい。
-- ローカルは、ssh認証済み、https未認証、gpg設定済み。gh一部権限使用可能(リポジトリ削除などははく奪済み)。ローカルなので認証情報を変えるな、ghのトークンダンプするな。sshフォルダいじるな。鍵をコンテキストにダンプするな。
-- (gpgでコミットが落ちた場合は、"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe"を常駐無し引数で1回起動し、"C:\Program Files\GnuPG\bin\gpg-agent.exe"を5回同時起動(自動終了)すれば　たいていの場合うまくいく。勝手にgpg再構成するな。)
-
-
 - ファイル書き込みは必ず `apply_patch`。生成物以外をコマンド置換で編集しない。
 - `gh codespace cp` を使う場合は必ず `-e` を付ける。
 - `public/desmume.js` は生成物。基本は `webassembly/wasm-port.cpp` と `public/index.html` を直してビルドで再生成する。
@@ -36,3 +31,4 @@
 - call stack UI は SP ダンプではなく `dbgCallStackJson()` の `frames` を表で出す。callee の Jump は disassembler address に入れるだけで、PC は変更しない。
 - 2026-06-17: save/stateロード中は `loadingFile` で実行ループと自動 `.sav` slot保存を止め、WASM側を `pauseEmu(1)` にしてから import/reset/loadState する。ロード後は直前のrun/pause状態へ戻す。走行中のまま保存領域やsavestateバッファを触ると公開ページでメインスレッドが固まりやすい。
 - 2026-06-17: セーブimport後に `NDS_Reset()` だけを呼ぶとARM9 PCが `0x0f000000` 付近へ飛び、WASMが `table index is out of bounds` で壊れる。セーブ反映は選択済みROMを `loadROM()` し直す経路にする。
+- 2026-06-17: `MMU_new.backupDevice.importData()` をROM実行後に呼んでも同じPC破壊が起きた。Webのセーブ入力は `importData()` を使わず、WASM FSの `rom.sav` / `rom.dsv` を置き換えてから `loadROM()` し直す方式にする。
