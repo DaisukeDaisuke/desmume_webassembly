@@ -15,9 +15,11 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `loadRomFile`: Opens the file picker. The user selects a local `.nds` ROM, which is mounted into the in-browser filesystem and loaded.
 - `importSaveFile`: Opens the file picker for a `.sav`/`.dsv` file, imports it through DeSmuME's backup device, then resets the loaded ROM so the game sees the save from boot.
 - `exportSaveFile`: Exports DeSmuME's current backup device data and downloads it as `desmume-save.sav`.
+- `saveSaveSlot`: Exports the current cartridge save data into a named browser slot. Pass `{ "slot": "name" }`; the UI slot name is used when omitted.
+- `loadSaveSlot`: Loads cartridge save data from a named browser slot, imports it into DeSmuME's backup device, then resets the loaded ROM so the game boots with that save.
 - `saveState`: Serializes the emulator state and stores it in memory. With `{ "slot": "name" }`, also stores it in IndexedDB/local storage when small enough.
-- `loadState`: Resets the loaded ROM, then loads the active in-memory state or a named browser storage slot. Loading while paused keeps the emulator paused.
-- `importStateFile`: Opens a file picker, resets the loaded ROM, then loads an external state file into the emulator.
+- `loadState`: Loads the active in-memory state or a named browser storage slot without rebooting the emulator. Loading while paused keeps the emulator paused.
+- `importStateFile`: Opens a file picker, then loads an external state file into the emulator without rebooting.
 - `exportStateFile`: Downloads the current serialized state as `desmume-state.dst`.
 - `pause`: Pauses emulation.
 - `resume`: Resumes emulation.
@@ -34,6 +36,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setRegister`: Changes one register with `{ "cpu": "arm9", "register": "r0".."r15"|"pc"|"cpsr", "value": number|string }`.
 - `disassemble`: Uses DeSmuME's ARM/Thumb disassembler and returns address/opcode/mnemonic rows with `{ "cpu": "arm9", "address": number|string, "count": number, "mode": "auto"|"arm"|"thumb" }`. The current PC row is prefixed with `=>`.
 - `dumpMemory`: Returns a byte array and hex text for `{ "cpu": "arm9", "address": number|string, "length": number }`.
+- `searchMemory`: Searches memory with `{ "cpu": "arm9"|"arm7", "address": number|string, "length": number, "size": 1|2|4, "condition": "equal"|"notEqual"|"greater"|"less"|"changed"|"unchanged"|"increased"|"decreased", "value": number|string, "refine": boolean, "limit": number }`. Use `refine: true` to filter the previous result set against the new condition.
+- `resetMemorySearch`: Clears the previous memory search snapshot and candidate list so the next search starts from the full range.
 - `writeMemory`: Writes one value with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string }`.
 - `setMemoryFreeze`: Adds or removes a repeated memory write with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string, "enabled": boolean }`.
 - `listMemoryFreezes`: Returns the current repeated memory writes used by Memory Freeze.

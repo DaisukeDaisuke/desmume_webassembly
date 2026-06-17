@@ -266,6 +266,28 @@
           <pre id="memory-output"></pre>
         </div>
         <div class="section">
+          <h2>Memory Search</h2>
+          <div class="grid three">
+            <label>Start<input id="search-address" class="mono" value="0x02000000"></label>
+            <label>Length<input id="search-length" type="number" min="1" max="16777216" value="1048576"></label>
+            <label>Size<select id="search-size"><option value="1">u8</option><option value="2">u16</option><option value="4">u32</option></select></label>
+          </div>
+          <div class="grid three">
+            <label>Condition<select id="search-condition">
+              <option value="equal">equal</option><option value="notEqual">not equal</option><option value="greater">greater</option><option value="less">less</option>
+              <option value="changed">changed</option><option value="unchanged">unchanged</option><option value="increased">increased</option><option value="decreased">decreased</option>
+            </select></label>
+            <label>Value<input id="search-value" class="mono" value="0x00"></label>
+            <label>Limit<input id="search-limit" type="number" min="1" max="10000" value="256"></label>
+          </div>
+          <div class="row">
+            <button id="search-new-btn" type="button">New Search</button>
+            <button id="search-refine-btn" type="button">Refine</button>
+            <button id="search-reset-btn" type="button">Reset Search</button>
+          </div>
+          <pre id="search-output"></pre>
+        </div>
+        <div class="section">
           <h2>Memory Freeze</h2>
           <div class="grid three">
             <label>Address<input id="freeze-address" class="mono" value="0x02000000"></label>
@@ -299,6 +321,26 @@
             <label>Slot<input id="state-slot" class="mono" value="dq9-debug"></label>
             <button id="state-save-btn" type="button">Save</button>
             <button id="state-load-btn" type="button">Load</button>
+          </div>
+          <div class="row">
+            <button id="save-slot-save-btn" type="button">Save .sav Slot</button>
+            <button id="save-slot-load-btn" type="button">Load .sav Slot</button>
+          </div>
+          <p class="tiny">セーブスロットは現在のカートリッジ保存領域をブラウザに保存します。ROMを読み込んだ後にLoad .sav Slotを押すと、そのセーブを使ってリセットします。</p>
+        </div>
+        <div class="section">
+          <h2>Hotkeys</h2>
+          <div class="grid three">
+            <label>Button<select id="hotkey-button">
+              <option>A</option><option>B</option><option>X</option><option>Y</option><option>L</option><option>R</option><option>Start</option><option>Select</option>
+              <option>Up</option><option>Down</option><option>Left</option><option>Right</option>
+            </select></label>
+            <label>Keyboard code<input id="hotkey-code" class="mono" value="KeyX"></label>
+            <label>Current<input id="hotkey-current" class="mono" value="" readonly></label>
+          </div>
+          <div class="row">
+            <button id="hotkey-set-btn" type="button">Set Hotkey</button>
+            <button id="hotkey-refresh-btn" type="button">Refresh</button>
           </div>
         </div>
         <div class="section">
@@ -343,14 +385,16 @@
       selectedCpu: "arm9",
       breakpoints: [],
       freezes: [],
-      keymap: { KeyZ: "A", KeyX: "B", KeyA: "Y", KeyS: "X", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
+      keymap: { KeyX: "A", KeyZ: "B", KeyA: "X", KeyS: "Y", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
       buttons: { A: 0, B: 1, Select: 2, Start: 3, Right: 4, Left: 5, Up: 6, Down: 7, R: 8, L: 9, X: 10, Y: 11 },
       fns: {},
       audioContext: null,
       audioNextTime: 0,
       imageData: null,
       lastTick: performance.now(),
-      frameBudget: 0
+      lastSaveFlush: 0,
+      frameBudget: 0,
+      search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 }
     };
 
     const apiDescriptions = {
@@ -358,6 +402,8 @@
       loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
       importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
       exportSaveFile: "現在のセーブデータをファイルとして保存します。",
+      saveSaveSlot: "現在のカートリッジ保存領域をブラウザの指定スロットに保存します。",
+      loadSaveSlot: "ブラウザの指定スロットからカートリッジ保存領域を読み込み、ROMをリセットして反映します。",
       saveState: "現在のエミュレーター状態を保存し、slot指定時はブラウザストレージにも保存します。",
       loadState: "保存済みステートを読み込みます。停止中なら停止したまま読み込みます。",
       importStateFile: "外部ステートファイルを読み込みます。",
@@ -379,6 +425,8 @@
       setRegister: "指定レジスタを書き換えます。",
       disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
       dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
+      searchMemory: "指定範囲のメモリを値または前回検索との差分条件で検索します。",
+      resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
       writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
       setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
       listBreakpoints: "現在のブレークポイント一覧を返します。",
@@ -432,7 +480,7 @@
       [
         ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
         ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
-        ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", []], ["savExportToFile", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
+        ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
         ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
@@ -450,7 +498,7 @@
       ui.readyText.textContent = "ready";
       applyScaleRotation();
       updateStatus();
-      requestAnimationFrame(tick);
+      scheduleTick();
     }
 
     function download(name, bytes, type = "application/octet-stream") {
@@ -499,17 +547,18 @@
       ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
     }
 
-    function pumpAudio() {
+    function pumpAudio(frames = 1) {
       if (!state.audio || !state.ready) return;
       const AudioCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtor) return;
-      if (!state.audioContext) state.audioContext = new AudioCtor({ sampleRate: 48000 });
+      if (!state.audioContext) state.audioContext = new AudioCtor({ sampleRate: 44100 });
       const ctx = state.audioContext;
-      const sampleCount = state.fns.fillAudioBuffer(1024);
+      const desired = Math.min(8192, Math.max(256, Math.ceil((44100 / 59.8261) * Math.max(1, frames))));
+      const sampleCount = state.fns.fillAudioBuffer(desired);
       if (sampleCount <= 0) return;
       const ptr = state.fns.getSymbol(6);
       const samples = state.module.HEAP16.subarray(ptr >> 1, (ptr >> 1) + sampleCount * 2);
-      const buffer = ctx.createBuffer(2, sampleCount, ctx.sampleRate);
+      const buffer = ctx.createBuffer(2, sampleCount, 44100);
       const volume = Number(ui.volumeRange.value);
       const left = buffer.getChannelData(0);
       const right = buffer.getChannelData(1);
@@ -519,10 +568,11 @@
       }
       const source = ctx.createBufferSource();
       source.buffer = buffer;
+      source.playbackRate.value = state.speed;
       source.connect(ctx.destination);
       state.audioNextTime = Math.max(ctx.currentTime, state.audioNextTime);
       source.start(state.audioNextTime);
-      state.audioNextTime += sampleCount / ctx.sampleRate;
+      state.audioNextTime += sampleCount / (44100 * state.speed);
     }
 
     function applyFreezes() {
@@ -551,12 +601,17 @@
           applyFreezes();
           state.frame += frames;
           drawFrame();
-          pumpAudio();
+          pumpAudio(frames);
           updateStatus();
         }
       }
       state.lastTick = now;
-      requestAnimationFrame(tick);
+      scheduleTick();
+    }
+
+    function scheduleTick() {
+      if (state.running && !state.paused) requestAnimationFrame(tick);
+      else setTimeout(() => requestAnimationFrame(tick), 120);
     }
 
     function updateStatus() {
@@ -593,6 +648,13 @@
       ui.freezeOutput.textContent = state.freezes.map((item) => `${item.cpu} ${hex(item.address)} ${item.size === 4 ? "u32" : item.size === 2 ? "u16" : "u8"} = ${hex(item.value, item.size * 2)}`).join("\n") || "no freezes";
     }
 
+    function renderHotkey() {
+      const button = ui.hotkeyButton.value;
+      const code = Object.entries(state.keymap).find(([, mapped]) => mapped === button)?.[0] || "";
+      ui.hotkeyCurrent.value = code;
+      if (code) ui.hotkeyCode.value = code;
+    }
+
     function renderDisassembly(text) {
       const lines = String(text || "").split("\n").filter(Boolean);
       ui.disasmOutput.innerHTML = lines.map((line) => {
@@ -606,6 +668,23 @@
 
     function modeNumber(mode) {
       return mode === "thumb" ? 1 : mode === "arm" ? 2 : 0;
+    }
+
+    function readSized(bytes, offset, size) {
+      if (size === 4) return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+      if (size === 2) return (bytes[offset] | (bytes[offset + 1] << 8)) >>> 0;
+      return bytes[offset] >>> 0;
+    }
+
+    function matchSearchCondition(condition, current, previous, value, hasPrevious) {
+      if (condition === "changed") return hasPrevious && current !== previous;
+      if (condition === "unchanged") return hasPrevious && current === previous;
+      if (condition === "increased") return hasPrevious && current > previous;
+      if (condition === "decreased") return hasPrevious && current < previous;
+      if (condition === "notEqual") return current !== value;
+      if (condition === "greater") return current > value;
+      if (condition === "less") return current < value;
+      return current === value;
     }
 
     async function idbPut(key, bytes) {
@@ -661,7 +740,8 @@
         ensureReady();
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
         state.module.FS.writeFile("import.sav", bytes);
-        const ret = state.fns.savImportFromFile();
+        const ret = state.fns.savImportFromFile(bytes.length);
+        if (ret === 0) await idbPut(`save:${ui.stateSlot.value}`, bytes);
         state.fns.reset();
         state.frame = 0;
         drawFrame();
@@ -675,6 +755,31 @@
         const bytes = state.module.FS.readFile("export.sav");
         download("desmume-save.sav", bytes);
         return { ok: true, size: bytes.length };
+      },
+      async saveSaveSlot(params = {}) {
+        ensureReady();
+        const slot = String(params.slot ?? ui.stateSlot.value);
+        const ret = state.fns.savExportToFile();
+        if (ret !== 0) throw new Error("save export failed");
+        const bytes = state.module.FS.readFile("export.sav");
+        await idbPut(`save:${slot}`, bytes);
+        ui.storageStatus.textContent = `save saved ${slot}`;
+        return { ok: true, slot, size: bytes.length };
+      },
+      async loadSaveSlot(params = {}) {
+        ensureReady();
+        const slot = String(params.slot ?? ui.stateSlot.value);
+        const bytes = await idbGet(`save:${slot}`);
+        if (!bytes) throw new Error(`save slot not found: ${slot}`);
+        const wasPaused = state.paused;
+        state.module.FS.writeFile("import.sav", bytes);
+        const ret = state.fns.savImportFromFile(bytes.length);
+        state.fns.reset();
+        state.frame = 0;
+        drawFrame();
+        await commands[wasPaused ? "pause" : "resume"]();
+        ui.storageStatus.textContent = `save loaded ${slot}`;
+        return { ok: ret === 0, ret, slot, size: bytes.length, reset: true, paused: state.paused };
       },
       async saveState(params = {}) {
         ensureReady();
@@ -696,11 +801,9 @@
         if (bytes) {
           const ptr = state.fns.stateGetPointer(bytes.length);
           state.module.HEAPU8.set(bytes, ptr);
-          state.fns.reset();
           state.fns.loadStateFromBuffer(bytes.length);
         } else {
           const size = state.fns.stateGetSize();
-          state.fns.reset();
           state.fns.loadStateFromBuffer(size);
         }
         state.frame = 0;
@@ -714,13 +817,12 @@
         const wasPaused = state.paused;
         const ptr = state.fns.stateGetPointer(bytes.length);
         state.module.HEAPU8.set(bytes, ptr);
-        state.fns.reset();
         const ret = state.fns.loadStateFromBuffer(bytes.length);
         state.frame = 0;
         drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
-        log(`state imported and reset: ${file.name}`);
-        return { ok: ret === 0, ret, size: bytes.length, reset: true };
+        log(`state imported: ${file.name}`);
+        return { ok: ret === 0, ret, size: bytes.length, reset: false };
       },
       async exportStateFile() {
         const result = await commands.saveState();
@@ -748,7 +850,7 @@
         applyFreezes();
         state.frame += frames;
         drawFrame();
-        pumpAudio();
+        pumpAudio(frames);
         if (wasPaused) state.fns.pauseEmu(1);
         state.paused = wasPaused;
         updateStatus();
@@ -765,7 +867,16 @@
       async setScale(params) { state.scale = Number(params.scale ?? params.value ?? 2); ui.scaleSelect.value = String(state.scale); applyScaleRotation(); return { scale: state.scale }; },
       async setRotation(params) { state.rotation = Number(params.rotation ?? params.value ?? 0); ui.rotationSelect.value = String(state.rotation); applyScaleRotation(); return { rotation: state.rotation }; },
       async setInput(params) { setKey(params.button, !!params.pressed); return { keys: state.keys }; },
-      async setKeyBinding(params) { state.keymap[String(params.key)] = String(params.button); return { keymap: state.keymap }; },
+      async setKeyBinding(params) {
+        const button = String(params.button);
+        const key = String(params.key);
+        for (const [code, mapped] of Object.entries(state.keymap)) {
+          if (mapped === button || code === key) delete state.keymap[code];
+        }
+        state.keymap[key] = button;
+        renderHotkey();
+        return { keymap: state.keymap };
+      },
       async getRegisters(params = {}) { return getRegisters(params.cpu); },
       async setRegister(params) {
         ensureReady();
@@ -793,6 +904,49 @@
           lines.push(`${hex(addr + i)}  ${bytes.slice(i, i + 16).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
         }
         return { address: addr, bytes, text: lines.join("\n") };
+      },
+      async searchMemory(params = {}) {
+        ensureReady();
+        const addr = parseNumber(params.address ?? ui.searchAddress.value);
+        const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
+        const size = Math.max(1, Math.min(4, Number(params.size ?? ui.searchSize.value)));
+        const condition = String(params.condition ?? ui.searchCondition.value);
+        const value = parseNumber(params.value ?? ui.searchValue.value);
+        const limit = Math.max(1, Math.min(10000, Number(params.limit ?? ui.searchLimit.value)));
+        const refine = params.refine !== false && state.search.snapshot && state.search.address === addr && state.search.length === length && state.search.size === size;
+        const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
+        const current = state.module.HEAPU8.slice(ptr, ptr + length);
+        const previous = state.search.snapshot;
+        const candidates = refine && state.search.addresses ? state.search.addresses : null;
+        const matches = [];
+        const maxOffset = Math.max(0, length - size);
+        const testOffset = (offset) => {
+          const nowValue = readSized(current, offset, size);
+          const oldValue = previous && offset + size <= previous.length ? readSized(previous, offset, size) : 0;
+          if (matchSearchCondition(condition, nowValue, oldValue, value, !!previous)) {
+            matches.push({ address: addr + offset, value: nowValue, previous: previous ? oldValue : null });
+            return matches.length >= limit;
+          }
+          return false;
+        };
+        if (candidates) {
+          for (const address of candidates) {
+            const offset = address - addr;
+            if (offset >= 0 && offset <= maxOffset && testOffset(offset)) break;
+          }
+        } else {
+          for (let offset = 0; offset <= maxOffset; offset += size) {
+            if (testOffset(offset)) break;
+          }
+        }
+        state.search = { snapshot: current, addresses: matches.map((item) => item.address), address: addr, length, size };
+        const text = matches.map((item) => `${hex(item.address)}  ${hex(item.value, size * 2)}${item.previous === null ? "" : `  prev ${hex(item.previous, size * 2)}`}`).join("\n") || "no matches";
+        return { address: addr, length, size, condition, totalShown: matches.length, truncated: matches.length >= limit, matches, text };
+      },
+      async resetMemorySearch() {
+        state.search = { snapshot: null, addresses: null, address: 0, length: 0, size: 1 };
+        ui.searchOutput.textContent = "search reset";
+        return { ok: true };
       },
       async writeMemory(params) {
         ensureReady();
@@ -856,13 +1010,20 @@
 
     function eventToTouch(e) {
       const rect = ui.screenShell.getBoundingClientRect();
-      const sx = Math.min(1, Math.max(0, (e.clientX - rect.left - 8) / Math.max(1, rect.width - 16)));
-      const sy = Math.min(1, Math.max(0, (e.clientY - rect.top - 8) / Math.max(1, rect.height - 16)));
-      let x = sx;
-      let y = sy;
-      if (state.rotation === 90) { x = sy; y = 1 - sx; }
-      else if (state.rotation === 180) { x = 1 - sx; y = 1 - sy; }
-      else if (state.rotation === 270) { x = 1 - sy; y = sx; }
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const canvasW = 256 * state.scale;
+      const canvasH = 384 * state.scale;
+      const radians = -state.rotation * Math.PI / 180;
+      const dx = e.clientX - centerX;
+      const dy = e.clientY - centerY;
+      const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + canvasW / 2;
+      const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + canvasH / 2;
+      const sx = localX / Math.max(1, canvasW);
+      const sy = localY / Math.max(1, canvasH);
+      if (sx < 0 || sx > 1 || sy < 0.5 || sy > 1) return null;
+      const x = sx;
+      const y = (sy - 0.5) * 2;
       return {
         x: Math.round(Math.min(255, Math.max(0, x * 255))),
         y: Math.round(Math.min(191, Math.max(0, y * 191)))
@@ -871,6 +1032,10 @@
 
     function updateTouch(e, active) {
       const pos = eventToTouch(e);
+      if (!pos) {
+        state.touch = { active: false, x: 0, y: 0 };
+        return;
+      }
       state.touch = { active, x: pos.x, y: pos.y };
       if (state.ready && active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
     }
@@ -967,6 +1132,9 @@
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
     ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch((e) => log(e.message)));
+    ui.searchNewBtn.addEventListener("click", () => runCommand("searchMemory", { refine: false }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
+    ui.searchRefineBtn.addEventListener("click", () => runCommand("searchMemory", { refine: true }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
+    ui.searchResetBtn.addEventListener("click", () => runCommand("resetMemorySearch").catch((e) => log(e.message)));
     ui.memoryWriteBtn.addEventListener("click", () => runCommand("writeMemory", { address: ui.memoryAddress.value, value: ui.memoryWriteValue.value, size: Number(ui.memoryWriteSize.value) }).catch((e) => log(e.message)));
     ui.freezeAddBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, value: ui.freezeValue.value, size: Number(ui.freezeSize.value), enabled: true }).catch((e) => log(e.message)));
     ui.freezeRemoveBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, size: Number(ui.freezeSize.value), enabled: false }).catch((e) => log(e.message)));
@@ -974,6 +1142,11 @@
     ui.bpRemoveBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: false }).catch((e) => log(e.message)));
     ui.stateSaveBtn.addEventListener("click", () => runCommand("saveState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.stateLoadBtn.addEventListener("click", () => runCommand("loadState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.saveSlotSaveBtn.addEventListener("click", () => runCommand("saveSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.saveSlotLoadBtn.addEventListener("click", () => runCommand("loadSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.hotkeyButton.addEventListener("change", renderHotkey);
+    ui.hotkeyRefreshBtn.addEventListener("click", renderHotkey);
+    ui.hotkeySetBtn.addEventListener("click", () => runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key: ui.hotkeyCode.value }).catch((e) => log(e.message)));
     ui.mcpRunBtn.addEventListener("click", () => {
       let params = {};
       try { params = JSON.parse(ui.mcpParams.value || "{}"); } catch (e) { ui.mcpOutput.textContent = e.message; return; }
@@ -995,10 +1168,15 @@
     setInterval(() => {
       if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch(() => {});
       applyFreezes();
+      if (state.ready && state.running && performance.now() - state.lastSaveFlush > 5000) {
+        state.lastSaveFlush = performance.now();
+        commands.saveSaveSlot({ slot: ui.stateSlot.value }).catch(() => {});
+      }
     }, 750);
 
     renderBreakpoints();
     renderFreezes();
+    renderHotkey();
     initWasm().catch((error) => log(error.stack || error.message));
   </script>
 </body>

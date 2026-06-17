@@ -185,11 +185,11 @@ void *savGetPointer(int desiredSize) {
 }
 
 int savUpdateChangeFlag() {
-  return 1;
+  return 0;
 }
 
-int savImportFromFile() {
-  bool ok = MMU_new.backupDevice.importData("import.sav");
+int savImportFromFile(int forceSize) {
+  bool ok = MMU_new.backupDevice.importData("import.sav", forceSize > 0 ? (u32)forceSize : 0);
   return ok ? 0 : -1;
 }
 

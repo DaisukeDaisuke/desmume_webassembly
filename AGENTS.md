@@ -371,6 +371,14 @@ gh codespace delete -c <name>
 gh codespace create --idle-timeout "15m" -r DaisukeDaisuke/desmume_webassembly -b main --machine basicLinux32gb 
 ```
 
+
+# important
+
+To avoid the gh codespace cp bug, be sure to use the -e flag.
+```
+gh codespace cp ./webassembly/wasm-port.cpp remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cpp -c curly-parakeet-v6797wvg9vw2wvr9 -e
+```
+
 ---
 
 ## チェックリスト（タスク実行前）
@@ -462,6 +470,9 @@ You can evaluate any JavaScript code and test it with the emulator.
 
 - The pioneering implementation can be found at old/desmume-wasm/desmume/wasm-port/main.cpp
 
+# deployment
+remote url: https://daisukedaisuke.github.io/desmume_webassembly/
+
 
 # Project Overview
 old/desmumeについて、このフォークをサブモジュール化してから、desmumeウェブ版を実装してほしい。本家同様フルデバック対応、webmcpによるAIデバック対応。
@@ -499,6 +510,7 @@ AIによるありとあらゆる操作の実現
 - 実装はまとめてせず、試しながら実装する。ただしchrome mcpはめちゃくちゃトークン食うので注意すること。
 - webassembly jsはシングルファイルにすること。ファイル分けすること。
 - main.cppは関係ない。
+- read handoff.md and Addend to the handoff.md
 
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file
