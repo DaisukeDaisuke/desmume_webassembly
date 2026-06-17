@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${ROOT_DIR}/old/desmume/desmume/src"
 OUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/public}"
+export EM_CACHE="${EM_CACHE:-${ROOT_DIR}/.emscripten_cache}"
 
 mkdir -p "${OUT_DIR}"
+mkdir -p "${EM_CACHE}"
 
 mapfile -t CORE_CPP < <(
   find "${SRC_DIR}" -type f -name "*.cpp" \
