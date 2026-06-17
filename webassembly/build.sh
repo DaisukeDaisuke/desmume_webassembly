@@ -5,10 +5,23 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${ROOT_DIR}/old/desmume/desmume/src"
 OUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/public}"
 export EM_CACHE="${EM_CACHE:-${ROOT_DIR}/.emscripten_cache}"
-export EM_FROZEN_CACHE=0
+export EM_CONFIG="${EM_CONFIG:-${ROOT_DIR}/.emscripten_config}"
 
 mkdir -p "${OUT_DIR}"
 mkdir -p "${EM_CACHE}"
+if [ ! -f "${EM_CONFIG}" ]; then
+  cat > "${EM_CONFIG}" <<'CONFIG'
+EMSCRIPTEN_ROOT = '/usr/share/emscripten'
+LLVM_ROOT = '/usr/bin'
+BINARYEN_ROOT = '/usr'
+NODE_JS = '/usr/bin/node'
+JAVA = 'java'
+FROZEN_CACHE = False
+CLOSURE_COMPILER = 'closure-compiler'
+LLVM_ADD_VERSION = '15'
+CLANG_ADD_VERSION = '15'
+CONFIG
+fi
 
 mapfile -t CORE_CPP < <(
   find "${SRC_DIR}" -type f -name "*.cpp" \
