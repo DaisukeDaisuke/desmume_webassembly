@@ -27,6 +27,7 @@ mapfile -t CORE_CPP < <(
   find "${SRC_DIR}" -type f -name "*.cpp" \
     ! -path "*/frontend/*" \
     ! -path "*/gdbstub/*" \
+    ! -path "*/metaspu/*" \
     ! -path "*/utils/AsmJit/*" \
     ! -name "*_AVX*.cpp" \
     ! -name "*_SSE*.cpp" \
