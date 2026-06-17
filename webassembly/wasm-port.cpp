@@ -203,9 +203,13 @@ int reset() {
 
 int loadROM(int len) {
   romLen = len;
+  const bool hadRom = romLoaded;
   romLoaded = false;
   paused = true;
   emuLastError = -2;
+  if (hadRom) {
+    NDS_FreeROM();
+  }
   if (!NDS_LoadROM("rom.nds")) return emuLastError;
   SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
   SPU_SetVolume(35);

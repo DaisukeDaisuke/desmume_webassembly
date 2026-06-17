@@ -48,3 +48,4 @@
 - 2026-06-18: Chrome MCPで実ROMを読むため、同一origin/CORS URLからROMを読む `loadRomUrl` を追加した。ローカル検証では一時HTTPサーバーで `D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds` を `/dq9.nds` として返し、ROM本文をチャットに出さない。
 - 2026-06-18: `savGetPointer(desiredSize)` は `EMUFILE_MEMORY::truncate()` を呼ばない。要求サイズが現セーブバッファより大きい場合は `NULL` を返し、書き込みは `savImportFromFile()` 経由に限定する。
 - 2026-06-18: Chrome MCP検証用に `loadStateBytes` / `loadStateUrl` を追加した。`D:\software\state.dst` を一時PHPルーターで `/state.dst` として返し、ROMロード→stateロード→20F実行→Resetボタンクリックを確認。`table index is out of bounds` は出ず、reset後も `romLoaded=true`、PCは0ではない。
+- 2026-06-18: `NDS_LoadROM()` は内部で `NDS_Reset()` するが既存ROMの `gameInfo.closeROM()` はしない。WASM `loadROM()` はロード済みROMがある場合、再ロード前に `NDS_FreeROM()` を呼んで古いROM/slot/save関連状態を閉じる。
