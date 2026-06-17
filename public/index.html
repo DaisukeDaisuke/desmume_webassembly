@@ -228,6 +228,7 @@
             <button id="cpu-step-over-btn" type="button">Step Over</button>
             <label class="switch"><input id="debug-toggle" type="checkbox" checked> debugger</label>
             <label class="switch"><input id="trace-toggle" type="checkbox"> stack trace</label>
+            <label class="switch"><input id="trace-privilege-toggle" type="checkbox" checked> skip IRQ</label>
           </div>
           <div id="registers" class="registers" aria-live="polite">
             <div><span>r0</span><b>--------</b></div><div><span>r1</span><b>--------</b></div>
@@ -246,6 +247,9 @@
           <div class="grid three">
             <label>Address<input id="disasm-address" class="mono" value="pc"></label>
             <label>Count<input id="disasm-count" type="number" min="1" max="256" value="24"></label>
+            <label>Before<input id="disasm-before" type="number" min="0" max="64" value="6"></label>
+          </div>
+          <div class="grid">
             <label>Mode<select id="disasm-mode"><option>auto</option><option>arm</option><option>thumb</option></select></label>
           </div>
           <pre id="disasm-output"></pre>
@@ -313,6 +317,10 @@
             <button id="bp-add-btn" type="button">Add</button>
             <button id="bp-remove-btn" type="button">Remove</button>
           </div>
+          <div class="grid">
+            <label>Breakpoint ID<select id="bp-id-select"><option value="">none</option></select></label>
+            <button id="bp-remove-id-btn" type="button">Remove ID</button>
+          </div>
           <pre id="bp-output"></pre>
         </div>
         <div class="section">
@@ -325,6 +333,10 @@
           <div class="row">
             <button id="save-slot-save-btn" type="button">Save .sav Slot</button>
             <button id="save-slot-load-btn" type="button">Load .sav Slot</button>
+          </div>
+          <div class="grid">
+            <label>Recent save/state<select id="recent-file-select"><option value="">none</option></select></label>
+            <button id="recent-reload-btn" type="button">Reload Recent</button>
           </div>
           <p class="tiny">セーブスロットは現在のカートリッジ保存領域をブラウザに保存します。ROMを読み込んだ後にLoad .sav Slotを押すと、そのセーブを使ってリセットします。</p>
         </div>
@@ -384,7 +396,10 @@
       touch: { active: false, x: 0, y: 0 },
       selectedCpu: "arm9",
       breakpoints: [],
+      nextBreakpointId: 1,
       freezes: [],
+      recentFiles: [],
+      nextRecentId: 1,
       keymap: { KeyX: "A", KeyZ: "B", KeyA: "X", KeyS: "Y", KeyQ: "L", KeyW: "R", Enter: "Start", ShiftRight: "Select", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" },
       buttons: { A: 0, B: 1, Select: 2, Start: 3, Right: 4, Left: 5, Up: 6, Down: 7, R: 8, L: 9, X: 10, Y: 11 },
       fns: {},
@@ -406,6 +421,8 @@
       loadSaveSlot: "ブラウザの指定スロットからカートリッジ保存領域を読み込み、ROMをリセットして反映します。",
       saveState: "現在のエミュレーター状態を保存し、slot指定時はブラウザストレージにも保存します。",
       loadState: "保存済みステートを読み込みます。停止中なら停止したまま読み込みます。",
+      listRecentFiles: "最近読み込んだセーブ/ステートを最大6件返します。",
+      reloadRecentFile: "最近読み込んだセーブ/ステートをid指定で再読み込みします。",
       importStateFile: "外部ステートファイルを読み込みます。",
       exportStateFile: "現在のステートをファイルとして保存します。",
       pause: "エミュレーターを停止します。",
@@ -430,11 +447,18 @@
       writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
       setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
       listBreakpoints: "現在のブレークポイント一覧を返します。",
+      removeBreakpoint: "ブレークポイントをid指定で削除します。",
       step: "CPUステップを指定回数実行します。",
       stepOver: "ステップオーバーを1回実行します。",
       continue: "デバッグ停止から再開します。",
       setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
-      stackTrace: "SP付近のスタックワードを取得します。",
+      setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
+      stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
+      callStack: "記録済みコールスタックをJSONで取得します。",
+      runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
+      runUntilNextCall: "次の関数入口フックが発火するまで実行します。",
+      wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
+      setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
       injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
       setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
     };
@@ -455,6 +479,14 @@
       const text = String(value ?? "").trim();
       if (!text) return fallback;
       return Number(text.startsWith("0x") ? parseInt(text, 16) : parseInt(text, 10));
+    }
+
+    function parseAddress(value, fallback = 0, cpu = state.selectedCpu) {
+      if (typeof value === "number") return value >>> 0;
+      const text = String(value ?? "").trim().toLowerCase();
+      if (!text) return fallback >>> 0;
+      if (text === "pc") return getPc(cpu);
+      return (text.startsWith("0x") ? parseInt(text, 16) : parseInt(text, 16)) >>> 0;
     }
 
     function cpuIndex(cpu = state.selectedCpu) {
@@ -483,6 +515,7 @@
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
         ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
+        ["traceSetPrivilegeCheck", "number", ["number"]], ["traceGetDepth", "number", []],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
         ["dbgRead8", "number", ["number", "number"]], ["dbgRead16", "number", ["number", "number"]], ["dbgRead32", "number", ["number", "number"]],
         ["dbgWrite8", "number", ["number", "number", "number"]], ["dbgWrite16", "number", ["number", "number", "number"]],
@@ -490,7 +523,7 @@
         ["dbgSetExecBreakpoint", "number", ["number", "number", "number"]], ["dbgSetReadBreakpoint", "number", ["number", "number", "number"]],
         ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgStep", "number", ["number", "number"]],
         ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
-        ["dbgStackTrace", "string", ["number", "number"]]
+        ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []]
       ].forEach(([name, ret, args]) => wrap(name, ret, args));
       state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
       state.ready = true;
@@ -641,11 +674,32 @@
     }
 
     function renderBreakpoints() {
-      ui.bpOutput.textContent = state.breakpoints.map((bp) => `${bp.cpu} ${bp.type} ${hex(bp.address)}`).join("\n") || "no breakpoints";
+      ui.bpOutput.textContent = state.breakpoints.map((bp) => `#${bp.id} ${bp.cpu} ${bp.type} ${hex(bp.address)}`).join("\n") || "no breakpoints";
+      const current = ui.bpIdSelect.value;
+      ui.bpIdSelect.innerHTML = `<option value="">none</option>` + state.breakpoints.map((bp) => `<option value="${bp.id}">#${bp.id} ${bp.cpu} ${bp.type} ${hex(bp.address)}</option>`).join("");
+      ui.bpIdSelect.value = state.breakpoints.some((bp) => String(bp.id) === current) ? current : "";
     }
 
     function renderFreezes() {
       ui.freezeOutput.textContent = state.freezes.map((item) => `${item.cpu} ${hex(item.address)} ${item.size === 4 ? "u32" : item.size === 2 ? "u16" : "u8"} = ${hex(item.value, item.size * 2)}`).join("\n") || "no freezes";
+    }
+
+    function renderRecentFiles() {
+      const current = ui.recentFileSelect.value;
+      ui.recentFileSelect.innerHTML = `<option value="">none</option>` + state.recentFiles.map((item) => `<option value="${item.id}">#${item.id} ${item.kind} ${item.name}</option>`).join("");
+      ui.recentFileSelect.value = state.recentFiles.some((item) => String(item.id) === current) ? current : "";
+    }
+
+    async function recordRecentFile(kind, name, bytes = null, slot = "") {
+      const id = state.nextRecentId++;
+      const item = { id, kind, name, slot: String(slot || ""), size: bytes ? bytes.length : 0 };
+      if (bytes) {
+        item.key = `recent:${kind}:${id}`;
+        await idbPut(item.key, bytes);
+      }
+      state.recentFiles = [item, ...state.recentFiles.filter((x) => !(x.kind === kind && x.name === name && x.slot === item.slot))].slice(0, 6);
+      renderRecentFiles();
+      return item;
     }
 
     function renderHotkey() {
@@ -668,6 +722,12 @@
 
     function modeNumber(mode) {
       return mode === "thumb" ? 1 : mode === "arm" ? 2 : 0;
+    }
+
+    function instructionWidthForMode(mode, cpu = state.selectedCpu) {
+      if (mode === "thumb") return 2;
+      if (mode === "arm") return 4;
+      return (getRegisters(cpu).cpsr & 0x20) ? 2 : 4;
     }
 
     function readSized(bytes, offset, size) {
@@ -722,8 +782,10 @@
 
     const commands = {
       async status() {
+        const waitMs = Math.max(0, Math.min(600000, Number(arguments[0]?.waitMs ?? arguments[0]?.ms ?? 0)));
+        if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
-        return { ready: state.ready, paused: state.paused, running: state.running, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, native };
+        return { ready: state.ready, paused: state.paused, running: state.running, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
       },
       async loadRomFile() {
         ensureReady();
@@ -741,7 +803,10 @@
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
         state.module.FS.writeFile("import.sav", bytes);
         const ret = state.fns.savImportFromFile(bytes.length);
-        if (ret === 0) await idbPut(`save:${ui.stateSlot.value}`, bytes);
+        if (ret === 0) {
+          await idbPut(`save:${ui.stateSlot.value}`, bytes);
+          await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
+        }
         state.fns.reset();
         state.frame = 0;
         drawFrame();
@@ -763,6 +828,7 @@
         if (ret !== 0) throw new Error("save export failed");
         const bytes = state.module.FS.readFile("export.sav");
         await idbPut(`save:${slot}`, bytes);
+        await recordRecentFile("save", slot, bytes, slot);
         ui.storageStatus.textContent = `save saved ${slot}`;
         return { ok: true, slot, size: bytes.length };
       },
@@ -779,6 +845,7 @@
         drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
         ui.storageStatus.textContent = `save loaded ${slot}`;
+        await recordRecentFile("save", slot, bytes, slot);
         return { ok: ret === 0, ret, slot, size: bytes.length, reset: true, paused: state.paused };
       },
       async saveState(params = {}) {
@@ -789,6 +856,7 @@
         if (params.slot) {
           if (bytes.length > 256 * 1024 * 1024) throw new Error("state exceeds 256MB browser storage limit");
           await idbPut(String(params.slot), bytes);
+          await recordRecentFile("state", String(params.slot), bytes, String(params.slot));
           ui.storageStatus.textContent = `state saved ${params.slot}`;
         }
         return { ok: true, size };
@@ -801,9 +869,11 @@
         if (bytes) {
           const ptr = state.fns.stateGetPointer(bytes.length);
           state.module.HEAPU8.set(bytes, ptr);
+          if (params.resetBefore !== false) state.fns.reset();
           state.fns.loadStateFromBuffer(bytes.length);
         } else {
           const size = state.fns.stateGetSize();
+          if (params.resetBefore !== false) state.fns.reset();
           state.fns.loadStateFromBuffer(size);
         }
         state.frame = 0;
@@ -811,18 +881,46 @@
         await commands[wasPaused ? "pause" : "resume"]();
         return { ok: true, paused: state.paused, reset: true };
       },
-      async importStateFile() {
+      async importStateFile(params = {}) {
         ensureReady();
         const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
         const wasPaused = state.paused;
         const ptr = state.fns.stateGetPointer(bytes.length);
         state.module.HEAPU8.set(bytes, ptr);
+        if (params.resetBefore !== false) state.fns.reset();
         const ret = state.fns.loadStateFromBuffer(bytes.length);
         state.frame = 0;
         drawFrame();
         await commands[wasPaused ? "pause" : "resume"]();
+        await recordRecentFile("state", file.name, bytes);
         log(`state imported: ${file.name}`);
         return { ok: ret === 0, ret, size: bytes.length, reset: false };
+      },
+      async listRecentFiles() { renderRecentFiles(); return { recentFiles: state.recentFiles }; },
+      async reloadRecentFile(params = {}) {
+        ensureReady();
+        const id = Number(params.id ?? ui.recentFileSelect.value);
+        const item = state.recentFiles.find((x) => x.id === id);
+        if (!item) throw new Error(`recent file not found: ${id}`);
+        const bytes = item.key ? await idbGet(item.key) : item.slot ? await idbGet(`${item.kind}:${item.slot}`) : null;
+        if (!bytes) throw new Error(`recent bytes not found: ${id}`);
+        if (item.kind === "save") {
+          state.module.FS.writeFile("import.sav", bytes);
+          const ret = state.fns.savImportFromFile(bytes.length);
+          state.fns.reset();
+          state.frame = 0;
+          drawFrame();
+          return { ok: ret === 0, ret, item, size: bytes.length };
+        }
+        const wasPaused = state.paused;
+        const ptr = state.fns.stateGetPointer(bytes.length);
+        state.module.HEAPU8.set(bytes, ptr);
+        if (params.resetBefore !== false) state.fns.reset();
+        const ret = state.fns.loadStateFromBuffer(bytes.length);
+        state.frame = 0;
+        drawFrame();
+        await commands[wasPaused ? "pause" : "resume"]();
+        return { ok: ret === 0, ret, item, size: bytes.length, paused: state.paused };
       },
       async exportStateFile() {
         const result = await commands.saveState();
@@ -888,14 +986,18 @@
       },
       async disassemble(params = {}) {
         ensureReady();
-        const addr = parseNumber(params.address ?? ui.disasmAddress.value, getPc(params.cpu));
+        const mode = params.mode ?? ui.disasmMode.value;
+        const before = Math.max(0, Math.min(64, Number(params.before ?? ui.disasmBefore.value ?? 0)));
+        const width = instructionWidthForMode(mode, params.cpu);
+        const base = parseAddress(params.address ?? ui.disasmAddress.value, getPc(params.cpu), params.cpu);
+        const addr = (base - before * width) >>> 0;
         const count = Number(params.count ?? ui.disasmCount.value);
-        const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count, modeNumber(params.mode ?? ui.disasmMode.value));
-        return { address: addr, text };
+        const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count + before, modeNumber(mode));
+        return { address: addr, before, text };
       },
       async dumpMemory(params = {}) {
         ensureReady();
-        const addr = parseNumber(params.address ?? ui.memoryAddress.value);
+        const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
         const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
         const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
         const bytes = [...state.module.HEAPU8.slice(ptr, ptr + length)];
@@ -907,7 +1009,7 @@
       },
       async searchMemory(params = {}) {
         ensureReady();
-        const addr = parseNumber(params.address ?? ui.searchAddress.value);
+        const addr = parseAddress(params.address ?? ui.searchAddress.value, 0, params.cpu);
         const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
         const size = Math.max(1, Math.min(4, Number(params.size ?? ui.searchSize.value)));
         const condition = String(params.condition ?? ui.searchCondition.value);
@@ -950,7 +1052,7 @@
       },
       async writeMemory(params) {
         ensureReady();
-        const addr = parseNumber(params.address);
+        const addr = parseAddress(params.address, 0, params.cpu);
         const value = parseNumber(params.value);
         const size = Number(params.size ?? 1);
         const fn = size === 4 ? "dbgWrite32" : size === 2 ? "dbgWrite16" : "dbgWrite8";
@@ -960,7 +1062,7 @@
         ensureReady();
         const item = {
           cpu: String(params.cpu ?? state.selectedCpu),
-          address: parseNumber(params.address),
+          address: parseAddress(params.address, 0, params.cpu),
           value: parseNumber(params.value),
           size: Number(params.size ?? 1),
           enabled: params.enabled !== false
@@ -974,21 +1076,78 @@
       async listMemoryFreezes() { return state.freezes; },
       async setBreakpoint(params) {
         ensureReady();
-        const bp = { cpu: String(params.cpu ?? state.selectedCpu), type: String(params.type ?? "exec"), address: parseNumber(params.address), enabled: params.enabled !== false };
+        if (params.id && params.enabled === false) return commands.removeBreakpoint({ id: params.id });
+        const bp = { id: Number(params.id ?? state.nextBreakpointId++), cpu: String(params.cpu ?? state.selectedCpu), type: String(params.type ?? "exec"), address: parseAddress(params.address, 0, params.cpu), enabled: params.enabled !== false };
         const fn = bp.type === "read" ? "dbgSetReadBreakpoint" : bp.type === "write" ? "dbgSetWriteBreakpoint" : "dbgSetExecBreakpoint";
         state.fns[fn](cpuIndex(bp.cpu), bp.address, bp.enabled ? 1 : 0);
         state.breakpoints = state.breakpoints.filter((x) => !(x.cpu === bp.cpu && x.type === bp.type && x.address === bp.address));
         if (bp.enabled) state.breakpoints.push(bp);
         renderBreakpoints();
-        return { breakpoints: state.breakpoints };
+        return { id: bp.id, breakpoints: state.breakpoints };
       },
       async listBreakpoints() { return state.breakpoints; },
+      async removeBreakpoint(params = {}) {
+        ensureReady();
+        const id = Number(params.id ?? ui.bpIdSelect.value);
+        const bp = state.breakpoints.find((x) => x.id === id);
+        if (!bp) throw new Error(`breakpoint not found: ${id}`);
+        const fn = bp.type === "read" ? "dbgSetReadBreakpoint" : bp.type === "write" ? "dbgSetWriteBreakpoint" : "dbgSetExecBreakpoint";
+        state.fns[fn](cpuIndex(bp.cpu), bp.address, 0);
+        state.breakpoints = state.breakpoints.filter((x) => x.id !== id);
+        renderBreakpoints();
+        return { ok: true, removed: bp, breakpoints: state.breakpoints };
+      },
       async step(params = {}) { ensureReady(); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); updateStatus(); return { count, pc: getPc(params.cpu) }; },
       async stepOver(params = {}) { ensureReady(); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); updateStatus(); return { ret, pc: getPc(params.cpu) }; },
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-      async stackTrace(params = {}) { ensureReady(); return { text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-      async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value)); },
+      async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
+      async stackTrace(params = {}) { ensureReady(); return { callStack: JSON.parse(state.fns.dbgCallStackJson()), text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+      async callStack() { ensureReady(); return JSON.parse(state.fns.dbgCallStackJson()); },
+      async runUntilReturn(params = {}) {
+        ensureReady();
+        if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
+        const startDepth = state.fns.traceGetDepth();
+        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
+        let steps = 0;
+        while (performance.now() < deadline && state.fns.traceGetDepth() >= startDepth && steps < Number(params.maxSteps ?? 200000)) {
+          state.fns.dbgStep(cpuIndex(params.cpu), 1);
+          steps++;
+        }
+        const depth = state.fns.traceGetDepth();
+        if (depth >= startDepth) throw new Error("runUntilReturn timeout");
+        updateStatus();
+        return { ok: true, steps, depth, pc: getPc(params.cpu) };
+      },
+      async runUntilNextCall(params = {}) {
+        ensureReady();
+        if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
+        const startDepth = state.fns.traceGetDepth();
+        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
+        let steps = 0;
+        while (performance.now() < deadline && state.fns.traceGetDepth() <= startDepth && steps < Number(params.maxSteps ?? 200000)) {
+          state.fns.dbgStep(cpuIndex(params.cpu), 1);
+          steps++;
+        }
+        const depth = state.fns.traceGetDepth();
+        if (depth <= startDepth) throw new Error("runUntilNextCall timeout");
+        updateStatus();
+        return { ok: true, steps, depth, pc: getPc(params.cpu) };
+      },
+      async wait(params = {}) {
+        const ms = Math.max(0, Math.min(600000, Number(params.ms ?? params.waitMs ?? 0)));
+        await new Promise((resolve) => setTimeout(resolve, ms));
+        return commands.status();
+      },
+      async setCTableSeed(params = {}) {
+        ensureReady();
+        const address = parseAddress(params.address ?? "02385f0c", 0, params.cpu);
+        const value = parseNumber(params.value ?? "0x4b539adb");
+        state.fns.dbgWrite32(cpuIndex(params.cpu), address, value);
+        state.fns.dbgWrite32(cpuIndex(params.cpu), address + 4, parseNumber(params.high ?? 0));
+        return { ok: true, address, value, high: parseNumber(params.high ?? 0) };
+      },
+      async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value), Number(params.timeoutMs ?? 3000)); },
       async setFeatureSet(params = {}) {
         ui.debugToggle.checked = params.debugger !== false;
         ui.memoryAuto.value = params.memory === false ? "0" : ui.memoryAuto.value;
@@ -1042,12 +1201,19 @@
 
     async function runCommand(name, params = {}) {
       if (!commands[name]) throw new Error(`unknown command: ${name}`);
-      const result = await commands[name](params);
+      const timeoutMs = Number(params && params.timeoutMs || 0);
+      const run = commands[name](params);
+      const result = timeoutMs > 0
+        ? await Promise.race([
+          run,
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`${name} timeout after ${timeoutMs}ms`)), timeoutMs))
+        ])
+        : await run;
       updateStatus();
       return result;
     }
 
-    function runIsolatedScript(code) {
+    function runIsolatedScript(code, timeoutMs = 3000) {
       return new Promise((resolve, reject) => {
         const workerCode = `
           const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
@@ -1073,7 +1239,7 @@
           };
         `;
         const worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: "text/javascript" })));
-        const timeout = setTimeout(() => { worker.terminate(); reject(new Error("script timeout")); }, 3000);
+        const timeout = setTimeout(() => { worker.terminate(); reject(new Error("script timeout")); }, Math.max(1, timeoutMs));
         worker.onmessage = async (event) => {
           const msg = event.data;
           if (msg.type === "call") {
@@ -1131,6 +1297,7 @@
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
+    ui.tracePrivilegeToggle.addEventListener("change", () => runCommand("setStackTracePrivilegeCheck", { enabled: ui.tracePrivilegeToggle.checked }).catch((e) => log(e.message)));
     ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then((r) => ui.memoryOutput.textContent = r.text).catch((e) => log(e.message)));
     ui.searchNewBtn.addEventListener("click", () => runCommand("searchMemory", { refine: false }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
     ui.searchRefineBtn.addEventListener("click", () => runCommand("searchMemory", { refine: true }).then((r) => ui.searchOutput.textContent = r.text).catch((e) => log(e.message)));
@@ -1140,10 +1307,12 @@
     ui.freezeRemoveBtn.addEventListener("click", () => runCommand("setMemoryFreeze", { address: ui.freezeAddress.value, size: Number(ui.freezeSize.value), enabled: false }).catch((e) => log(e.message)));
     ui.bpAddBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: true }).catch((e) => log(e.message)));
     ui.bpRemoveBtn.addEventListener("click", () => runCommand("setBreakpoint", { address: ui.bpAddress.value, type: ui.bpType.value, enabled: false }).catch((e) => log(e.message)));
+    ui.bpRemoveIdBtn.addEventListener("click", () => runCommand("removeBreakpoint", { id: Number(ui.bpIdSelect.value) }).catch((e) => log(e.message)));
     ui.stateSaveBtn.addEventListener("click", () => runCommand("saveState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.stateLoadBtn.addEventListener("click", () => runCommand("loadState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.saveSlotSaveBtn.addEventListener("click", () => runCommand("saveSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.saveSlotLoadBtn.addEventListener("click", () => runCommand("loadSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.recentReloadBtn.addEventListener("click", () => runCommand("reloadRecentFile", { id: Number(ui.recentFileSelect.value) }).catch((e) => log(e.message)));
     ui.hotkeyButton.addEventListener("change", renderHotkey);
     ui.hotkeyRefreshBtn.addEventListener("click", renderHotkey);
     ui.hotkeySetBtn.addEventListener("click", () => runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key: ui.hotkeyCode.value }).catch((e) => log(e.message)));
@@ -1176,6 +1345,7 @@
 
     renderBreakpoints();
     renderFreezes();
+    renderRecentFiles();
     renderHotkey();
     initWasm().catch((error) => log(error.stack || error.message));
   </script>

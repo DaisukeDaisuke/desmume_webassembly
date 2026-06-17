@@ -9,6 +9,7 @@
 
 #include <sstream>
 #include <string>
+#include <map>
 #include <vector>
 
 #include "MMU.h"
@@ -26,7 +27,7 @@
 CHEATSEXPORT *cheatsExport = NULL;
 
 int emuLastError = 0;
-static EMUFILE_MEMORY *savFile = new EMUFILE_MEMORY();
+EMUFILE_MEMORY *savFile = new EMUFILE_MEMORY();
 static EMUFILE_MEMORY *stateFile = new EMUFILE_MEMORY();
 static u8 *romBuffer = NULL;
 static int romBufferCap = 0;
@@ -38,6 +39,7 @@ volatile bool execute = true;
 static bool paused = true;
 static bool debuggerEnabled = true;
 static bool traceEnabled = false;
+static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
 
 static std::vector<u32> execBreakpoints[2];
@@ -45,11 +47,35 @@ static std::vector<u32> readBreakpoints[2];
 static std::vector<u32> writeBreakpoints[2];
 static std::string textScratch;
 
+struct CallStackEntry {
+  u32 caller;
+  u32 callee;
+  u32 sp;
+  u32 cpsr;
+  bool thumb;
+  u32 id;
+};
+
+static std::vector<CallStackEntry> callStack;
+static std::map<u32, u32> callCountMap;
+
 u32 dstFrameBuffer[2][256 * 192];
 
 extern "C" unsigned cpu_features_get_core_amount(void) { return 1; }
 
 static armcpu_t *cpuFor(int proc) { return proc == 0 ? &NDS_ARM9 : &NDS_ARM7; }
+
+extern "C" void wasmEnterFunctionHook(int proc) {
+  if (!traceEnabled || proc != 0) return;
+  armcpu_t *cpu = cpuFor(proc);
+  if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
+  const u32 sp = cpu->R[13];
+  while (!callStack.empty() && callStack.back().sp <= sp) callStack.pop_back();
+  const u32 callee = cpu->instruct_adr;
+  const u32 id = callCountMap[callee]++;
+  callStack.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id});
+  if (callStack.size() > 1024) callStack.erase(callStack.begin(), callStack.begin() + (callStack.size() - 1024));
+}
 
 static void gpu_screen_to_rgb(u32 *dst) {
   ColorspaceConvertBuffer555xTo8888Opaque<false, false, BESwapNone>(
@@ -247,8 +273,19 @@ int debuggerSetEnabled(int value) {
 
 int traceSetEnabled(int value) {
   traceEnabled = value != 0;
+  if (!traceEnabled) {
+    callStack.clear();
+    callCountMap.clear();
+  }
   return traceEnabled ? 1 : 0;
 }
+
+int traceSetPrivilegeCheck(int value) {
+  tracePrivilegeCheck = value != 0;
+  return tracePrivilegeCheck ? 1 : 0;
+}
+
+int traceGetDepth() { return (int)callStack.size(); }
 
 u32 dbgGetReg(int proc, int reg) {
   armcpu_t *cpu = cpuFor(proc);
@@ -384,7 +421,16 @@ const char *dbgStackTrace(int proc, int words) {
   if (words > 256) words = 256;
   u32 sp = dbgGetReg(proc, 13);
   std::ostringstream os;
-  os << "trace=" << (traceEnabled ? "on" : "off") << " sp=0x" << std::hex << sp << "\n";
+  os << "trace=" << (traceEnabled ? "on" : "off")
+     << " privilegeCheck=" << (tracePrivilegeCheck ? "on" : "off")
+     << " sp=0x" << std::hex << sp << "\n";
+  os << "caller   callee(id)      sp\n";
+  for (size_t i = 0; i < callStack.size(); i++) {
+    const CallStackEntry &entry = callStack[i];
+    os << "0x" << std::hex << entry.caller << "  0x" << entry.callee << "(" << std::dec << entry.id << ")"
+       << (entry.thumb ? " T" : " A") << "  0x" << std::hex << entry.sp << "\n";
+  }
+  os << "-- stack words --\n";
   for (int i = 0; i < words; i++) {
     u32 at = sp + i * 4;
     u32 value = dbgRead32(proc, at);
@@ -403,6 +449,27 @@ const char *dbgStackTrace(int proc, int words) {
     }
     os << "\n";
   }
+  textScratch = os.str();
+  return textScratch.c_str();
+}
+
+const char *dbgCallStackJson() {
+  std::ostringstream os;
+  os << "{\"enabled\":" << (traceEnabled ? "true" : "false")
+     << ",\"privilegeCheck\":" << (tracePrivilegeCheck ? "true" : "false")
+     << ",\"depth\":" << callStack.size()
+     << ",\"frames\":[";
+  for (size_t i = 0; i < callStack.size(); i++) {
+    const CallStackEntry &entry = callStack[i];
+    if (i) os << ",";
+    os << "{\"caller\":" << entry.caller
+       << ",\"callee\":" << entry.callee
+       << ",\"sp\":" << entry.sp
+       << ",\"cpsr\":" << entry.cpsr
+       << ",\"thumb\":" << (entry.thumb ? "true" : "false")
+       << ",\"id\":" << entry.id << "}";
+  }
+  os << "]}";
   textScratch = os.str();
   return textScratch.c_str();
 }

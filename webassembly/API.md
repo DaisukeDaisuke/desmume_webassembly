@@ -21,6 +21,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `loadState`: Loads the active in-memory state or a named browser storage slot without rebooting the emulator. Loading while paused keeps the emulator paused.
 - `importStateFile`: Opens a file picker, then loads an external state file into the emulator without rebooting.
 - `exportStateFile`: Downloads the current serialized state as `desmume-state.dst`.
+- `listRecentFiles`: Returns up to six recently imported or saved save/state entries, each with an `id`, `kind`, `name`, and byte size.
+- `reloadRecentFile`: Reloads a recent save or state by `{ "id": number }`. Save entries reset the ROM so the cartridge save is visible from boot; state entries preserve the previous pause state.
 - `pause`: Pauses emulation.
 - `resume`: Resumes emulation.
 - `reset`: Resets the loaded ROM.
@@ -34,19 +36,28 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setKeyBinding`: Changes a human hotkey with `{ "button": "A", "key": "KeyZ" }`.
 - `getRegisters`: Returns ARM9 or ARM7 registers with `{ "cpu": "arm9" | "arm7" }`.
 - `setRegister`: Changes one register with `{ "cpu": "arm9", "register": "r0".."r15"|"pc"|"cpsr", "value": number|string }`.
-- `disassemble`: Uses DeSmuME's ARM/Thumb disassembler and returns address/opcode/mnemonic rows with `{ "cpu": "arm9", "address": number|string, "count": number, "mode": "auto"|"arm"|"thumb" }`. The current PC row is prefixed with `=>`.
+- `disassemble`: Uses DeSmuME's ARM/Thumb disassembler and returns address/opcode/mnemonic rows with `{ "cpu": "arm9", "address": number|string, "count": number, "before": number, "mode": "auto"|"arm"|"thumb" }`. `before` dumps a small number of instructions above the address; the current PC row is prefixed with `=>`.
 - `dumpMemory`: Returns a byte array and hex text for `{ "cpu": "arm9", "address": number|string, "length": number }`.
 - `searchMemory`: Searches memory with `{ "cpu": "arm9"|"arm7", "address": number|string, "length": number, "size": 1|2|4, "condition": "equal"|"notEqual"|"greater"|"less"|"changed"|"unchanged"|"increased"|"decreased", "value": number|string, "refine": boolean, "limit": number }`. Use `refine: true` to filter the previous result set against the new condition.
 - `resetMemorySearch`: Clears the previous memory search snapshot and candidate list so the next search starts from the full range.
 - `writeMemory`: Writes one value with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string }`.
 - `setMemoryFreeze`: Adds or removes a repeated memory write with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string, "enabled": boolean }`.
 - `listMemoryFreezes`: Returns the current repeated memory writes used by Memory Freeze.
-- `setBreakpoint`: Adds or removes execution/read/write breakpoints with `{ "cpu": "arm9", "type": "exec"|"read"|"write", "address": number|string, "enabled": boolean }`.
-- `listBreakpoints`: Returns the browser-side breakpoint list used for UI markers.
+- `setBreakpoint`: Adds or removes execution/read/write breakpoints with `{ "cpu": "arm9", "type": "exec"|"read"|"write", "address": number|string, "enabled": boolean }`. Addresses without `0x`, such as `20cb6c4`, are treated as hexadecimal addresses.
+- `listBreakpoints`: Returns the browser-side breakpoint list used for UI markers. Each item has an `id` for deletion.
+- `removeBreakpoint`: Removes one breakpoint by `{ "id": number }`.
 - `step`: Runs `{ "count": N }` CPU instructions through `armcpu_exec` for ARM9 or ARM7.
 - `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping.
 - `continue`: Resumes from a debugger stop.
-- `setStackTraceMode`: Enables or disables stack trace collection with `{ "enabled": boolean }`.
-- `stackTrace`: Returns stack words near SP for `{ "cpu": "arm9", "words": number }`.
-- `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, timers, import, and Function constructor are unavailable in the sandbox.
+- `setStackTraceMode`: Enables or disables registerenterfunc-equivalent call stack collection with `{ "enabled": boolean }`.
+- `setStackTracePrivilegeCheck`: Enables or disables IRQ-mode filtering with `{ "enabled": boolean }`.
+- `stackTrace`: Returns the recorded call stack plus stack words near SP for `{ "cpu": "arm9", "words": number }`.
+- `callStack`: Returns the recorded call stack as structured JSON.
+- `runUntilReturn`: Steps until the recorded call stack depth drops below the current depth. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure.
+- `runUntilNextCall`: Steps until the next function-entry hook is recorded. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure.
+- `wait`: Waits `{ "ms": number }` and then returns `status`. `status` also accepts `{ "waitMs": number }` for delayed polling.
+- `setCTableSeed`: Implements the `setCTable_jp.lua` write pattern in JavaScript/API form. By default it writes `0x4b539adb` to `0x02385f0c` and zero to the following word; override with `{ "address": string|number, "value": string|number, "high": string|number }`.
+- `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "timeoutMs": number }` to change the script timeout.
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
+
+Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.

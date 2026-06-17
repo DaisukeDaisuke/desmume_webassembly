@@ -1,6 +1,5 @@
 # Handoff Notes
 
-- Codespaceはこの依頼では起動しない。次チャットでも、ユーザーが明示しない限り起動しない。
 - ファイル書き込みは必ず `apply_patch`。生成物以外をコマンド置換で編集しない。
 - `gh codespace cp` を使う場合は必ず `-e` を付ける。
 - `public/desmume.js` は生成物。基本は `webassembly/wasm-port.cpp` と `public/index.html` を直してビルドで再生成する。
@@ -18,3 +17,11 @@
 - `AGENTS.md` や未追跡の `.gitignore`, `CMakeLists.txt`, `main.cpp` はユーザー由来の可能性がある。勝手に戻さない。
 - remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cppが正しいremote url。
 - 環境未初期化のcodespaceが渡される場合があるので、その場合は勝手に初期化してよい。
+
+## 2026-06-17 Addendum
+
+- スタックトレースは SP 周辺ダンプではなく、`registerenterfunc` Lua フック相当の関数入口記録が主目的。WASM では `OP_STMDB_W` と `OP_PUSH_LR` から `wasmEnterFunctionHook()` を呼び、`wasm-port.cpp` 側の call stack に `caller/lr`, `callee`, `sp`, `cpsr`, thumb状態, 同一callee内idを記録する。
+- `traceSetEnabled(0)` は call stack と call count をクリアする。IRQ除外は `traceSetPrivilegeCheck()` で切り替える。
+- ブレークポイントは UI/API とも id 管理。アドレス文字列 `20cb6c4` / `020cb6c4` は 10進ではなく16進として扱う。
+- `setCTable_jp.lua` 相当は JS/API の `setCTableSeed` で実装可能。既定では `0x02385f0c = 0x4b539adb`, `0x02385f10 = 0` を書く。
+- 最近読み込んだ save/state は最大6件を id 付きで保持し、`reloadRecentFile` から再ロードできる。
