@@ -103,7 +103,7 @@ emcc "${OBJECTS[@]}" \
   -sUSE_ZLIB=1 \
   -sEXPORT_NAME=CreateDesmumeModule \
   -sENVIRONMENT=web,worker \
-  -sEXPORTED_RUNTIME_METHODS='["FS","HEAPU8","HEAPU16","HEAPU32","HEAP32","ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+  -sEXPORTED_RUNTIME_METHODS='["FS","ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
   -sEXPORTED_FUNCTIONS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_runFrames","_fillAudioBuffer","_getSymbol","_setSampleRate","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_stateGetSize","_stateGetPointer","_saveStateToBuffer","_loadStateFromBuffer","_zlibCompress","_zlibDecompress","_pauseEmu","_isPaused","_debuggerSetEnabled","_traceSetEnabled","_dbgGetReg","_dbgSetReg","_dbgRead8","_dbgRead16","_dbgRead32","_dbgWrite8","_dbgWrite16","_dbgWrite32","_dbgDumpMemory","_dbgSetExecBreakpoint","_dbgSetReadBreakpoint","_dbgSetWriteBreakpoint","_dbgStep","_dbgStepOver","_dbgGetStatusJson","_dbgDisassemble","_dbgStackTrace","_chtGetList","_chtAddItem","_utilStrLen","_emuSetOpt"]' \
   -o "${OUT_DIR}/desmume.js"
 
