@@ -29,3 +29,4 @@
 - ブレークポイントはヒットしたら必ず `paused=true` にする。実行ブレークは `armcpu_exec()` の命令実行前、read/write は MMU の実アクセスで止める。GUI のメモリビューワーは `MMU_AT_DEBUG` 読みなので read breakpoint を発火させない。
 - data abort / prefetch abort / undefined instruction はエミュレーター破棄ではなく、最後の発生元 PC/CPSR を `status().native.lastBreak` に残して停止する。
 - call stack UI は SP ダンプではなく `dbgCallStackJson()` の `frames` を表で出す。callee の Jump は disassembler address に入れるだけで、PC は変更しない。
+- 2026-06-17: save/stateロード中は `loadingFile` で実行ループと自動 `.sav` slot保存を止め、WASM側を `pauseEmu(1)` にしてから import/reset/loadState する。ロード後は直前のrun/pause状態へ戻す。走行中のまま保存領域やsavestateバッファを触ると公開ページでメインスレッドが固まりやすい。

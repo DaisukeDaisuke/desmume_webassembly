@@ -456,6 +456,7 @@
       audioContext: null,
       audioNextTime: 0,
       imageData: null,
+      loadingFile: false,
       lastTick: performance.now(),
       lastSaveFlush: 0,
       frameBudget: 0,
@@ -671,7 +672,7 @@
     }
 
     function tick(now) {
-      if (state.ready && state.running && !state.paused) {
+      if (state.ready && state.running && !state.paused && !state.loadingFile) {
         const elapsed = Math.min(250, now - state.lastTick);
         state.frameBudget += elapsed * 59.8261 * state.speed / 1000;
         const frames = Math.min(12, Math.floor(state.frameBudget));
@@ -704,8 +705,37 @@
     }
 
     function scheduleTick() {
-      if (state.running && !state.paused) requestAnimationFrame(tick);
+      if (state.running && !state.paused && !state.loadingFile) requestAnimationFrame(tick);
       else setTimeout(() => requestAnimationFrame(tick), 120);
+    }
+
+    function pauseForFileLoad() {
+      const runState = { running: state.running, paused: state.paused };
+      state.loadingFile = true;
+      state.running = false;
+      state.paused = true;
+      state.frameBudget = 0;
+      if (state.ready) state.fns.pauseEmu(1);
+      updateStatus();
+      return runState;
+    }
+
+    function restoreAfterFileLoad(runState) {
+      state.loadingFile = false;
+      state.lastTick = performance.now();
+      state.frameBudget = 0;
+      if (runState.running && !runState.paused) {
+        state.breakLabel = "";
+        state.paused = false;
+        state.running = true;
+        state.fns.dbgClearBreakStatus();
+        state.fns.pauseEmu(0);
+      } else {
+        state.paused = true;
+        state.running = false;
+        state.fns.pauseEmu(1);
+      }
+      updateStatus();
     }
 
     function updateStatus() {
@@ -913,17 +943,22 @@
       async importSaveFile() {
         ensureReady();
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
-        state.module.FS.writeFile("import.sav", bytes);
-        const ret = state.fns.savImportFromFile(bytes.length);
-        if (ret === 0) {
-          await idbPut(`save:${ui.stateSlot.value}`, bytes);
-          await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
+        const runState = pauseForFileLoad();
+        try {
+          state.module.FS.writeFile("import.sav", bytes);
+          const ret = state.fns.savImportFromFile(bytes.length);
+          if (ret === 0) {
+            await idbPut(`save:${ui.stateSlot.value}`, bytes);
+            await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
+            state.fns.reset();
+            state.frame = 0;
+            drawFrame();
+          }
+          log(`save imported and reset: ${file.name}`);
+          return { ok: ret === 0, ret, size: bytes.length, reset: ret === 0 };
+        } finally {
+          restoreAfterFileLoad(runState);
         }
-        state.fns.reset();
-        state.frame = 0;
-        drawFrame();
-        log(`save imported and reset: ${file.name}`);
-        return { ok: ret === 0, ret, size: bytes.length, reset: true };
       },
       async exportSaveFile() {
         ensureReady();
@@ -949,16 +984,21 @@
         const slot = String(params.slot ?? ui.stateSlot.value);
         const bytes = await idbGet(`save:${slot}`);
         if (!bytes) throw new Error(`save slot not found: ${slot}`);
-        const wasPaused = state.paused;
-        state.module.FS.writeFile("import.sav", bytes);
-        const ret = state.fns.savImportFromFile(bytes.length);
-        state.fns.reset();
-        state.frame = 0;
-        drawFrame();
-        await commands[wasPaused ? "pause" : "resume"]();
-        ui.storageStatus.textContent = `save loaded ${slot}`;
-        await recordRecentFile("save", slot, bytes, slot);
-        return { ok: ret === 0, ret, slot, size: bytes.length, reset: true, paused: state.paused };
+        const runState = pauseForFileLoad();
+        try {
+          state.module.FS.writeFile("import.sav", bytes);
+          const ret = state.fns.savImportFromFile(bytes.length);
+          if (ret === 0) {
+            state.fns.reset();
+            state.frame = 0;
+            drawFrame();
+          }
+          ui.storageStatus.textContent = `save loaded ${slot}`;
+          await recordRecentFile("save", slot, bytes, slot);
+          return { ok: ret === 0, ret, slot, size: bytes.length, reset: ret === 0, paused: runState.paused };
+        } finally {
+          restoreAfterFileLoad(runState);
+        }
       },
       async saveState(params = {}) {
         ensureReady();
@@ -975,35 +1015,41 @@
       },
       async loadState(params = {}) {
         ensureReady();
-        const wasPaused = state.paused;
+        const runState = pauseForFileLoad();
         let bytes = null;
-        if (params.slot) bytes = await idbGet(String(params.slot));
-        if (bytes) {
-          const ptr = state.fns.stateGetPointer(bytes.length);
-          state.module.HEAPU8.set(bytes, ptr);
-          state.fns.loadStateFromBuffer(bytes.length);
-        } else {
-          const size = state.fns.stateGetSize();
-          state.fns.loadStateFromBuffer(size);
+        try {
+          if (params.slot) bytes = await idbGet(String(params.slot));
+          if (bytes) {
+            const ptr = state.fns.stateGetPointer(bytes.length);
+            state.module.HEAPU8.set(bytes, ptr);
+            state.fns.loadStateFromBuffer(bytes.length);
+          } else {
+            const size = state.fns.stateGetSize();
+            state.fns.loadStateFromBuffer(size);
+          }
+          state.frame = 0;
+          drawFrame();
+          return { ok: true, paused: runState.paused, reset: false };
+        } finally {
+          restoreAfterFileLoad(runState);
         }
-        state.frame = 0;
-        drawFrame();
-        await commands[wasPaused ? "pause" : "resume"]();
-        return { ok: true, paused: state.paused, reset: false };
       },
       async importStateFile(params = {}) {
         ensureReady();
         const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
-        const wasPaused = state.paused;
-        const ptr = state.fns.stateGetPointer(bytes.length);
-        state.module.HEAPU8.set(bytes, ptr);
-        const ret = state.fns.loadStateFromBuffer(bytes.length);
-        state.frame = 0;
-        drawFrame();
-        await commands[wasPaused ? "pause" : "resume"]();
-        await recordRecentFile("state", file.name, bytes);
-        log(`state imported: ${file.name}`);
-        return { ok: ret === 0, ret, size: bytes.length, reset: false };
+        const runState = pauseForFileLoad();
+        try {
+          const ptr = state.fns.stateGetPointer(bytes.length);
+          state.module.HEAPU8.set(bytes, ptr);
+          const ret = state.fns.loadStateFromBuffer(bytes.length);
+          state.frame = 0;
+          drawFrame();
+          await recordRecentFile("state", file.name, bytes);
+          log(`state imported: ${file.name}`);
+          return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
+        } finally {
+          restoreAfterFileLoad(runState);
+        }
       },
       async listRecentFiles() { renderRecentFiles(); return { recentFiles: state.recentFiles }; },
       async reloadRecentFile(params = {}) {
@@ -1014,21 +1060,31 @@
         const bytes = item.key ? await idbGet(item.key) : item.slot ? await idbGet(`${item.kind}:${item.slot}`) : null;
         if (!bytes) throw new Error(`recent bytes not found: ${id}`);
         if (item.kind === "save") {
-          state.module.FS.writeFile("import.sav", bytes);
-          const ret = state.fns.savImportFromFile(bytes.length);
-          state.fns.reset();
+          const runState = pauseForFileLoad();
+          try {
+            state.module.FS.writeFile("import.sav", bytes);
+            const ret = state.fns.savImportFromFile(bytes.length);
+            if (ret === 0) {
+              state.fns.reset();
+              state.frame = 0;
+              drawFrame();
+            }
+            return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
+          } finally {
+            restoreAfterFileLoad(runState);
+          }
+        }
+        const runState = pauseForFileLoad();
+        try {
+          const ptr = state.fns.stateGetPointer(bytes.length);
+          state.module.HEAPU8.set(bytes, ptr);
+          const ret = state.fns.loadStateFromBuffer(bytes.length);
           state.frame = 0;
           drawFrame();
-          return { ok: ret === 0, ret, item, size: bytes.length };
+          return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
+        } finally {
+          restoreAfterFileLoad(runState);
         }
-        const wasPaused = state.paused;
-        const ptr = state.fns.stateGetPointer(bytes.length);
-        state.module.HEAPU8.set(bytes, ptr);
-        const ret = state.fns.loadStateFromBuffer(bytes.length);
-        state.frame = 0;
-        drawFrame();
-        await commands[wasPaused ? "pause" : "resume"]();
-        return { ok: ret === 0, ret, item, size: bytes.length, paused: state.paused };
       },
       async exportStateFile() {
         const result = await commands.saveState();
@@ -1513,7 +1569,7 @@
     setInterval(() => {
       if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then(renderMemoryDump).catch(() => {});
       applyFreezes();
-      if (state.ready && state.running && performance.now() - state.lastSaveFlush > 5000) {
+      if (state.ready && state.running && !state.loadingFile && performance.now() - state.lastSaveFlush > 5000) {
         state.lastSaveFlush = performance.now();
         commands.saveSaveSlot({ slot: ui.stateSlot.value }).catch(() => {});
       }
