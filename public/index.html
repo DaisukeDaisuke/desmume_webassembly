@@ -425,7 +425,7 @@
     </main>
   </div>
 
-  <script src="desmume.js?v=20260617-savestate-diagnostics"></script>
+  <script src="desmume.js?v=20260617-savestate-diagnostics1111"></script>
   <script>
     const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
     const state = {
@@ -459,6 +459,9 @@
       loadingFile: false,
       lastTick: performance.now(),
       lastSaveFlush: 0,
+      romSize: 0,
+      romName: "",
+      romBytes: null,
       frameBudget: 0,
       search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 }
     };
@@ -565,7 +568,7 @@
       state.module = await CreateDesmumeModule({ noInitialRun: false });
       [
         ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
-        ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []], ["savGetInfo", "number", ["number"]],
+        ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
         ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["dbgGetLastStateChunk", "number", []], ["dbgGetLastStatePhase", "number", []], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
@@ -607,11 +610,42 @@
 
     async function reloadSelectedRom() {
       const { file, bytes } = await readFileFromInput(ui.romFile);
-      state.module.FS.writeFile("rom.nds", bytes);
+      writeRomFile(file.name, bytes);
       const ret = state.fns.loadROM(bytes.length);
       state.frame = 0;
       drawFrame();
       log(`ROM reloaded: ${file.name} (${bytes.length} bytes)`);
+      return ret;
+    }
+
+    function writeRomFile(name, bytes) {
+      const romBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      state.module.FS.writeFile("rom.nds", romBytes);
+      state.romName = name || "rom.nds";
+      state.romBytes = romBytes;
+      state.romSize = romBytes.length;
+      return romBytes.length;
+    }
+
+    function reloadCurrentRom() {
+      let romSize = state.romSize;
+      if (state.romBytes) {
+        romSize = writeRomFile(state.romName, state.romBytes);
+      } else {
+        const fs = state.module.FS;
+        romSize = fs.analyzePath("rom.nds").exists ? writeRomFile("rom.nds", fs.readFile("rom.nds")) : 0;
+      }
+      if (!romSize) throw new Error("ROM is not loaded");
+      const ret = state.fns.loadROM(romSize);
+      if (ret === 0) {
+        state.romSize = romSize;
+        state.frame = 0;
+        state.previousRegisters = null;
+        state.lastBreakKey = "";
+        state.breakLabel = "";
+        state.fns.dbgClearBreakStatus();
+        drawFrame();
+      }
       return ret;
     }
 
@@ -623,20 +657,18 @@
     }
 
     function writeSaveForRom(name, bytes) {
+      const path = String(name).toLowerCase().endsWith(".dsv") ? "rom.dsv" : "rom.sav";
       unlinkWasmFile("rom.dsv");
       unlinkWasmFile("rom.sav");
-      state.module.FS.writeFile("import.sav", bytes);
-      const ret = state.fns.savImportFromFile(bytes.length);
-      return { path: String(name).toLowerCase().endsWith(".dsv") ? "import.dsv" : "import.sav", ret };
+      state.module.FS.writeFile(path, bytes);
+      return { path, ret: 0 };
     }
 
-    function writeSaveToNativeMemory(name, bytes) {
-      unlinkWasmFile("rom.dsv");
-      unlinkWasmFile("rom.sav");
-      const ptr = state.fns.savGetPointer(bytes.length);
-      state.module.HEAPU8.set(bytes, ptr);
-      state.fns.savUpdateChangeFlag();
-      return String(name).toLowerCase().endsWith(".dsv") ? "savFile.dsv" : "savFile.sav";
+    function applySaveAndReloadRom(name, bytes) {
+      const saveLoad = writeSaveForRom(name, bytes);
+      if (saveLoad.ret !== 0) return saveLoad;
+      const ret = reloadCurrentRom();
+      return { ...saveLoad, ret };
     }
 
     async function restorePendingSaveBoot() {
@@ -647,15 +679,18 @@
       if (!rom || !save) throw new Error("pending ROM/save not found");
       const saveName = sessionStorage.getItem("desmume-pending-save-name") || "save.sav";
       sessionStorage.removeItem("desmume-pending-save-name");
-      const savePath = writeSaveToNativeMemory(saveName, save);
-      state.module.FS.writeFile("rom.nds", rom);
+      writeRomFile("pending-rom.nds", rom);
       const ret = state.fns.loadROM(rom.length);
+      if (ret === 0) {
+        const saveLoad = applySaveAndReloadRom(saveName, save);
+        log(`save applied via ${saveLoad.path}`);
+      }
       state.fns.pauseEmu(1);
       state.running = ret === 0;
       state.paused = true;
       state.frame = 0;
       drawFrame();
-      log(`save imported via ${savePath} and ROM loaded in fresh core`);
+      log(`save imported via ${saveName} and ROM loaded in fresh core`);
     }
 
     async function openPicker(input) {
@@ -986,7 +1021,7 @@
       async loadRomFile() {
         ensureReady();
         const { file, bytes } = ui.romFile.files && ui.romFile.files[0] ? await readFileFromInput(ui.romFile) : await openPicker(ui.romFile);
-        state.module.FS.writeFile("rom.nds", bytes);
+        writeRomFile(file.name, bytes);
         const ret = state.fns.loadROM(bytes.length);
         state.running = ret === 0;
         state.paused = false;
@@ -999,16 +1034,14 @@
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
         const runState = pauseForFileLoad();
         try {
-          const saveLoad = writeSaveForRom(file.name, bytes);
+          const saveLoad = applySaveAndReloadRom(file.name, bytes);
           let ret = saveLoad.ret;
           if (ret === 0) {
             await idbPut(`save:${ui.stateSlot.value}`, bytes);
             await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
-            state.frame = 0;
-            drawFrame();
           }
           log(`save imported via ${saveLoad.path}: ${file.name}`);
-          return { ok: ret === 0, ret, size: bytes.length, reset: ret === 0, reloaded: false, path: saveLoad.path };
+          return { ok: ret === 0, ret, size: bytes.length, reset: ret === 0, reloaded: ret === 0, path: saveLoad.path };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -1039,15 +1072,11 @@
         if (!bytes) throw new Error(`save slot not found: ${slot}`);
         const runState = pauseForFileLoad();
         try {
-          const saveLoad = writeSaveForRom(slot, bytes);
+          const saveLoad = applySaveAndReloadRom(slot, bytes);
           let ret = saveLoad.ret;
-          if (ret === 0) {
-            state.frame = 0;
-            drawFrame();
-          }
           ui.storageStatus.textContent = `save loaded ${slot}`;
           await recordRecentFile("save", slot, bytes, slot);
-          return { ok: ret === 0, ret, slot, size: bytes.length, reset: ret === 0, reloaded: false, paused: runState.paused, path: saveLoad.path };
+          return { ok: ret === 0, ret, slot, size: bytes.length, reset: ret === 0, reloaded: ret === 0, paused: runState.paused, path: saveLoad.path };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -1112,13 +1141,9 @@
         if (item.kind === "save") {
           const runState = pauseForFileLoad();
           try {
-            const saveLoad = writeSaveForRom(item.name || item.slot || "save.sav", bytes);
+            const saveLoad = applySaveAndReloadRom(item.name || item.slot || "save.sav", bytes);
             let ret = saveLoad.ret;
-            if (ret === 0) {
-              state.frame = 0;
-              drawFrame();
-            }
-            return { ok: ret === 0, ret, item, size: bytes.length, reset: ret === 0, reloaded: false, paused: runState.paused, path: saveLoad.path };
+            return { ok: ret === 0, ret, item, size: bytes.length, reset: ret === 0, reloaded: ret === 0, paused: runState.paused, path: saveLoad.path };
           } finally {
             restoreAfterFileLoad(runState);
           }
@@ -1400,10 +1425,6 @@
         const type = Number(params.type ?? 0);
         state.fns.emuSetOpt(1, type);
         return { type };
-      },
-      async getSaveDebug() {
-        ensureReady();
-        return { fSize: state.fns.savGetInfo(0), addrSize: state.fns.savGetInfo(1), addr: state.fns.savGetInfo(2), state: state.fns.savGetInfo(3), fileSize: state.fns.savGetInfo(4) };
       }
     };
 

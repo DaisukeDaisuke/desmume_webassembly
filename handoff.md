@@ -37,3 +37,4 @@
 - 2026-06-17: 圧縮展開後、`EMUFILE_MEMORY` 経由の `savestate_load(*stateFile)` は `memory access out of bounds` を起こした。外部 `.dst` はWASM FSの `import.dst` に書いて `savestate_load("import.dst")` する `loadStateFromFile()` 経路へ変更。
 - 2026-06-17: `D:\software\state.dst` はWi-Fi chunk `111` を含み、ブラウザビルドで `wifiHandler->LoadState()` に入ると `table index is out of bounds` で落ちた。EmscriptenビルドではWi-Fi emulationを使わないため、`old/desmume/desmume/src/saves.cpp` のchunk `111` は読み飛ばす。
 - 2026-06-18: `FS.unlink()` は対象ファイルが無いと `ErrnoError errno 44` を投げる。save import 前の `rom.sav` / `rom.dsv` 掃除では `FS.analyzePath(path).exists` で存在確認してから消し、ENOENTをコンソールへ出さない。
+- 2026-06-18: セーブ反映などのROM再ロードはWASM FS上の既存 `rom.nds` を信頼せず、ファイル選択時に得た `Uint8Array` を `state.romBytes` に保持して毎回 `FS.writeFile("rom.nds", romBytes)` し直してから `loadROM()` する。FS側が壊れた/空になった状態を再利用すると、メモリ00埋めのままPCだけ進んでクラッシュする。
