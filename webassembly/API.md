@@ -11,8 +11,9 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 
 ## Commands
 
-- `status`: Returns pause state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values.
+- `status`: Returns pause state, file-load gate state, ROM-loaded state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values.
 - `loadRomFile`: Opens the file picker. The user selects a local `.nds` ROM, which is mounted into the in-browser filesystem and loaded.
+- `loadRomBytes`: Loads ROM bytes supplied by WebMCP without opening a picker. Pass `{ "bytes": [..], "name": "debug.nds", "waitMs": 600, "resume": true }` or `{ "base64": "..." }`. Use this for local automation; do not paste private ROM data into chat.
 - `importSaveFile`: Opens the file picker for a `.sav`/`.dsv` file, imports it through DeSmuME's backup device, then resets the loaded ROM so the game sees the save from boot.
 - `exportSaveFile`: Exports DeSmuME's current backup device data and downloads it as `desmume-save.sav`.
 - `saveSaveSlot`: Exports the current cartridge save data into a named browser slot. Pass `{ "slot": "name" }`; the UI slot name is used when omitted.
@@ -25,7 +26,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `reloadRecentFile`: Reloads a recent save or state by `{ "id": number }`. Save entries reset the ROM so the cartridge save is visible from boot; state entries preserve the previous pause state.
 - `pause`: Pauses emulation.
 - `resume`: Resumes emulation.
-- `reset`: Resets the loaded ROM.
+- `reset`: Fully stops execution, rewrites the retained ROM bytes into the in-browser filesystem, reloads the ROM through DeSmuME's load path, waits for the requested boot gate, then either stays paused or resumes. Pass `{ "waitMs": 600, "holdPaused": true }` to control the reset gate.
+- `reloadRom`: Rewrites and reloads the retained ROM without requiring a new file picker. Use this for reset diagnostics or after save-file replacement. Pass `{ "waitMs": 600, "resume": false }`.
 - `setSpeed`: Sets runtime speed from `0.25` to `4.0`.
 - `stepFrames`: Advances `{ "frames": N }` frames while preserving the previous pause state.
 - `setRenderEnabled`: Enables or disables canvas updates. Use this for fast AI operation.
@@ -61,6 +63,7 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `wait`: Waits `{ "ms": number }` and then returns `status`. `status` also accepts `{ "waitMs": number }` for delayed polling.
 - `setCTableSeed`: Implements the `setCTable_jp.lua` write pattern in JavaScript/API form. By default it writes `0x4b539adb` to `0x02385f0c` and zero to the following word; override with `{ "address": string|number, "value": string|number, "high": string|number }`.
 - `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "timeoutMs": number }` to change the script timeout.
+- `batch`: Runs multiple WebMCP commands sequentially. Pass either an array or `{ "commands": [{ "command": "status", "params": {} }] }`; the result contains one entry per command.
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.

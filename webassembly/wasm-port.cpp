@@ -33,6 +33,7 @@ static EMUFILE_MEMORY *stateFile = new EMUFILE_MEMORY();
 static u8 *romBuffer = NULL;
 static int romBufferCap = 0;
 static int romLen = 0;
+static bool romLoaded = false;
 static s16 audioBuffer[16384 * 2];
 static int samplesRead = 0;
 static int samplesDesired = 0;
@@ -191,24 +192,34 @@ void *getSymbol(int id) {
   return 0;
 }
 
-void reset() {
+int reset() {
+  if (!romLoaded || romLen <= 0) return -1;
+  paused = true;
   NDS_Reset();
   frameCounter = 0;
+  lastBreak.hit = false;
+  return 0;
 }
 
 int loadROM(int len) {
   romLen = len;
+  romLoaded = false;
+  paused = true;
   emuLastError = -2;
   if (!NDS_LoadROM("rom.nds")) return emuLastError;
   SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
   SPU_SetVolume(35);
+  romLoaded = true;
   paused = false;
   frameCounter = 0;
+  lastBreak.hit = false;
   return 0;
 }
 
+int isRomLoaded() { return romLoaded ? 1 : 0; }
+
 int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
-  if (paused) return 0;
+  if (paused || !romLoaded) return 0;
   if (!shouldDraw) NDS_SkipNextFrame();
   if (touched) {
     NDS_setTouchPos(touchX, touchY);

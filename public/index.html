@@ -227,6 +227,11 @@
             <label>Frames<input id="frames-input" type="number" min="1" max="1000000" value="60"></label>
             <button id="step-n-btn" type="button">Step N Frames</button>
           </div>
+          <div class="grid three">
+            <label class="switch"><input id="reset-hold-toggle" type="checkbox" checked> hold after reset</label>
+            <label>ROM wait ms<input id="rom-wait-ms" type="number" min="0" max="10000" value="600"></label>
+            <button id="rom-reload-btn" type="button">Reload ROM</button>
+          </div>
           <p class="tiny">タッチは画面上をクリックまたはドラッグします。回転時も表示上の位置からDS座標へ変換します。</p>
         </div>
         <div class="section">
@@ -409,6 +414,11 @@
             <button id="mcp-run-btn" type="button">Run</button>
           </div>
           <label>Params JSON<textarea id="mcp-params" class="mono">{}</textarea></label>
+          <label>Batch JSON<textarea id="mcp-batch" class="mono">[
+  { "command": "status", "params": {} },
+  { "command": "getRegisters", "params": { "cpu": "arm9" } }
+]</textarea></label>
+          <button id="mcp-batch-run-btn" type="button">Run Batch</button>
           <pre id="mcp-output"></pre>
         </div>
         <div class="section">
@@ -425,7 +435,7 @@
     </main>
   </div>
 
-  <script src="desmume.js?v=20260617-savestate-diagnostics1111"></script>
+  <script src="desmume.js?v=20260618-safe-reset-rom-reload"></script>
   <script>
     const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
     const state = {
@@ -469,6 +479,7 @@
     const apiDescriptions = {
       status: "現在の停止状態、フレーム、速度、描画/音声/デバッグ設定、PC/CPSRを返します。",
       loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
+      loadRomBytes: "MCPから渡されたROMバイトをブラウザ内だけで読み込みます。bytes配列またはbase64を指定します。",
       importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
       exportSaveFile: "現在のセーブデータをファイルとして保存します。",
       saveSaveSlot: "現在のカートリッジ保存領域をブラウザの指定スロットに保存します。",
@@ -481,7 +492,8 @@
       exportStateFile: "現在のステートをファイルとして保存します。",
       pause: "エミュレーターを停止します。",
       resume: "エミュレーターを再開します。",
-      reset: "ロード済みROMをリセットします。",
+      reset: "実行を止めて、保持しているROMバイトをWASM FSへ書き戻し、ROMロード手順を通して再起動します。",
+      reloadRom: "保持しているROMをWASM FSへ再書き込みして読み直します。セーブ反映やゼロ埋め疑いの診断に使います。",
       setSpeed: "実行速度を0.25倍から4倍までで指定します。",
       stepFrames: "指定フレーム数だけ進めます。",
       setRenderEnabled: "画面描画を有効または無効にします。",
@@ -517,6 +529,7 @@
       wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
       setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
       injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
+      batch: "複数のMCPコマンドを順番に実行し、各結果を配列で返します。",
       setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
     };
 
@@ -567,7 +580,7 @@
       window.wasmReady = () => log("native module signaled ready");
       state.module = await CreateDesmumeModule({ noInitialRun: false });
       [
-        ["loadROM", "number", ["number"]], ["reset", null, []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
+        ["loadROM", "number", ["number"]], ["reset", "number", []], ["isRomLoaded", "number", []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
         ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
         ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["dbgGetLastStateChunk", "number", []], ["dbgGetLastStatePhase", "number", []], ["pauseEmu", "number", ["number"]],
@@ -608,9 +621,19 @@
       });
     }
 
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+    }
+
+    function bootWaitMs(params = {}) {
+      return Math.max(0, Math.min(10000, Number(params.waitMs ?? params.romWaitMs ?? ui.romWaitMs.value ?? 600)));
+    }
+
     async function reloadSelectedRom() {
       const { file, bytes } = await readFileFromInput(ui.romFile);
       writeRomFile(file.name, bytes);
+      state.fns.pauseEmu(1);
+      await sleep(0);
       const ret = state.fns.loadROM(bytes.length);
       state.frame = 0;
       drawFrame();
@@ -619,7 +642,8 @@
     }
 
     function writeRomFile(name, bytes) {
-      const romBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      const romBytes = bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes);
+      validateRomBytes(romBytes);
       state.module.FS.writeFile("rom.nds", romBytes);
       state.romName = name || "rom.nds";
       state.romBytes = romBytes;
@@ -627,7 +651,30 @@
       return romBytes.length;
     }
 
-    function reloadCurrentRom() {
+    function validateRomBytes(bytes) {
+      if (!bytes || bytes.length < 0x200) throw new Error("ROM data is too small or missing");
+      let nonZero = false;
+      for (let i = 0; i < Math.min(bytes.length, 0x200); i++) {
+        if (bytes[i] !== 0) {
+          nonZero = true;
+          break;
+        }
+      }
+      if (!nonZero) throw new Error("ROM header is all zero");
+    }
+
+    function bytesFromParams(params = {}) {
+      if (params.bytes) return new Uint8Array(params.bytes);
+      if (params.base64) {
+        const raw = atob(String(params.base64));
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        return bytes;
+      }
+      throw new Error("bytes or base64 is required");
+    }
+
+    async function reloadCurrentRom(options = {}) {
       let romSize = state.romSize;
       if (state.romBytes) {
         romSize = writeRomFile(state.romName, state.romBytes);
@@ -636,7 +683,14 @@
         romSize = fs.analyzePath("rom.nds").exists ? writeRomFile("rom.nds", fs.readFile("rom.nds")) : 0;
       }
       if (!romSize) throw new Error("ROM is not loaded");
+      state.fns.pauseEmu(1);
+      state.running = false;
+      state.paused = true;
+      state.frameBudget = 0;
+      await sleep(Number(options.preWaitMs ?? 0));
       const ret = state.fns.loadROM(romSize);
+      state.fns.pauseEmu(1);
+      await sleep(Number(options.waitMs ?? 0));
       if (ret === 0) {
         state.romSize = romSize;
         state.frame = 0;
@@ -644,6 +698,9 @@
         state.lastBreakKey = "";
         state.breakLabel = "";
         state.fns.dbgClearBreakStatus();
+        state.running = options.resume === true;
+        state.paused = options.resume === true ? false : true;
+        state.fns.pauseEmu(options.resume === true ? 0 : 1);
         drawFrame();
       }
       return ret;
@@ -664,10 +721,10 @@
       return { path, ret: 0 };
     }
 
-    function applySaveAndReloadRom(name, bytes) {
+    async function applySaveAndReloadRom(name, bytes, options = {}) {
       const saveLoad = writeSaveForRom(name, bytes);
       if (saveLoad.ret !== 0) return saveLoad;
-      const ret = reloadCurrentRom();
+      const ret = await reloadCurrentRom(options);
       return { ...saveLoad, ret };
     }
 
@@ -682,7 +739,7 @@
       writeRomFile("pending-rom.nds", rom);
       const ret = state.fns.loadROM(rom.length);
       if (ret === 0) {
-        const saveLoad = applySaveAndReloadRom(saveName, save);
+        const saveLoad = await applySaveAndReloadRom(saveName, save, { waitMs: bootWaitMs() });
         log(`save applied via ${saveLoad.path}`);
       }
       state.fns.pauseEmu(1);
@@ -1016,25 +1073,40 @@
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
         if (native) syncNativeBreakStatus(native);
         if (native && state.fns.dbgGetLastStateChunk) native.lastStateLoad = { chunk: state.fns.dbgGetLastStateChunk(), phase: state.fns.dbgGetLastStatePhase() };
-        return { ready: state.ready, paused: state.paused, running: state.running, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
+        return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: state.ready ? state.fns.isRomLoaded() === 1 : false, romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
       },
       async loadRomFile() {
         ensureReady();
         const { file, bytes } = ui.romFile.files && ui.romFile.files[0] ? await readFileFromInput(ui.romFile) : await openPicker(ui.romFile);
-        writeRomFile(file.name, bytes);
-        const ret = state.fns.loadROM(bytes.length);
-        state.running = ret === 0;
-        state.paused = false;
-        state.frame = 0;
-        log(`ROM loaded: ${file.name} (${bytes.length} bytes)`);
-        return { ok: ret === 0, ret, name: file.name, size: bytes.length };
+        pauseForFileLoad();
+        try {
+          writeRomFile(file.name, bytes);
+          const ret = await reloadCurrentRom({ waitMs: bootWaitMs(), resume: true });
+          log(`ROM loaded: ${file.name} (${bytes.length} bytes)`);
+          return { ok: ret === 0, ret, name: file.name, size: bytes.length, waitMs: bootWaitMs(), romLoaded: state.fns.isRomLoaded() === 1 };
+        } finally {
+          restoreAfterFileLoad({ running: true, paused: false });
+        }
+      },
+      async loadRomBytes(params = {}) {
+        ensureReady();
+        const bytes = bytesFromParams(params);
+        pauseForFileLoad();
+        try {
+          writeRomFile(params.name || "mcp-rom.nds", bytes);
+          const ret = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: params.resume !== false });
+          log(`ROM loaded from MCP bytes: ${params.name || "mcp-rom.nds"} (${bytes.length} bytes)`);
+          return { ok: ret === 0, ret, name: params.name || "mcp-rom.nds", size: bytes.length, waitMs: bootWaitMs(params), romLoaded: state.fns.isRomLoaded() === 1 };
+        } finally {
+          restoreAfterFileLoad({ running: params.resume !== false, paused: params.resume === false });
+        }
       },
       async importSaveFile() {
         ensureReady();
         const { file, bytes } = ui.saveFile.files && ui.saveFile.files[0] ? await readFileFromInput(ui.saveFile) : await openPicker(ui.saveFile);
         const runState = pauseForFileLoad();
         try {
-          const saveLoad = applySaveAndReloadRom(file.name, bytes);
+          const saveLoad = await applySaveAndReloadRom(file.name, bytes, { waitMs: bootWaitMs() });
           let ret = saveLoad.ret;
           if (ret === 0) {
             await idbPut(`save:${ui.stateSlot.value}`, bytes);
@@ -1072,7 +1144,7 @@
         if (!bytes) throw new Error(`save slot not found: ${slot}`);
         const runState = pauseForFileLoad();
         try {
-          const saveLoad = applySaveAndReloadRom(slot, bytes);
+          const saveLoad = await applySaveAndReloadRom(slot, bytes, { waitMs: bootWaitMs() });
           let ret = saveLoad.ret;
           ui.storageStatus.textContent = `save loaded ${slot}`;
           await recordRecentFile("save", slot, bytes, slot);
@@ -1141,7 +1213,7 @@
         if (item.kind === "save") {
           const runState = pauseForFileLoad();
           try {
-            const saveLoad = applySaveAndReloadRom(item.name || item.slot || "save.sav", bytes);
+            const saveLoad = await applySaveAndReloadRom(item.name || item.slot || "save.sav", bytes, { waitMs: bootWaitMs() });
             let ret = saveLoad.ret;
             return { ok: ret === 0, ret, item, size: bytes.length, reset: ret === 0, reloaded: ret === 0, paused: runState.paused, path: saveLoad.path };
           } finally {
@@ -1167,7 +1239,30 @@
       },
       async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
       async resume() { ensureReady(); state.breakLabel = ""; state.paused = false; state.running = true; state.fns.dbgClearBreakStatus(); state.fns.pauseEmu(0); updateStatus(); return { ok: true }; },
-      async reset() { ensureReady(); state.breakLabel = ""; state.fns.dbgClearBreakStatus(); state.fns.reset(); state.frame = 0; return { ok: true }; },
+      async reset(params = {}) {
+        ensureReady();
+        const runState = pauseForFileLoad();
+        const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
+        try {
+          const ret = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: !hold && runState.running && !runState.paused });
+          return { ok: ret === 0, ret, reloaded: ret === 0, held: !!hold, waitMs: bootWaitMs(params), romLoaded: state.fns.isRomLoaded() === 1 };
+        } finally {
+          if (hold) restoreAfterFileLoad({ running: false, paused: true });
+          else restoreAfterFileLoad(runState);
+        }
+      },
+      async reloadRom(params = {}) {
+        ensureReady();
+        const runState = pauseForFileLoad();
+        const resume = params.resume === true || (params.resume !== false && runState.running && !runState.paused && !ui.resetHoldToggle.checked);
+        try {
+          const ret = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+          return { ok: ret === 0, ret, reloaded: ret === 0, resumed: resume, waitMs: bootWaitMs(params), romLoaded: state.fns.isRomLoaded() === 1 };
+        } finally {
+          if (!resume) restoreAfterFileLoad({ running: false, paused: true });
+          else restoreAfterFileLoad(runState);
+        }
+      },
       async setSpeed(params) { state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1))); ui.speedSelect.value = String(state.speed); updateStatus(); return { speed: state.speed }; },
       async stepFrames(params) {
         ensureReady();
@@ -1414,6 +1509,17 @@
         return { ok: true, address, value, high: parseNumber(params.high ?? 0) };
       },
       async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value), Number(params.timeoutMs ?? 3000)); },
+      async batch(params = {}) {
+        const items = Array.isArray(params) ? params : Array.isArray(params.commands) ? params.commands : [];
+        if (!items.length) throw new Error("batch requires an array or { commands: [...] }");
+        const results = [];
+        for (const item of items) {
+          const command = String(item.command ?? item.name ?? "");
+          if (!command) throw new Error("batch item is missing command");
+          results.push({ command, result: await runCommand(command, item.params || {}) });
+        }
+        return { results };
+      },
       async setFeatureSet(params = {}) {
         ui.debugToggle.checked = params.debugger !== false;
         ui.memoryAuto.value = params.memory === false ? "0" : ui.memoryAuto.value;
@@ -1552,6 +1658,7 @@
     ui.pauseBtn.addEventListener("click", () => runCommand("pause").catch((e) => log(e.message)));
     ui.resumeBtn.addEventListener("click", () => runCommand("resume").catch((e) => log(e.message)));
     ui.resetBtn.addEventListener("click", () => runCommand("reset").catch((e) => log(e.message)));
+    ui.romReloadBtn.addEventListener("click", () => runCommand("reloadRom", { waitMs: Number(ui.romWaitMs.value), resume: !ui.resetHoldToggle.checked }).catch((e) => log(e.message)));
     ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).catch((e) => log(e.message)));
     ui.stepNBtn.addEventListener("click", () => runCommand("stepFrames", { frames: Number(ui.framesInput.value) }).catch((e) => log(e.message)));
     ui.speedSelect.addEventListener("change", () => runCommand("setSpeed", { speed: Number(ui.speedSelect.value) }).catch((e) => log(e.message)));
@@ -1631,6 +1738,11 @@
       let params = {};
       try { params = JSON.parse(ui.mcpParams.value || "{}"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
       runCommand(ui.mcpCommand.value, params).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
+    });
+    ui.mcpBatchRunBtn.addEventListener("click", () => {
+      let items = [];
+      try { items = JSON.parse(ui.mcpBatch.value || "[]"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
+      runCommand("batch", Array.isArray(items) ? items : { commands: items.commands || [] }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
     });
     ui.scriptRunBtn.addEventListener("click", () => runCommand("injectScript", { code: ui.scriptCode.value }).then((r) => ui.scriptOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.scriptOutput.textContent = e.message));
 

@@ -38,3 +38,7 @@
 - 2026-06-17: `D:\software\state.dst` はWi-Fi chunk `111` を含み、ブラウザビルドで `wifiHandler->LoadState()` に入ると `table index is out of bounds` で落ちた。EmscriptenビルドではWi-Fi emulationを使わないため、`old/desmume/desmume/src/saves.cpp` のchunk `111` は読み飛ばす。
 - 2026-06-18: `FS.unlink()` は対象ファイルが無いと `ErrnoError errno 44` を投げる。save import 前の `rom.sav` / `rom.dsv` 掃除では `FS.analyzePath(path).exists` で存在確認してから消し、ENOENTをコンソールへ出さない。
 - 2026-06-18: セーブ反映などのROM再ロードはWASM FS上の既存 `rom.nds` を信頼せず、ファイル選択時に得た `Uint8Array` を `state.romBytes` に保持して毎回 `FS.writeFile("rom.nds", romBytes)` し直してから `loadROM()` する。FS側が壊れた/空になった状態を再利用すると、メモリ00埋めのままPCだけ進んでクラッシュする。
+- 2026-06-18: UI/APIの `reset` は `NDS_Reset()` 直叩きではなく、実行を止めて `state.romBytes` をWASM FSへ再書き込みし、`loadROM()` 手順を通す。ロード直後はネイティブを `pauseEmu(1)` で止め、既定600ms待機してから、GUI/API指定に応じて停止維持または再開する。ネイティブ側にも `romLoaded` ガードを置き、ROM未ロード時の `runFrame()` と `reset()` は進めない。
+- 2026-06-18: デバッグ用に `status().romLoaded` / `status().loadingFile`、`reloadRom`、WebMCP `batch`、GUIのReset hold/ROM wait/Reload ROM/Batch JSONを追加した。リセットクラッシュ再現時は新規ページでROMを読み、`DesmumeMCP.call("reset", { holdPaused: true, waitMs: 1000 })` の結果と `status` を見る。
+- 2026-06-18: WebMCPからROMロード手順を確認できるよう `loadRomBytes` を追加した。`bytes` 配列または `base64` を受け取るが、公開チャットに実ROMを流さないこと。通常のDQ9検証はGUI file pickerで読む。
+- 2026-06-18: ネイティブ `loadROM()` は極小/不正バイト列でも成功扱いになり得るため、JS側 `writeRomFile()` で `0x200` 未満とヘッダ先頭 `0x200` 全ゼロを拒否する。ゼロ埋めROM状態の再発防止なので外さない。
