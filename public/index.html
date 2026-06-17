@@ -385,7 +385,7 @@
             <label>Recent save/state<select id="recent-file-select"><option value="">none</option></select></label>
             <button id="recent-reload-btn" type="button">Reload Recent</button>
           </div>
-          <p class="tiny">セーブスロットは現在のカートリッジ保存領域をブラウザに保存します。ROMを読み込んだ後にLoad .sav Slotを押すと、そのセーブを使ってリセットします。</p>
+          <p class="tiny">セーブスロットは現在のカートリッジ保存領域をブラウザに保存します。ROMを読み込んだ後にLoad .sav Slotを押すと、そのセーブを使ってROMを再読み込みします。</p>
         </div>
         <div class="section">
           <h2>Hotkeys</h2>
@@ -469,7 +469,7 @@
       importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
       exportSaveFile: "現在のセーブデータをファイルとして保存します。",
       saveSaveSlot: "現在のカートリッジ保存領域をブラウザの指定スロットに保存します。",
-      loadSaveSlot: "ブラウザの指定スロットからカートリッジ保存領域を読み込み、ROMをリセットして反映します。",
+      loadSaveSlot: "ブラウザの指定スロットからカートリッジ保存領域を読み込み、ROMを再読み込みして反映します。",
       saveState: "現在のエミュレーター状態を保存し、slot指定時はブラウザストレージにも保存します。",
       loadState: "保存済みステートを読み込みます。停止中なら停止したまま読み込みます。",
       listRecentFiles: "最近読み込んだセーブ/ステートを最大6件返します。",
@@ -603,6 +603,16 @@
         if (!file) return reject(new Error("file not selected"));
         file.arrayBuffer().then((buf) => resolve({ file, bytes: new Uint8Array(buf) }), reject);
       });
+    }
+
+    async function reloadSelectedRom() {
+      const { file, bytes } = await readFileFromInput(ui.romFile);
+      state.module.FS.writeFile("rom.nds", bytes);
+      const ret = state.fns.loadROM(bytes.length);
+      state.frame = 0;
+      drawFrame();
+      log(`ROM reloaded: ${file.name} (${bytes.length} bytes)`);
+      return ret;
     }
 
     async function openPicker(input) {
@@ -950,12 +960,10 @@
           if (ret === 0) {
             await idbPut(`save:${ui.stateSlot.value}`, bytes);
             await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
-            state.fns.reset();
-            state.frame = 0;
-            drawFrame();
+            await reloadSelectedRom();
           }
-          log(`save imported and reset: ${file.name}`);
-          return { ok: ret === 0, ret, size: bytes.length, reset: ret === 0 };
+          log(`save imported and ROM reloaded: ${file.name}`);
+          return { ok: ret === 0, ret, size: bytes.length, reset: false, reloaded: ret === 0 };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -989,13 +997,11 @@
           state.module.FS.writeFile("import.sav", bytes);
           const ret = state.fns.savImportFromFile(bytes.length);
           if (ret === 0) {
-            state.fns.reset();
-            state.frame = 0;
-            drawFrame();
+            await reloadSelectedRom();
           }
           ui.storageStatus.textContent = `save loaded ${slot}`;
           await recordRecentFile("save", slot, bytes, slot);
-          return { ok: ret === 0, ret, slot, size: bytes.length, reset: ret === 0, paused: runState.paused };
+          return { ok: ret === 0, ret, slot, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused };
         } finally {
           restoreAfterFileLoad(runState);
         }
@@ -1065,11 +1071,9 @@
             state.module.FS.writeFile("import.sav", bytes);
             const ret = state.fns.savImportFromFile(bytes.length);
             if (ret === 0) {
-              state.fns.reset();
-              state.frame = 0;
-              drawFrame();
+              await reloadSelectedRom();
             }
-            return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
+            return { ok: ret === 0, ret, item, size: bytes.length, reset: false, reloaded: ret === 0, paused: runState.paused };
           } finally {
             restoreAfterFileLoad(runState);
           }
