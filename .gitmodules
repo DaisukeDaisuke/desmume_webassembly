@@ -1,4 +1,4 @@
 [submodule "old/desmume"]
 	path = old/desmume
 	url = https://github.com/DaisukeDaisukeForks/desmume.git
-	branch = webassembly
+	branch = master
