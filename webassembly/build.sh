@@ -28,6 +28,10 @@ mapfile -t CORE_CPP < <(
     ! -path "*/frontend/*" \
     ! -path "*/gdbstub/*" \
     ! -path "*/utils/AsmJit/*" \
+    ! -name "*_AVX*.cpp" \
+    ! -name "*_SSE*.cpp" \
+    ! -name "*_NEON.cpp" \
+    ! -name "*_AltiVec.cpp" \
     ! -name "OGLRender*.cpp" \
     ! -name "ogl_collector.cpp" \
     ! -name "lua-engine.cpp" \
