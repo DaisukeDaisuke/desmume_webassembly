@@ -41,7 +41,17 @@ mapfile -t CORE_CPP < <(
     | sort
 )
 
-emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" \
+EXTRA_SOURCES=(
+  "${SRC_DIR}/metaspu/metaspu.cpp"
+  "${SRC_DIR}/libretro-common/compat/compat_strl.c"
+  "${SRC_DIR}/libretro-common/encodings/encoding_utf.c"
+  "${SRC_DIR}/libretro-common/file/file_path.c"
+  "${SRC_DIR}/libretro-common/file/retro_dirent.c"
+  "${SRC_DIR}/libretro-common/rthreads/rthreads.c"
+  "${SRC_DIR}/libretro-common/string/stdstring.c"
+)
+
+emcc "${ROOT_DIR}/webassembly/wasm-port.cpp" "${CORE_CPP[@]}" "${EXTRA_SOURCES[@]}" \
   -I"${SRC_DIR}" \
   -I"${SRC_DIR}/addons" \
   -I"${SRC_DIR}/utils" \

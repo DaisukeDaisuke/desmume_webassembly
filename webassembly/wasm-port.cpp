@@ -46,7 +46,7 @@ static std::string textScratch;
 
 u32 dstFrameBuffer[2][256 * 192];
 
-unsigned cpu_features_get_core_amount(void) { return 1; }
+extern "C" unsigned cpu_features_get_core_amount(void) { return 1; }
 
 static armcpu_t *cpuFor(int proc) { return proc == 0 ? &NDS_ARM9 : &NDS_ARM7; }
 
