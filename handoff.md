@@ -35,3 +35,4 @@
 - 2026-06-17: 外部ステートは `stateGetPointer(size)` 後にJSがHEAPへ書く。`loadStateFromBuffer(size)` 側で再度 `truncate(size)` するとEMUEFILE_MEMORY内の読み込み済みバイトが壊れ、`savestate_load()` が `-1` になる。ロード側はサイズ一致確認と `fseek(0)` のみにする。
 - 2026-06-17: `.dst` は `DeSmuME SState` version 12 で圧縮ありだった。`-sUSE_ZLIB=1` だけでは `saves.cpp` の `#ifdef HAVE_LIBZ` が有効にならないため、圧縮savestateは即falseになる。`webassembly/build.sh` のcompileで `-DHAVE_LIBZ` を付ける。
 - 2026-06-17: 圧縮展開後、`EMUFILE_MEMORY` 経由の `savestate_load(*stateFile)` は `memory access out of bounds` を起こした。外部 `.dst` はWASM FSの `import.dst` に書いて `savestate_load("import.dst")` する `loadStateFromFile()` 経路へ変更。
+- 2026-06-17: `D:\software\state.dst` はWi-Fi chunk `111` を含み、ブラウザビルドで `wifiHandler->LoadState()` に入ると `table index is out of bounds` で落ちた。EmscriptenビルドではWi-Fi emulationを使わないため、`old/desmume/desmume/src/saves.cpp` のchunk `111` は読み飛ばす。
