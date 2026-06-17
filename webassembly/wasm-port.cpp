@@ -293,7 +293,27 @@ int loadStateFromBuffer(int size) {
 }
 
 int loadStateFromFile() {
-  return savestate_load("import.dst") ? 0 : -1;
+  FILE *fp = fopen("import.dst", "rb");
+  if (!fp) return -1;
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return -2;
+  }
+  long size = ftell(fp);
+  if (size <= 0) {
+    fclose(fp);
+    return -3;
+  }
+  if (fseek(fp, 0, SEEK_SET) != 0) {
+    fclose(fp);
+    return -4;
+  }
+  std::vector<u8> bytes((size_t)size);
+  size_t read = fread(bytes.data(), 1, bytes.size(), fp);
+  fclose(fp);
+  if (read != bytes.size()) return -5;
+  EMUFILE_MEMORY file(&bytes);
+  return savestate_load(file) ? 0 : -1;
 }
 
 int dbgGetLastStateChunk() { return wasmLastStateChunk; }
