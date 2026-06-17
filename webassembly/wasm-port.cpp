@@ -16,6 +16,7 @@
 #include "SPU.h"
 #include "armcpu.h"
 #include "debug.h"
+#include "emufile.h"
 #include "mc.h"
 #include "rasterize.h"
 #include "saves.h"
@@ -24,9 +25,6 @@
 CHEATSEXPORT *cheatsExport = NULL;
 
 int emuLastError = 0;
-int DESMUME_SAMPLE_RATE = 48000;
-extern double samples_per_hline;
-
 static EMUFILE_MEMORY *savFile = new EMUFILE_MEMORY();
 static EMUFILE_MEMORY *stateFile = new EMUFILE_MEMORY();
 static u8 *romBuffer = NULL;
@@ -45,8 +43,6 @@ static std::vector<u32> readBreakpoints[2];
 static std::vector<u32> writeBreakpoints[2];
 static std::string textScratch;
 
-extern "C" {
-
 u32 dstFrameBuffer[2][256 * 192];
 
 unsigned cpu_features_get_core_amount(void) { return 1; }
@@ -54,8 +50,8 @@ unsigned cpu_features_get_core_amount(void) { return 1; }
 static armcpu_t *cpuFor(int proc) { return proc == 0 ? &NDS_ARM9 : &NDS_ARM7; }
 
 static void gpu_screen_to_rgb(u32 *dst) {
-  ColorspaceConvertBuffer555To8888Opaque<false, false>(
-      (const uint16_t *)GPU->GetDisplayInfo().masterNativeBuffer, dst,
+  ColorspaceConvertBuffer555xTo8888Opaque<false, false, BESwapNone>(
+      (const uint16_t *)GPU->GetDisplayInfo().masterNativeBuffer16, dst,
       GPU_FRAMEBUFFER_NATIVE_WIDTH * GPU_FRAMEBUFFER_NATIVE_HEIGHT * 2);
 }
 
@@ -107,9 +103,10 @@ int main() {
   return 0;
 }
 
+extern "C" {
+
 void setSampleRate(int r) {
-  DESMUME_SAMPLE_RATE = r;
-  samples_per_hline = (DESMUME_SAMPLE_RATE / 59.8261f) / 263.0f;
+  (void)r;
 }
 
 void *prepareRomBuffer(int rl) {
