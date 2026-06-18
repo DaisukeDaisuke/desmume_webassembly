@@ -21,19 +21,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
       - name: Install Emscripten
         run: |
           sudo apt-get update > /dev/null 2>&1
           sudo apt-get install -y emscripten > /dev/null 2>&1
-
-      - name: Get Emscripten cache path
-        id: em-cache-path
-        run: echo "path=$(em-config CACHE)" >> $GITHUB_OUTPUT
 
       - name: Cache Emscripten system libraries
         uses: actions/cache@v5
