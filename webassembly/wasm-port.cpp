@@ -196,7 +196,6 @@ void *getSymbol(int id) {
 int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
-  savFile = new EMUFILE_MEMORY();  // ★ 追加
   NDS_Reset();
   frameCounter = 0;
   lastBreak.hit = false;
