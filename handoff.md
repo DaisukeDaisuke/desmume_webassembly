@@ -49,3 +49,6 @@
 - 2026-06-18: `savGetPointer(desiredSize)` は `EMUFILE_MEMORY::truncate()` を呼ばない。要求サイズが現セーブバッファより大きい場合は `NULL` を返し、書き込みは `savImportFromFile()` 経由に限定する。
 - 2026-06-18: Chrome MCP検証用に `loadStateBytes` / `loadStateUrl` を追加した。`D:\software\state.dst` を一時PHPルーターで `/state.dst` として返し、ROMロード→stateロード→20F実行→Resetボタンクリックを確認。`table index is out of bounds` は出ず、reset後も `romLoaded=true`、PCは0ではない。
 - 2026-06-18: `NDS_LoadROM()` は内部で `NDS_Reset()` するが既存ROMの `gameInfo.closeROM()` はしない。WASM `loadROM()` はロード済みROMがある場合、再ロード前に `NDS_FreeROM()` を呼んで古いROM/slot/save関連状態を閉じる。
+- 2026-06-18: ローカル `http://localhost:8766/` の Chrome MCP 検証で、未ROM `DesmumeMCP.call("resume", {})` は即 `{ ok:false, romLoaded:false }` を返すことを確認。`waitMs` も動作。
+- 2026-06-18: 同検証で、`saveState` 後の `loadState` / browser state slot load は `table index is out of bounds` または `memory access out of bounds` を起こし、`status().native.lastStateLoad` は chunk `61`, phase `10` 付近で止まった。`mmu_savestate` / `BackupDevice::load_state()` 周辺の再調査が必要。
+- 2026-06-18: 同検証で、`Save In` は UI log に `function signature mismatch` を残し、その後 `status().romLoaded` が `false` になった。ROM 再ロード経路か upload 後ハンドラのどこかで壊れている。

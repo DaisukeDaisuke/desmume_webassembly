@@ -272,15 +272,17 @@
           <h2>Call Stack</h2>
           <div class="row">
             <button id="stack-refresh-btn" type="button">Refresh Stack</button>
+            <button id="stack-next-call-btn" type="button">Next Call</button>
+            <button id="stack-return-btn" type="button">Return To Pop</button>
             <button id="stack-clear-btn" type="button">Clear Trace</button>
           </div>
           <div class="table-wrap" aria-live="polite">
             <table>
               <thead>
-                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>jump</th></tr>
+                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>caller</th><th>callee</th></tr>
               </thead>
               <tbody id="callstack-body">
-                <tr><td colspan="6">stack trace disabled</td></tr>
+                <tr><td colspan="7">stack trace disabled</td></tr>
               </tbody>
             </table>
           </div>
@@ -481,7 +483,7 @@
       status: "現在の停止状態、フレーム、速度、描画/音声/デバッグ設定、PC/CPSRを返します。",
       loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
       loadRomBytes: "MCPから渡されたROMバイトをブラウザ内だけで読み込みます。bytes配列またはbase64を指定します。",
-      loadRomUrl: "同一originまたはCORS許可済みURLからROMを取得し、ブラウザ内だけで読み込みます。",
+      loadRomUrl: "同一originまたはCORS許可済みURLからROMを取得し、ブラウザ内だけで読み込みます。ローカル検証は /dq9.nds のような同一origin URL が最短です。",
       importSaveFile: "ユーザーが選択したセーブファイルをカートリッジ保存領域に読み込みます。",
       exportSaveFile: "現在のセーブデータをファイルとして保存します。",
       saveSaveSlot: "現在のカートリッジ保存領域をブラウザの指定スロットに保存します。",
@@ -495,7 +497,7 @@
       importStateFile: "外部ステートファイルを読み込みます。",
       exportStateFile: "現在のステートをファイルとして保存します。",
       pause: "エミュレーターを停止します。",
-      resume: "エミュレーターを再開します。",
+      resume: "エミュレーターを再開します。ROM未ロード時は待ち続けず、未ロード結果を即返します。",
       reset: "実行を止めて、保持しているROMバイトをWASM FSへ書き戻し、ROMロード手順を通して再起動します。",
       reloadRom: "保持しているROMをWASM FSへ再書き込みして読み直します。セーブ反映やゼロ埋め疑いの診断に使います。",
       setSpeed: "実行速度を0.25倍から4倍までで指定します。",
@@ -530,7 +532,12 @@
       callStack: "記録済みコールスタックをJSONで取得します。",
       runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
       runUntilNextCall: "次の関数入口フックが発火するまで実行します。",
+      returnToPop: "runUntilReturn の別名です。現在の深度から1つ以上戻るまで進めます。",
+      nextFunctionEnter: "runUntilNextCall の別名です。次の関数入口まで進めます。",
+      nextCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
+      nextFunctionCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
       wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
+      waitMs: "指定ミリ秒だけ待機して status を返します。短い sleep 用の別名です。",
       setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
       injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
       batch: "複数のMCPコマンドを順番に実行し、各結果を配列で返します。",
@@ -569,6 +576,22 @@
 
     function ensureReady() {
       if (!state.ready) throw new Error("wasm is not ready");
+    }
+
+    function hasLoadedRom() {
+      return !!(state.ready && state.fns.isRomLoaded && state.fns.isRomLoaded() === 1 && state.romSize > 0);
+    }
+
+    function ensureRomLoaded(action = "ROM is not loaded") {
+      ensureReady();
+      if (!hasLoadedRom()) {
+        throw new Error(`${action}. Load a ROM first with Files > ROM or loadRomUrl("/dq9.nds").`);
+      }
+    }
+
+    function tryGetPc(cpu = state.selectedCpu) {
+      if (!hasLoadedRom()) return null;
+      return state.fns.dbgGetReg(cpuIndex(cpu), 18) >>> 0;
     }
 
     function wrap(name, ret, args) {
@@ -751,6 +774,13 @@
       return { ...saveLoad, ret };
     }
 
+    function loadStateBytesFromMemory(bytes) {
+      const ptr = state.fns.stateGetPointer(bytes.length);
+      if (!ptr) throw new Error("state buffer allocation failed");
+      state.module.HEAPU8.set(bytes, ptr);
+      return state.fns.loadStateFromBuffer(bytes.length);
+    }
+
     async function restorePendingSaveBoot() {
       if (sessionStorage.getItem("desmume-pending-save-boot") !== "1") return;
       sessionStorage.removeItem("desmume-pending-save-boot");
@@ -782,7 +812,7 @@
     }
 
     function getPc(cpu = state.selectedCpu) {
-      ensureReady();
+      ensureRomLoaded("PC is unavailable because no ROM is loaded");
       return state.fns.dbgGetReg(cpuIndex(cpu), 18) >>> 0;
     }
 
@@ -914,7 +944,10 @@
     function updateStatus() {
       ui.frameStatus.textContent = `frame ${state.frame}`;
       ui.speedStatus.textContent = `speed ${state.speed.toFixed(2)}x`;
-      if (state.ready) ui.pcStatus.textContent = `${state.selectedCpu} pc ${hex(getPc())}`;
+      if (state.ready) {
+        const pc = tryGetPc();
+        ui.pcStatus.textContent = `${state.selectedCpu} pc ${pc === null ? "--" : hex(pc)}`;
+      }
       ui.readyLed.className = state.ready ? `led ${state.paused ? "paused" : "ready"}` : "led";
       ui.readyText.textContent = state.ready ? (state.breakLabel || (state.paused ? "paused" : "running")) : ui.readyText.textContent;
     }
@@ -942,7 +975,7 @@
     }
 
     function getRegisters(cpu = state.selectedCpu) {
-      ensureReady();
+      ensureRomLoaded("Registers are unavailable because no ROM is loaded");
       const idx = cpuIndex(cpu);
       const names = ["r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12","sp","lr","pc","cpsr","spsr"];
       const values = {};
@@ -951,6 +984,14 @@
     }
 
     function renderRegisters() {
+      if (!hasLoadedRom()) {
+        [...ui.registers.querySelectorAll("div")].forEach((row) => {
+          row.classList.remove("changed");
+          row.querySelector("b").textContent = "--------";
+        });
+        state.previousRegisters = null;
+        return null;
+      }
       const regs = getRegisters();
       [...ui.registers.querySelectorAll("div")].forEach((row) => {
         const name = row.querySelector("span").textContent;
@@ -1012,13 +1053,48 @@
     function renderCallStack(data) {
       const frames = data && Array.isArray(data.frames) ? data.frames : [];
       if (!frames.length) {
-        ui.callstackBody.innerHTML = `<tr><td colspan="6">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
+        ui.callstackBody.innerHTML = `<tr><td colspan="7">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
         return;
       }
       ui.callstackBody.innerHTML = frames.map((frame, index) => {
+        const caller = hex(frame.caller);
         const callee = hex(frame.callee);
-        return `<tr><td>${index}</td><td>${hex(frame.caller)}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${callee}">Jump</button></td></tr>`;
+        return `<tr><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${caller}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-label="callee">Callee</button></td></tr>`;
       }).join("");
+    }
+
+    async function refreshDebuggerViews(disasmParams = {}) {
+      renderRegisters();
+      renderCallStack(JSON.parse(state.fns.dbgCallStackJson()));
+      const disasm = await commands.disassemble(disasmParams);
+      renderDisassembly(disasm.text);
+      syncNativeBreakStatus();
+      updateStatus();
+      return disasm;
+    }
+
+    async function runTraceStepper(label, params = {}, shouldStop) {
+      ensureRomLoaded(`${label} requires a loaded ROM`);
+      if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
+      if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
+        await commands.setStackTracePrivilegeCheck({ enabled: true });
+      }
+      const startDepth = state.fns.traceGetDepth();
+      const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
+      const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+      let steps = 0;
+      while (performance.now() < deadline && steps < maxSteps) {
+        state.fns.dbgStep(cpuIndex(params.cpu), 1);
+        steps++;
+        const callStack = JSON.parse(state.fns.dbgCallStackJson());
+        const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+        if (shouldStop({ startDepth, depth, callStack })) {
+          await refreshDebuggerViews({ cpu: params.cpu });
+          return { ok: true, steps, depth, pc: getPc(params.cpu), callStack };
+        }
+      }
+      await refreshDebuggerViews({ cpu: params.cpu });
+      throw new Error(`${label} timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
     }
 
     function renderMemoryDump(result) {
@@ -1101,7 +1177,7 @@
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
         if (native) syncNativeBreakStatus(native);
         if (native && state.fns.dbgGetLastStateChunk) native.lastStateLoad = { chunk: state.fns.dbgGetLastStateChunk(), phase: state.fns.dbgGetLastStatePhase() };
-        return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: state.ready ? state.fns.isRomLoaded() === 1 : false, romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
+        return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
       },
       async loadRomFile() {
         ensureReady();
@@ -1156,7 +1232,7 @@
         }
       },
       async exportSaveFile() {
-        ensureReady();
+        ensureRomLoaded("save export requires a loaded ROM");
         const ret = state.fns.savExportToFile();
         if (ret !== 0) throw new Error("save export failed");
         const bytes = state.module.FS.readFile("export.sav");
@@ -1164,11 +1240,12 @@
         return { ok: true, size: bytes.length };
       },
       async saveSaveSlot(params = {}) {
-        ensureReady();
+        ensureRomLoaded("save slot export requires a loaded ROM");
         const slot = String(params.slot ?? ui.stateSlot.value);
         const ret = state.fns.savExportToFile();
         if (ret !== 0) throw new Error("save export failed");
         const bytes = state.module.FS.readFile("export.sav");
+        if (!bytes.length) throw new Error("save export produced an empty buffer");
         await idbPut(`save:${slot}`, bytes);
         await recordRecentFile("save", slot, bytes, slot);
         ui.storageStatus.textContent = `save saved ${slot}`;
@@ -1191,8 +1268,9 @@
         }
       },
       async saveState(params = {}) {
-        ensureReady();
+        ensureRomLoaded("state save requires a loaded ROM");
         const size = state.fns.saveStateToBuffer();
+        if (size <= 0) throw new Error("state save failed");
         const ptr = state.fns.stateGetPointer(0);
         const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
         if (params.slot) {
@@ -1204,18 +1282,21 @@
         return { ok: true, size };
       },
       async loadState(params = {}) {
-        ensureReady();
+        ensureRomLoaded("state load requires a loaded ROM");
         const runState = pauseForFileLoad();
         let bytes = null;
         try {
           if (params.slot) bytes = await idbGet(String(params.slot));
+          if (params.slot && !bytes) throw new Error(`state slot not found: ${params.slot}`);
+          let ret = 0;
           if (bytes) {
-            state.module.FS.writeFile("import.dst", bytes);
-            state.fns.loadStateFromFile();
+            ret = loadStateBytesFromMemory(bytes);
           } else {
             const size = state.fns.stateGetSize();
-            state.fns.loadStateFromBuffer(size);
+            if (size <= 0) throw new Error("in-memory state is empty");
+            ret = state.fns.loadStateFromBuffer(size);
           }
+          if (ret !== 0) throw new Error(`state load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
@@ -1225,12 +1306,13 @@
         }
       },
       async importStateFile(params = {}) {
-        ensureReady();
+        ensureRomLoaded("state import requires a loaded ROM");
         const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
         const runState = pauseForFileLoad();
         try {
           state.module.FS.writeFile("import.dst", bytes);
           const ret = state.fns.loadStateFromFile();
+          if (ret !== 0) throw new Error(`state import failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
@@ -1242,12 +1324,13 @@
         }
       },
       async loadStateBytes(params = {}) {
-        ensureReady();
+        ensureRomLoaded("state byte load requires a loaded ROM");
         const bytes = bytesFromParams(params);
         const runState = pauseForFileLoad();
         try {
           state.module.FS.writeFile("import.dst", bytes);
           const ret = state.fns.loadStateFromFile();
+          if (ret !== 0) throw new Error(`state byte load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
@@ -1286,8 +1369,9 @@
         }
         const runState = pauseForFileLoad();
         try {
-          state.module.FS.writeFile("import.dst", bytes);
-          const ret = state.fns.loadStateFromFile();
+          ensureRomLoaded("recent state reload requires a loaded ROM");
+          const ret = item.slot ? loadStateBytesFromMemory(bytes) : (state.module.FS.writeFile("import.dst", bytes), state.fns.loadStateFromFile());
+          if (ret !== 0) throw new Error(`recent state load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
           drawFrame();
@@ -1297,15 +1381,33 @@
         }
       },
       async exportStateFile() {
+        ensureRomLoaded("state export requires a loaded ROM");
         const result = await commands.saveState();
         const ptr = state.fns.stateGetPointer(0);
         download("desmume-state.dst", state.module.HEAPU8.slice(ptr, ptr + result.size));
         return result;
       },
       async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
-      async resume() { ensureReady(); state.breakLabel = ""; state.paused = false; state.running = true; state.fns.dbgClearBreakStatus(); state.fns.pauseEmu(0); updateStatus(); return { ok: true }; },
-      async reset(params = {}) {
+      async resume() {
         ensureReady();
+        if (!hasLoadedRom()) {
+          state.breakLabel = "ROM not loaded";
+          state.paused = true;
+          state.running = false;
+          state.fns.pauseEmu(1);
+          updateStatus();
+          return { ok: false, romLoaded: false, reason: "ROM is not loaded" };
+        }
+        state.breakLabel = "";
+        state.paused = false;
+        state.running = true;
+        state.fns.dbgClearBreakStatus();
+        state.fns.pauseEmu(0);
+        updateStatus();
+        return { ok: true, romLoaded: true };
+      },
+      async reset(params = {}) {
+        ensureRomLoaded("reset requires a loaded ROM");
         const runState = pauseForFileLoad();
         const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
         try {
@@ -1317,7 +1419,7 @@
         }
       },
       async reloadRom(params = {}) {
-        ensureReady();
+        ensureRomLoaded("ROM reload requires a loaded ROM");
         const runState = pauseForFileLoad();
         const resume = params.resume === true || (params.resume !== false && runState.running && !runState.paused && !ui.resetHoldToggle.checked);
         try {
@@ -1330,7 +1432,7 @@
       },
       async setSpeed(params) { state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1))); ui.speedSelect.value = String(state.speed); updateStatus(); return { speed: state.speed }; },
       async stepFrames(params) {
-        ensureReady();
+        ensureRomLoaded("frame stepping requires a loaded ROM");
         const frames = Math.max(1, Number(params.frames ?? 1));
         const wasPaused = state.paused;
         state.fns.pauseEmu(0);
@@ -1382,7 +1484,7 @@
       },
       async getRegisters(params = {}) { return getRegisters(params.cpu); },
       async setRegister(params) {
-        ensureReady();
+        ensureRomLoaded("register write requires a loaded ROM");
         const names = { pc: 15, cpsr: 16, spsr: 17 };
         const reg = names[params.register] ?? Number(String(params.register).replace("r", ""));
         const ret = state.fns.dbgSetReg(cpuIndex(params.cpu), reg, parseNumber(params.value));
@@ -1390,7 +1492,7 @@
         return { ok: ret === 0, ret };
       },
       async disassemble(params = {}) {
-        ensureReady();
+        ensureRomLoaded("disassembly requires a loaded ROM");
         const mode = params.mode ?? ui.disasmMode.value;
         const before = Math.max(0, Math.min(64, Number(params.before ?? ui.disasmBefore.value ?? 0)));
         const width = instructionWidthForMode(mode, params.cpu);
@@ -1401,7 +1503,7 @@
         return { address: addr, before, text };
       },
       async dumpMemory(params = {}) {
-        ensureReady();
+        ensureRomLoaded("memory dump requires a loaded ROM");
         const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
         const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
         const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
@@ -1413,7 +1515,7 @@
         return { address: addr, bytes, text: lines.join("\n") };
       },
       async injectMemoryFile(params = {}) {
-        ensureReady();
+        ensureRomLoaded("memory injection requires a loaded ROM");
         const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
         const { file, bytes } = params.bytes
           ? { file: { name: params.name || "api-bytes" }, bytes: new Uint8Array(params.bytes) }
@@ -1428,7 +1530,7 @@
         return { ok: true, address: addr, size: bytes.length, name: file.name };
       },
       async searchMemory(params = {}) {
-        ensureReady();
+        ensureRomLoaded("memory search requires a loaded ROM");
         const addr = parseAddress(params.address ?? ui.searchAddress.value, 0, params.cpu);
         const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
         const size = Math.max(1, Math.min(4, Number(params.size ?? ui.searchSize.value)));
@@ -1471,7 +1573,7 @@
         return { ok: true };
       },
       async writeMemory(params) {
-        ensureReady();
+        ensureRomLoaded("memory write requires a loaded ROM");
         const addr = parseAddress(params.address, 0, params.cpu);
         const value = parseNumber(params.value);
         const size = Number(params.size ?? 1);
@@ -1479,7 +1581,7 @@
         return { ok: state.fns[fn](cpuIndex(params.cpu), addr, value) === 0 };
       },
       async setMemoryFreeze(params) {
-        ensureReady();
+        ensureRomLoaded("memory freeze requires a loaded ROM");
         const item = {
           cpu: String(params.cpu ?? state.selectedCpu),
           address: parseAddress(params.address, 0, params.cpu),
@@ -1495,7 +1597,7 @@
       },
       async listMemoryFreezes() { return state.freezes; },
       async setBreakpoint(params) {
-        ensureReady();
+        ensureRomLoaded("breakpoints require a loaded ROM");
         if (params.id && params.enabled === false) return commands.removeBreakpoint({ id: params.id });
         const bp = { id: Number(params.id ?? state.nextBreakpointId++), cpu: String(params.cpu ?? state.selectedCpu), type: String(params.type ?? "exec"), address: parseAddress(params.address, 0, params.cpu), enabled: params.enabled !== false };
         const fn = bp.type === "read" ? "dbgSetReadBreakpoint" : bp.type === "write" ? "dbgSetWriteBreakpoint" : "dbgSetExecBreakpoint";
@@ -1506,7 +1608,7 @@
         return { id: bp.id, breakpoints: state.breakpoints };
       },
       async setSpecialBreakpoint(params = {}) {
-        ensureReady();
+        ensureRomLoaded("special breakpoints require a loaded ROM");
         const kindMap = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5, undefined: 5 };
         const kind = kindMap[String(params.kind)] ?? Number(params.kind);
         const ret = state.fns.dbgSetSpecialBreakpoint(kind, params.enabled ? 1 : 0);
@@ -1517,7 +1619,7 @@
       },
       async listBreakpoints() { return state.breakpoints; },
       async removeBreakpoint(params = {}) {
-        ensureReady();
+        ensureRomLoaded("breakpoint removal requires a loaded ROM");
         const id = Number(params.id ?? ui.bpIdSelect.value);
         const bp = state.breakpoints.find((x) => x.id === id);
         if (!bp) throw new Error(`breakpoint not found: ${id}`);
@@ -1528,50 +1630,31 @@
         return { ok: true, removed: bp, breakpoints: state.breakpoints };
       },
       async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
-      async step(params = {}) { ensureReady(); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { count, pc: getPc(params.cpu), paused: state.paused }; },
-      async stepOver(params = {}) { ensureReady(); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
+      async step(params = {}) { ensureRomLoaded("CPU step requires a loaded ROM"); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { count, pc: getPc(params.cpu), paused: state.paused }; },
+      async stepOver(params = {}) { ensureRomLoaded("step over requires a loaded ROM"); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
       async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-      async stackTrace(params = {}) { ensureReady(); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-      async callStack() { ensureReady(); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return callStack; },
+      async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+      async callStack() { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return callStack; },
       async runUntilReturn(params = {}) {
-        ensureReady();
-        if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
-        const startDepth = state.fns.traceGetDepth();
-        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
-        let steps = 0;
-        while (performance.now() < deadline && state.fns.traceGetDepth() >= startDepth && steps < Number(params.maxSteps ?? 200000)) {
-          state.fns.dbgStep(cpuIndex(params.cpu), 1);
-          steps++;
-        }
-        const depth = state.fns.traceGetDepth();
-        if (depth >= startDepth) throw new Error("runUntilReturn timeout");
-        updateStatus();
-        return { ok: true, steps, depth, pc: getPc(params.cpu) };
+        return runTraceStepper("runUntilReturn", params, ({ depth, startDepth }) => depth < startDepth);
       },
       async runUntilNextCall(params = {}) {
-        ensureReady();
-        if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
-        const startDepth = state.fns.traceGetDepth();
-        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
-        let steps = 0;
-        while (performance.now() < deadline && state.fns.traceGetDepth() <= startDepth && steps < Number(params.maxSteps ?? 200000)) {
-          state.fns.dbgStep(cpuIndex(params.cpu), 1);
-          steps++;
-        }
-        const depth = state.fns.traceGetDepth();
-        if (depth <= startDepth) throw new Error("runUntilNextCall timeout");
-        updateStatus();
-        return { ok: true, steps, depth, pc: getPc(params.cpu) };
+        return runTraceStepper("runUntilNextCall", params, ({ depth, startDepth }) => depth > startDepth);
       },
       async wait(params = {}) {
         const ms = Math.max(0, Math.min(600000, Number(params.ms ?? params.waitMs ?? 0)));
         await new Promise((resolve) => setTimeout(resolve, ms));
         return commands.status();
       },
+      async waitMs(params = {}) { return commands.wait(params); },
+      async nextFunctionEnter(params = {}) { return commands.runUntilNextCall(params); },
+      async nextCall(params = {}) { return commands.runUntilNextCall(params); },
+      async nextFunctionCall(params = {}) { return commands.runUntilNextCall(params); },
+      async returnToPop(params = {}) { return commands.runUntilReturn(params); },
       async setCTableSeed(params = {}) {
-        ensureReady();
+        ensureRomLoaded("CTable write requires a loaded ROM");
         const address = parseAddress(params.address ?? "02385f0c", 0, params.cpu);
         const value = parseNumber(params.value ?? "0x4b539adb");
         state.fns.dbgWrite32(cpuIndex(params.cpu), address, value);
@@ -1791,6 +1874,8 @@
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
     ui.stackRefreshBtn.addEventListener("click", () => runCommand("callStack").catch((e) => log(e.message)));
+    ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
     ui.callstackBody.addEventListener("click", (e) => {
       const button = e.target.closest("button[data-jump-address]");
