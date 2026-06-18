@@ -14,6 +14,9 @@
       --panel-3: #1a2025;
       --trace: #7cff9b;
       --amber: #f0b35a;
+      --amber-soft: rgba(240, 179, 90, 0.18);
+      --orange-mark: rgba(246, 156, 76, 0.22);
+      --yellow-mark: rgba(233, 196, 106, 0.18);
       --fault: #ff6b6b;
       --solder: #c7d0d7;
       --muted: #7f8b94;
@@ -118,8 +121,36 @@
       gap: 4px 10px;
       font: 12px var(--mono);
     }
-    .registers div { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line-soft); padding: 3px 0; }
+    .registers div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line-soft); padding: 3px 0; }
     .registers div.changed { background: rgba(240, 179, 90, 0.12); border-bottom-color: rgba(240, 179, 90, 0.34); }
+    .registers div.editing { background: rgba(124, 255, 155, 0.08); border-bottom-color: rgba(124, 255, 155, 0.24); }
+    .register-value {
+      position: relative;
+      display: inline-flex;
+      justify-content: flex-end;
+      min-width: 108px;
+      text-align: right;
+    }
+    .register-value b { display: inline-block; min-width: 108px; }
+    .register-value input {
+      position: absolute;
+      inset: -2px -4px;
+      min-height: 0;
+      padding: 2px 4px;
+      border: 0;
+      background: transparent;
+      color: transparent;
+      caret-color: var(--amber);
+      text-align: right;
+      font: inherit;
+    }
+    .register-value input::selection { background: rgba(240, 179, 90, 0.28); color: #fff7eb; }
+    .registers div.editing .register-value input,
+    .register-value input:focus {
+      color: #fff4de;
+      background: rgba(12, 14, 18, 0.92);
+      outline: 1px solid rgba(240, 179, 90, 0.38);
+    }
     .table-wrap {
       max-height: 220px;
       overflow: auto;
@@ -145,9 +176,17 @@
     }
     .disasm-line { display: block; padding: 1px 4px; border-left: 2px solid transparent; white-space: pre; }
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
+    .disasm-line.highlight-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
+    .disasm-line.entry-line { background: var(--yellow-mark); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
+    .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: rgba(255, 107, 107, 0.18); }
+    .callstack-row.highlight { background: rgba(246, 156, 76, 0.12); }
+    .toolbar-block { display: grid; gap: 8px; }
+    .toolbar-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .breakpoint-line { color: var(--fault); }
-    .memory-line { display: block; white-space: pre; }
+    .memory-line { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; line-height: 1.25; white-space: nowrap; }
+    .memory-bytes { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .memory-u32 { color: var(--muted); }
     .memory-byte { border: 0; border-radius: 3px; padding: 0 1px; cursor: pointer; }
     .memory-byte:hover { background: rgba(124, 255, 155, 0.14); color: #eff7f0; }
     .memory-editor {
@@ -205,6 +244,7 @@
             <button id="save-export-btn" type="button">Save Out</button>
             <label class="file-button">State In<input id="state-file" class="hidden-input" type="file" accept=".dst,.ds*"></label>
             <button id="state-export-btn" type="button">State Out</button>
+            <button id="canvas-shot-btn" type="button">Screenshot</button>
           </div>
         </div>
         <div class="section">
@@ -249,29 +289,25 @@
           <h2>Debugger</h2>
           <div class="row">
             <label>CPU<select id="cpu-select"><option value="arm9">ARM9</option><option value="arm7">ARM7</option></select></label>
-            <button id="refresh-debug-btn" type="button">Refresh</button>
-            <button id="cpu-step-btn" type="button">Step</button>
-            <button id="cpu-step-over-btn" type="button">Step Over</button>
             <label class="switch"><input id="debug-toggle" type="checkbox" checked> debugger</label>
             <label class="switch"><input id="trace-toggle" type="checkbox"> stack trace</label>
             <label class="switch"><input id="trace-privilege-toggle" type="checkbox" checked> skip IRQ</label>
           </div>
           <div id="registers" class="registers" aria-live="polite">
-            <div><span>r0</span><b>--------</b></div><div><span>r1</span><b>--------</b></div>
-            <div><span>r2</span><b>--------</b></div><div><span>r3</span><b>--------</b></div>
-            <div><span>r4</span><b>--------</b></div><div><span>r5</span><b>--------</b></div>
-            <div><span>r6</span><b>--------</b></div><div><span>r7</span><b>--------</b></div>
-            <div><span>r8</span><b>--------</b></div><div><span>r9</span><b>--------</b></div>
-            <div><span>r10</span><b>--------</b></div><div><span>r11</span><b>--------</b></div>
-            <div><span>r12</span><b>--------</b></div><div><span>sp</span><b>--------</b></div>
-            <div><span>lr</span><b>--------</b></div><div><span>pc</span><b>--------</b></div>
-            <div><span>cpsr</span><b>--------</b></div><div><span>spsr</span><b>--------</b></div>
+            <div data-register="r0"><span>r0</span><label class="register-value"><b>--------</b><input class="mono" name="r0" data-register-input="r0" value="--------" aria-label="r0 register"></label></div><div data-register="r1"><span>r1</span><label class="register-value"><b>--------</b><input class="mono" name="r1" data-register-input="r1" value="--------" aria-label="r1 register"></label></div>
+            <div data-register="r2"><span>r2</span><label class="register-value"><b>--------</b><input class="mono" name="r2" data-register-input="r2" value="--------" aria-label="r2 register"></label></div><div data-register="r3"><span>r3</span><label class="register-value"><b>--------</b><input class="mono" name="r3" data-register-input="r3" value="--------" aria-label="r3 register"></label></div>
+            <div data-register="r4"><span>r4</span><label class="register-value"><b>--------</b><input class="mono" name="r4" data-register-input="r4" value="--------" aria-label="r4 register"></label></div><div data-register="r5"><span>r5</span><label class="register-value"><b>--------</b><input class="mono" name="r5" data-register-input="r5" value="--------" aria-label="r5 register"></label></div>
+            <div data-register="r6"><span>r6</span><label class="register-value"><b>--------</b><input class="mono" name="r6" data-register-input="r6" value="--------" aria-label="r6 register"></label></div><div data-register="r7"><span>r7</span><label class="register-value"><b>--------</b><input class="mono" name="r7" data-register-input="r7" value="--------" aria-label="r7 register"></label></div>
+            <div data-register="r8"><span>r8</span><label class="register-value"><b>--------</b><input class="mono" name="r8" data-register-input="r8" value="--------" aria-label="r8 register"></label></div><div data-register="r9"><span>r9</span><label class="register-value"><b>--------</b><input class="mono" name="r9" data-register-input="r9" value="--------" aria-label="r9 register"></label></div>
+            <div data-register="r10"><span>r10</span><label class="register-value"><b>--------</b><input class="mono" name="r10" data-register-input="r10" value="--------" aria-label="r10 register"></label></div><div data-register="r11"><span>r11</span><label class="register-value"><b>--------</b><input class="mono" name="r11" data-register-input="r11" value="--------" aria-label="r11 register"></label></div>
+            <div data-register="r12"><span>r12</span><label class="register-value"><b>--------</b><input class="mono" name="r12" data-register-input="r12" value="--------" aria-label="r12 register"></label></div><div data-register="sp"><span>sp</span><label class="register-value"><b>--------</b><input class="mono" name="sp" data-register-input="sp" value="--------" aria-label="sp register"></label></div>
+            <div data-register="lr"><span>lr</span><label class="register-value"><b>--------</b><input class="mono" name="lr" data-register-input="lr" value="--------" aria-label="lr register"></label></div><div data-register="pc"><span>pc</span><label class="register-value"><b>--------</b><input class="mono" name="pc" data-register-input="pc" value="--------" aria-label="pc register"></label></div>
+            <div data-register="cpsr"><span>cpsr</span><label class="register-value"><b>--------</b><input class="mono" name="cpsr" data-register-input="cpsr" value="--------" aria-label="cpsr register"></label></div><div data-register="spsr"><span>spsr</span><label class="register-value"><b>--------</b><input class="mono" name="spsr" data-register-input="spsr" value="--------" aria-label="spsr register"></label></div>
           </div>
         </div>
         <div class="section">
           <h2>Call Stack</h2>
           <div class="row">
-            <button id="stack-refresh-btn" type="button">Refresh Stack</button>
             <button id="stack-next-call-btn" type="button">Next Call</button>
             <button id="stack-return-btn" type="button">Return To Pop</button>
             <button id="stack-clear-btn" type="button">Clear Trace</button>
@@ -294,8 +330,12 @@
             <label>Count<input id="disasm-count" type="number" min="1" max="256" value="24"></label>
             <label>Before<input id="disasm-before" type="number" min="0" max="64" value="6"></label>
           </div>
-          <div class="grid">
+          <div class="grid two">
             <label>Mode<select id="disasm-mode"><option>auto</option><option>arm</option><option>thumb</option></select></label>
+            <div class="toolbar-strip">
+              <button id="refresh-debug-btn" type="button">Refresh Views</button>
+              <button id="near-pc-btn" type="button">Near PC</button>
+            </div>
           </div>
           <pre id="disasm-output"></pre>
         </div>
@@ -358,6 +398,14 @@
       <aside class="pane">
         <div class="section">
           <h2>Breakpoints</h2>
+          <div class="toolbar-block">
+            <div class="toolbar-strip">
+              <button id="cpu-step-btn" type="button">Step</button>
+              <button id="cpu-step-over-btn" type="button">Step Over</button>
+              <button id="stack-next-call-toolbar-btn" type="button">Next Call</button>
+              <button id="stack-return-toolbar-btn" type="button">Return To Pop</button>
+            </div>
+          </div>
           <div class="grid">
             <label>Address<input id="bp-address" class="mono" value="pc"></label>
             <label>Type<select id="bp-type"><option value="exec">exec</option><option value="read">read</option><option value="write">write</option></select></label>
@@ -381,6 +429,7 @@
           <h2>State Slots</h2>
           <div class="row">
             <label>Slot<input id="state-slot" class="mono" value="dq9-debug"></label>
+            <label>Known<select id="state-slot-select"><option value="dq9-debug">dq9-debug</option></select></label>
             <button id="state-save-btn" type="button">Save</button>
             <button id="state-load-btn" type="button">Load</button>
           </div>
@@ -476,7 +525,11 @@
       romName: "",
       romBytes: null,
       frameBudget: 0,
-      search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 }
+      search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 },
+      highlightedDisasmAddress: null,
+      highlightedCallstackAddress: null,
+      knownSlots: ["dq9-debug"],
+      screenshotCooldownUntil: 0
     };
 
     const apiDescriptions = {
@@ -514,6 +567,7 @@
       setRegister: "指定レジスタを書き換えます。",
       disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
       dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
+      takeScreenshot: "現在のキャンバスをPNGとして保存します。cooldownMs指定で連打間隔も制御できます。",
       injectMemoryFile: "指定アドレスから、選択したローカルファイルのバイト列でメモリを上書きします。",
       searchMemory: "指定範囲のメモリを値または前回検索との差分条件で検索します。",
       resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
@@ -645,7 +699,10 @@
       return new Promise((resolve, reject) => {
         const file = input.files && input.files[0];
         if (!file) return reject(new Error("file not selected"));
-        file.arrayBuffer().then((buf) => resolve({ file, bytes: new Uint8Array(buf) }), reject);
+        file.arrayBuffer().then((buf) => {
+          input.value = "";
+          resolve({ file, bytes: new Uint8Array(buf) });
+        }, reject);
       });
     }
 
@@ -987,7 +1044,9 @@
       if (!hasLoadedRom()) {
         [...ui.registers.querySelectorAll("div")].forEach((row) => {
           row.classList.remove("changed");
+          row.classList.remove("editing");
           row.querySelector("b").textContent = "--------";
+          row.querySelector("input").value = "--------";
         });
         state.previousRegisters = null;
         return null;
@@ -996,8 +1055,11 @@
       [...ui.registers.querySelectorAll("div")].forEach((row) => {
         const name = row.querySelector("span").textContent;
         const changed = state.previousRegisters && state.previousRegisters[name] !== regs[name];
+        const value = hex(regs[name] ?? 0);
         row.classList.toggle("changed", !!changed);
-        row.querySelector("b").textContent = hex(regs[name] ?? 0);
+        row.querySelector("b").textContent = value;
+        const input = row.querySelector("input");
+        if (document.activeElement !== input) input.value = value;
       });
       state.previousRegisters = regs;
       return regs;
@@ -1020,9 +1082,32 @@
       ui.recentFileSelect.value = state.recentFiles.some((item) => String(item.id) === current) ? current : "";
     }
 
+    function rememberSlot(slot) {
+      const value = String(slot || "").trim();
+      if (!value) return;
+      state.knownSlots = [value, ...state.knownSlots.filter((item) => item !== value)].slice(0, 24);
+      try {
+        localStorage.setItem("desmume-known-slots", JSON.stringify(state.knownSlots));
+      } catch {}
+      renderStateSlotOptions(value);
+    }
+
+    function renderStateSlotOptions(selected = ui.stateSlot.value) {
+      const options = [...new Set([String(selected || "").trim(), ...state.knownSlots].filter(Boolean))];
+      if (!options.length) options.push("dq9-debug");
+      state.knownSlots = options;
+      ui.stateSlotSelect.innerHTML = options.map((slot) => {
+        const safe = slot.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
+        return `<option value="${safe}">${safe}</option>`;
+      }).join("");
+      ui.stateSlotSelect.value = options.includes(selected) ? selected : options[0];
+      if (selected && ui.stateSlot.value !== selected) ui.stateSlot.value = selected;
+    }
+
     async function recordRecentFile(kind, name, bytes = null, slot = "") {
       const id = state.nextRecentId++;
       const item = { id, kind, name, slot: String(slot || ""), size: bytes ? bytes.length : 0 };
+      if (item.slot) rememberSlot(item.slot);
       if (bytes) {
         item.key = `recent:${kind}:${id}`;
         await idbPut(item.key, bytes);
@@ -1044,8 +1129,10 @@
       ui.disasmOutput.innerHTML = lines.map((line) => {
         const current = line.startsWith("=>");
         const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
+        const highlighted = Number.isFinite(address) && state.highlightedDisasmAddress === address;
         const hasBp = state.breakpoints.some((bp) => bp.type === "exec" && bp.cpu === state.selectedCpu && bp.address === address);
-        const cls = ["disasm-line", current ? "current" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const looksLikeEntry = /\b(push|bl)\b/i.test(line);
+        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", looksLikeEntry ? "entry-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
     }
@@ -1059,11 +1146,16 @@
       ui.callstackBody.innerHTML = frames.map((frame, index) => {
         const caller = hex(frame.caller);
         const callee = hex(frame.callee);
-        return `<tr><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${caller}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-label="callee">Callee</button></td></tr>`;
+        const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
+        return `<tr class="callstack-row${highlighted ? " highlight" : ""}"><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${caller}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-label="callee">Callee</button></td></tr>`;
       }).join("");
     }
 
     async function refreshDebuggerViews(disasmParams = {}) {
+      if (!disasmParams.keepHighlight) {
+        state.highlightedDisasmAddress = null;
+        state.highlightedCallstackAddress = null;
+      }
       renderRegisters();
       renderCallStack(JSON.parse(state.fns.dbgCallStackJson()));
       const disasm = await commands.disassemble(disasmParams);
@@ -1101,11 +1193,16 @@
       const bytes = result.bytes || [];
       const lines = [];
       for (let i = 0; i < bytes.length; i += 16) {
-        const cells = bytes.slice(i, i + 16).map((b, j) => {
+        const slice = bytes.slice(i, i + 16);
+        const cells = slice.map((b, j) => {
           const addr = result.address + i + j;
           return `<span class="memory-byte" data-memory-address="${hex(addr)}" data-memory-value="${b.toString(16).padStart(2, "0")}">${b.toString(16).padStart(2, "0")}</span>`;
         }).join(" ");
-        lines.push(`<span class="memory-line">${hex(result.address + i)}  ${cells}</span>`);
+        const words = [];
+        for (let j = 0; j + 3 < slice.length; j += 4) {
+          words.push(hex(readSized(slice, j, 4)));
+        }
+        lines.push(`<span class="memory-line"><span>${hex(result.address + i)}</span><span class="memory-bytes">${cells}</span><span class="memory-u32">${words.join("  ")}</span></span>`);
       }
       ui.memoryOutput.innerHTML = lines.join("\n");
     }
@@ -1222,8 +1319,10 @@
           const saveLoad = await applySaveAndReloadRom(file.name, bytes, { waitMs: bootWaitMs() });
           let ret = saveLoad.ret;
           if (ret === 0) {
+            rememberSlot(ui.stateSlot.value);
             await idbPut(`save:${ui.stateSlot.value}`, bytes);
             await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
+            ui.storageStatus.textContent = `save loaded ${ui.stateSlot.value}`;
           }
           log(`save imported via ${saveLoad.path}: ${file.name}`);
           return { ok: ret === 0, ret, size: bytes.length, reset: ret === 0, reloaded: ret === 0, path: saveLoad.path };
@@ -1242,6 +1341,7 @@
       async saveSaveSlot(params = {}) {
         ensureRomLoaded("save slot export requires a loaded ROM");
         const slot = String(params.slot ?? ui.stateSlot.value);
+        rememberSlot(slot);
         const ret = state.fns.savExportToFile();
         if (ret !== 0) throw new Error("save export failed");
         const bytes = state.module.FS.readFile("export.sav");
@@ -1254,6 +1354,7 @@
       async loadSaveSlot(params = {}) {
         ensureReady();
         const slot = String(params.slot ?? ui.stateSlot.value);
+        rememberSlot(slot);
         const bytes = await idbGet(`save:${slot}`);
         if (!bytes) throw new Error(`save slot not found: ${slot}`);
         const runState = pauseForFileLoad();
@@ -1274,6 +1375,7 @@
         const ptr = state.fns.stateGetPointer(0);
         const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
         if (params.slot) {
+          rememberSlot(params.slot);
           if (bytes.length > 256 * 1024 * 1024) throw new Error("state exceeds 256MB browser storage limit");
           await idbPut(String(params.slot), bytes);
           await recordRecentFile("state", String(params.slot), bytes, String(params.slot));
@@ -1286,6 +1388,7 @@
         const runState = pauseForFileLoad();
         let bytes = null;
         try {
+          if (params.slot) rememberSlot(params.slot);
           if (params.slot) bytes = await idbGet(String(params.slot));
           if (params.slot && !bytes) throw new Error(`state slot not found: ${params.slot}`);
           let ret = 0;
@@ -1355,6 +1458,7 @@
         const id = Number(params.id ?? ui.recentFileSelect.value);
         const item = state.recentFiles.find((x) => x.id === id);
         if (!item) throw new Error(`recent file not found: ${id}`);
+        if (item.slot) rememberSlot(item.slot);
         const bytes = item.key ? await idbGet(item.key) : item.slot ? await idbGet(`${item.kind}:${item.slot}`) : null;
         if (!bytes) throw new Error(`recent bytes not found: ${id}`);
         if (item.kind === "save") {
@@ -1386,6 +1490,21 @@
         const ptr = state.fns.stateGetPointer(0);
         download("desmume-state.dst", state.module.HEAPU8.slice(ptr, ptr + result.size));
         return result;
+      },
+      async takeScreenshot(params = {}) {
+        const cooldownMs = Math.max(250, Number(params.cooldownMs ?? 1200));
+        if (performance.now() < state.screenshotCooldownUntil) throw new Error("screenshot cooldown active");
+        state.screenshotCooldownUntil = performance.now() + cooldownMs;
+        const type = "image/png";
+        const name = String(params.name || `desmume-${Date.now()}.png`);
+        const dataUrl = ui.screen.toDataURL(type);
+        if (params.download !== false) {
+          const a = document.createElement("a");
+          a.href = dataUrl;
+          a.download = name;
+          a.click();
+        }
+        return { ok: true, type, name, width: ui.screen.width, height: ui.screen.height, cooldownMs, dataUrl: params.includeDataUrl ? dataUrl : undefined };
       },
       async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
       async resume() {
@@ -1509,10 +1628,18 @@
         const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
         const bytes = [...state.module.HEAPU8.slice(ptr, ptr + length)];
         const lines = [];
+        const words32 = [];
         for (let i = 0; i < bytes.length; i += 16) {
-          lines.push(`${hex(addr + i)}  ${bytes.slice(i, i + 16).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+          const slice = bytes.slice(i, i + 16);
+          const formattedWords = [];
+          for (let j = 0; j + 3 < slice.length; j += 4) {
+            const word = readSized(slice, j, 4);
+            words32.push({ address: addr + i + j, value: word });
+            formattedWords.push(hex(word));
+          }
+          lines.push(`${hex(addr + i)}  ${slice.map((b) => b.toString(16).padStart(2, "0")).join(" ")}${formattedWords.length ? `    ${formattedWords.join("  ")}` : ""}`);
         }
-        return { address: addr, bytes, text: lines.join("\n") };
+        return { address: addr, bytes, words32, text: lines.join("\n") };
       },
       async injectMemoryFile(params = {}) {
         ensureRomLoaded("memory injection requires a loaded ROM");
@@ -1865,23 +1992,27 @@
     ui.renderToggle.addEventListener("change", () => runCommand("setRenderEnabled", { enabled: ui.renderToggle.checked }).catch((e) => log(e.message)));
     ui.audioToggle.addEventListener("change", () => runCommand("setAudio", { enabled: ui.audioToggle.checked, volume: Number(ui.volumeRange.value) }).catch((e) => log(e.message)));
     ui.cpuSelect.addEventListener("change", () => { state.selectedCpu = ui.cpuSelect.value; renderRegisters(); updateStatus(); });
-    ui.refreshDebugBtn.addEventListener("click", () => {
-      try {
-        renderRegisters();
-        runCommand("disassemble", {}).then((r) => renderDisassembly(r.text));
-      } catch (e) { console.error(e); log(e.message); }
+    ui.refreshDebugBtn.addEventListener("click", () => refreshDebuggerViews().catch((e) => log(e.message)));
+    ui.nearPcBtn.addEventListener("click", () => {
+      ui.disasmAddress.value = "pc";
+      state.highlightedDisasmAddress = null;
+      state.highlightedCallstackAddress = null;
+      refreshDebuggerViews({ address: "pc" }).catch((e) => log(e.message));
     });
-    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
-    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => { renderRegisters(); return runCommand("disassemble", {}); }).then((r) => renderDisassembly(r.text)).catch((e) => log(e.message)));
-    ui.stackRefreshBtn.addEventListener("click", () => runCommand("callStack").catch((e) => log(e.message)));
+    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnToolbarBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
     ui.callstackBody.addEventListener("click", (e) => {
       const button = e.target.closest("button[data-jump-address]");
       if (!button) return;
       ui.disasmAddress.value = button.dataset.jumpAddress;
-      runCommand("disassemble", { address: button.dataset.jumpAddress }).then((r) => renderDisassembly(r.text)).catch((error) => log(error.message));
+      state.highlightedDisasmAddress = parseAddress(button.dataset.jumpAddress, 0, state.selectedCpu);
+      state.highlightedCallstackAddress = state.highlightedDisasmAddress;
+      runCommand("disassemble", { address: button.dataset.jumpAddress, before: Number(ui.disasmBefore.value) }).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(JSON.parse(state.fns.dbgCallStackJson()))).catch((error) => log(error.message));
     });
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
     ui.tracePrivilegeToggle.addEventListener("change", () => runCommand("setStackTracePrivilegeCheck", { enabled: ui.tracePrivilegeToggle.checked }).catch((e) => log(e.message)));
@@ -1930,10 +2061,45 @@
     ui.stateLoadBtn.addEventListener("click", () => runCommand("loadState", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.saveSlotSaveBtn.addEventListener("click", () => runCommand("saveSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.saveSlotLoadBtn.addEventListener("click", () => runCommand("loadSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
+    ui.stateSlot.addEventListener("change", () => rememberSlot(ui.stateSlot.value));
+    ui.stateSlotSelect.addEventListener("change", () => { ui.stateSlot.value = ui.stateSlotSelect.value; rememberSlot(ui.stateSlot.value); });
     ui.recentReloadBtn.addEventListener("click", () => runCommand("reloadRecentFile", { id: Number(ui.recentFileSelect.value) }).catch((e) => log(e.message)));
     ui.hotkeyButton.addEventListener("change", renderHotkey);
     ui.hotkeyRefreshBtn.addEventListener("click", renderHotkey);
     ui.hotkeySetBtn.addEventListener("click", () => runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key: ui.hotkeyCode.value }).catch((e) => log(e.message)));
+    ui.canvasShotBtn.addEventListener("click", () => runCommand("takeScreenshot", {}).catch((e) => log(e.message)));
+    ui.registers.querySelectorAll("input[data-register-input]").forEach((input) => {
+      const row = input.closest("div[data-register]");
+      const register = input.dataset.registerInput;
+      let initialValue = input.value;
+      input.addEventListener("focus", () => {
+        row.classList.add("editing");
+        initialValue = input.value;
+        input.select();
+      });
+      const commit = () => {
+        row.classList.remove("editing");
+        const value = input.value.trim();
+        if (!hasLoadedRom() || !value || value === initialValue) {
+          renderRegisters();
+          return;
+        }
+        runCommand("setRegister", { register, value, cpu: state.selectedCpu })
+        .then(() => refreshDebuggerViews({ keepHighlight: true }))
+        .catch((error) => {
+          log(error.message);
+          renderRegisters();
+        });
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") input.blur();
+        if (event.key === "Escape") {
+          input.value = initialValue;
+          input.blur();
+        }
+      });
+      input.addEventListener("blur", commit);
+    });
     ui.mcpRunBtn.addEventListener("click", () => {
       let params = {};
       try { params = JSON.parse(ui.mcpParams.value || "{}"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
@@ -1966,9 +2132,14 @@
       }
     }, 750);
 
+    try {
+      const storedSlots = JSON.parse(localStorage.getItem("desmume-known-slots") || "[]");
+      if (Array.isArray(storedSlots) && storedSlots.length) state.knownSlots = [...new Set([...storedSlots.map((slot) => String(slot)), ...state.knownSlots])].slice(0, 24);
+    } catch {}
     renderBreakpoints();
     renderFreezes();
     renderRecentFiles();
+    renderStateSlotOptions(ui.stateSlot.value);
     renderHotkey();
     initWasm().catch((error) => log(error.stack || error.message));
   </script>
