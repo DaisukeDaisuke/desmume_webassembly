@@ -16,7 +16,11 @@
       --amber: #f0b35a;
       --amber-soft: rgba(240, 179, 90, 0.18);
       --orange-mark: rgba(246, 156, 76, 0.22);
-      --yellow-mark: rgba(233, 196, 106, 0.18);
+      --yellow-mark: rgba(233, 196, 106, 0.28);
+      --yellow-edge: rgba(233, 196, 106, 0.6);
+      --branch-mark: rgba(173, 127, 255, 0.2);
+      --branch-edge: rgba(173, 127, 255, 0.52);
+      --sky-edit-edge: rgba(129, 178, 255, 0.38);
       --fault: #ff6b6b;
       --solder: #c7d0d7;
       --muted: #7f8b94;
@@ -144,16 +148,19 @@
       text-align: right;
       font: inherit;
     }
-    .register-value input::selection { background: rgba(240, 179, 90, 0.28); color: #fff7eb; }
+    .register-value input::selection { background: rgba(129, 178, 255, 0.3); color: #eaf4ff; }
     .registers div.editing .register-value input,
     .register-value input:focus {
-      color: #fff4de;
-      background: rgba(12, 14, 18, 0.92);
-      outline: 1px solid rgba(240, 179, 90, 0.38);
+      color: #dcecff;
+      background: rgba(14, 24, 38, 0.94);
+      outline: 1px solid var(--sky-edit-edge);
     }
     .table-wrap {
+      min-height: 220px;
       max-height: 220px;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: #090b0d;
@@ -177,16 +184,49 @@
     .disasm-line { display: block; padding: 1px 4px; border-left: 2px solid transparent; white-space: pre; }
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
     .disasm-line.highlight-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
-    .disasm-line.entry-line { background: var(--yellow-mark); }
+    .disasm-line.entry-line { background: var(--yellow-mark); border-left-color: var(--yellow-edge); }
+    .disasm-line.branch-line { color: #efe4ff; background: var(--branch-mark); border-left-color: var(--branch-edge); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
     .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: rgba(255, 107, 107, 0.18); }
+    .disasm-line.current.entry-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(233, 196, 106, 0.24)); }
+    .disasm-line.current.branch-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(173, 127, 255, 0.18)); }
+    .disasm-line.highlight-line.entry-line,
+    .disasm-line.highlight-line.branch-line,
+    .disasm-line.highlight-line.current,
+    .disasm-line.highlight-line.current.entry-line,
+    .disasm-line.highlight-line.current.branch-line {
+      color: #fff2d6;
+      background: var(--orange-mark);
+      border-left-color: #f69c4c;
+    }
     .callstack-row.highlight { background: rgba(246, 156, 76, 0.12); }
     .toolbar-block { display: grid; gap: 8px; }
     .toolbar-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .toolbar-strip.break-actions { align-items: stretch; }
+    .toolbar-strip.break-actions button { min-width: 120px; }
+    .toolbar-stack { display: grid; gap: 8px; }
+    .topbar-actions { justify-content: flex-end; }
+    .callstack-table { table-layout: fixed; }
+    .callstack-table th:nth-child(1), .callstack-table td:nth-child(1) { width: 42px; }
+    .callstack-table th:nth-child(2), .callstack-table td:nth-child(2),
+    .callstack-table th:nth-child(3), .callstack-table td:nth-child(3),
+    .callstack-table th:nth-child(4), .callstack-table td:nth-child(4) { width: 98px; }
+    .callstack-table th:nth-child(5), .callstack-table td:nth-child(5) { width: 56px; }
+    .callstack-table th:nth-child(6), .callstack-table td:nth-child(6),
+    .callstack-table th:nth-child(7), .callstack-table td:nth-child(7) { width: 86px; }
+    .callstack-table td { overflow: hidden; text-overflow: ellipsis; }
+    .callstack-table td button { width: 78px; }
     .breakpoint-line { color: var(--fault); }
-    .memory-line { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; line-height: 1.25; white-space: nowrap; }
-    .memory-bytes { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-    .memory-u32 { color: var(--muted); }
+    .memory-line { display: block; line-height: 1.25; white-space: pre; }
+    .memory-bytes { display: inline; }
+    .memory-u32 { color: var(--muted); margin-left: 14px; }
+    .memory-byte.breakpoint-memory,
+    .memory-u32.breakpoint-memory {
+      background: rgba(255, 107, 107, 0.2);
+      color: #ffd8d8;
+      border-radius: 3px;
+      box-shadow: inset 0 0 0 1px rgba(255, 107, 107, 0.28);
+    }
     .memory-byte { border: 0; border-radius: 3px; padding: 0 1px; cursor: pointer; }
     .memory-byte:hover { background: rgba(124, 255, 155, 0.14); color: #eff7f0; }
     .memory-editor {
@@ -198,6 +238,8 @@
     .hidden-input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
     .switch { display: flex; align-items: center; gap: 8px; min-height: 32px; color: var(--solder); }
     .switch input { min-height: 0; }
+    .auto-update-row { align-items: end; }
+    #disasm-output { min-height: 156px; max-height: 360px; }
     .mcp-command { grid-template-columns: minmax(0, 1fr) auto; }
     @media (max-width: 1100px) {
       body { overflow: auto; }
@@ -221,7 +263,8 @@
         <span id="speed-status">speed 1.00x</span>
         <span id="storage-status">state storage idle</span>
       </div>
-      <div class="row">
+      <div class="row topbar-actions">
+        <button id="refresh-top-btn" type="button">Refresh Views</button>
         <button id="pause-btn" type="button">Pause</button>
         <button id="resume-btn" type="button">Run</button>
         <button id="step-frame-btn" type="button">+1F</button>
@@ -306,24 +349,6 @@
           </div>
         </div>
         <div class="section">
-          <h2>Call Stack</h2>
-          <div class="row">
-            <button id="stack-next-call-btn" type="button">Next Call</button>
-            <button id="stack-return-btn" type="button">Return To Pop</button>
-            <button id="stack-clear-btn" type="button">Clear Trace</button>
-          </div>
-          <div class="table-wrap" aria-live="polite">
-            <table>
-              <thead>
-                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>caller</th><th>callee</th></tr>
-              </thead>
-              <tbody id="callstack-body">
-                <tr><td colspan="7">stack trace disabled</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div class="section">
           <h2>Disassembly</h2>
           <div class="grid three">
             <label>Address<input id="disasm-address" class="mono" value="pc"></label>
@@ -332,12 +357,20 @@
           </div>
           <div class="grid two">
             <label>Mode<select id="disasm-mode"><option>auto</option><option>arm</option><option>thumb</option></select></label>
-            <div class="toolbar-strip">
-              <button id="refresh-debug-btn" type="button">Refresh Views</button>
-              <button id="near-pc-btn" type="button">Near PC</button>
+            <div class="row auto-update-row">
+              <label class="switch"><input id="auto-update-toggle" type="checkbox"> auto update</label>
+              <label>Hz<input id="auto-update-rate" type="number" min="1" max="20" value="1"></label>
             </div>
           </div>
           <pre id="disasm-output"></pre>
+          <div class="toolbar-strip">
+            <button id="refresh-debug-btn" type="button">Refresh Views</button>
+            <button id="near-pc-btn" type="button">Near PC</button>
+            <button id="cpu-step-debug-btn" type="button">Step</button>
+            <button id="cpu-step-over-debug-btn" type="button">Step Over</button>
+            <button id="stack-next-call-debug-btn" type="button">Next Call</button>
+            <button id="stack-return-debug-btn" type="button">Return To Pop</button>
+          </div>
         </div>
         <div class="section">
           <h2>Memory</h2>
@@ -345,6 +378,9 @@
             <label>Address<input id="memory-address" class="mono" value="0x02000000"></label>
             <label>Length<input id="memory-length" type="number" min="1" max="65536" value="256"></label>
             <label>Auto<select id="memory-auto"><option value="0">off</option><option value="1">on</option></select></label>
+          </div>
+          <div class="grid two">
+            <label>View<select id="memory-view"><option value="mixed" selected>bytes + u32</option><option value="packed32">u32 packed</option><option value="bytes">bytes only</option></select></label>
           </div>
           <div class="row">
             <button id="memory-dump-btn" type="button">Dump</button>
@@ -357,6 +393,24 @@
             <button id="memory-inject-btn" type="button">Inject Bytes</button>
           </div>
           <pre id="memory-output"></pre>
+        </div>
+        <div class="section">
+          <h2>Call Stack</h2>
+          <div class="row">
+            <button id="stack-next-call-btn" type="button">Next Call</button>
+            <button id="stack-return-btn" type="button">Return To Pop</button>
+            <button id="stack-clear-btn" type="button">Clear Trace</button>
+          </div>
+          <div class="table-wrap" aria-live="polite">
+            <table class="callstack-table">
+              <thead>
+                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>caller</th><th>callee</th></tr>
+              </thead>
+              <tbody id="callstack-body">
+                <tr><td colspan="7">stack trace disabled</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
         <div class="section">
           <h2>Memory Search</h2>
@@ -398,21 +452,23 @@
       <aside class="pane">
         <div class="section">
           <h2>Breakpoints</h2>
-          <div class="toolbar-block">
+          <div class="toolbar-stack">
             <div class="toolbar-strip">
+              <button id="refresh-breakpoints-btn" type="button">Refresh Views</button>
               <button id="cpu-step-btn" type="button">Step</button>
               <button id="cpu-step-over-btn" type="button">Step Over</button>
               <button id="stack-next-call-toolbar-btn" type="button">Next Call</button>
               <button id="stack-return-toolbar-btn" type="button">Return To Pop</button>
             </div>
+            <div class="toolbar-strip break-actions">
+              <button id="bp-add-btn" type="button">Add Breakpoint</button>
+              <button id="bp-remove-btn" type="button">Remove Breakpoint</button>
+              <button id="bp-remove-id-btn" type="button">Remove Selected ID</button>
+            </div>
           </div>
           <div class="grid">
             <label>Address<input id="bp-address" class="mono" value="pc"></label>
             <label>Type<select id="bp-type"><option value="exec">exec</option><option value="read">read</option><option value="write">write</option></select></label>
-          </div>
-          <div class="row">
-            <button id="bp-add-btn" type="button">Add</button>
-            <button id="bp-remove-btn" type="button">Remove</button>
           </div>
           <div class="row">
             <label class="switch"><input id="bp-data-abort-toggle" type="checkbox"> data abort</label>
@@ -421,7 +477,6 @@
           </div>
           <div class="grid">
             <label>Breakpoint ID<select id="bp-id-select"><option value="">none</option></select></label>
-            <button id="bp-remove-id-btn" type="button">Remove ID</button>
           </div>
           <pre id="bp-output"></pre>
         </div>
@@ -507,7 +562,6 @@
       nextBreakpointId: 1,
       freezes: [],
       recentFiles: [],
-      nextRecentId: 1,
       previousRegisters: null,
       lastBreakKey: "",
       breakLabel: "",
@@ -529,7 +583,9 @@
       highlightedDisasmAddress: null,
       highlightedCallstackAddress: null,
       knownSlots: ["dq9-debug"],
-      screenshotCooldownUntil: 0
+      screenshotCooldownUntil: 0,
+      followPc: true,
+      autoUpdate: { enabled: false, hz: 1, timer: 0 }
     };
 
     const apiDescriptions = {
@@ -567,7 +623,11 @@
       setRegister: "指定レジスタを書き換えます。",
       disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
       dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
+      runInputHold: "指定ボタンを押したまま一定時間維持し、前後の待機も含めて制御します。",
+      runInputTap: "指定ボタンをms単位で一定回数連打します。GUIの入力表示も連動します。",
+      runTouchHold: "下画面の座標を一定時間押し続けます。前後の待機も指定できます。",
       takeScreenshot: "現在のキャンバスをPNGとして保存します。cooldownMs指定で連打間隔も制御できます。",
+      setAutoUpdate: "GUIの自動更新を有効または無効にします。Hzで毎秒の更新回数を指定します。",
       injectMemoryFile: "指定アドレスから、選択したローカルファイルのバイト列でメモリを上書きします。",
       searchMemory: "指定範囲のメモリを値または前回検索との差分条件で検索します。",
       resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
@@ -608,6 +668,11 @@
       return "0x" + n.toString(16).padStart(width, "0");
     }
 
+    function createRecentId() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+      return `recent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
     function parseNumber(value, fallback = 0) {
       if (typeof value === "number") return value;
       if (value === "pc") return getPc();
@@ -622,6 +687,41 @@
       if (!text) return fallback >>> 0;
       if (text === "pc") return getPc(cpu);
       return (text.startsWith("0x") ? parseInt(text, 16) : parseInt(text, 16)) >>> 0;
+    }
+
+    function disasmRefreshParams(overrides = {}) {
+      const usePc = overrides.address === "pc" || (overrides.address == null && state.followPc);
+      return {
+        cpu: overrides.cpu ?? state.selectedCpu,
+        address: usePc ? "pc" : (overrides.address ?? ui.disasmAddress.value),
+        before: Number(overrides.before ?? ui.disasmBefore.value),
+        count: Number(overrides.count ?? ui.disasmCount.value),
+        mode: overrides.mode ?? ui.disasmMode.value,
+        keepHighlight: overrides.keepHighlight
+      };
+    }
+
+    function setFollowPc(enabled) {
+      state.followPc = !!enabled;
+      if (state.followPc) ui.disasmAddress.value = "pc";
+    }
+
+    function toButtonList(params = {}) {
+      const buttons = Array.isArray(params.buttons) ? params.buttons : [params.button].filter(Boolean);
+      if (!buttons.length) throw new Error("button or buttons is required");
+      return buttons.map((button) => String(button));
+    }
+
+    async function waitChecked(ms, deadline = 0, label = "wait") {
+      const duration = Math.max(0, Number(ms) || 0);
+      if (!duration) return;
+      if (deadline && performance.now() + duration > deadline) throw new Error(`${label} timeout`);
+      await sleep(duration);
+    }
+
+    function setTouchState(active, x = 0, y = 0) {
+      state.touch = { active: !!active, x: Number(x) || 0, y: Number(y) || 0 };
+      if (state.ready && state.touch.active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
     }
 
     function cpuIndex(cpu = state.selectedCpu) {
@@ -948,10 +1048,11 @@
             handleNativeFault(error, "runFrame");
             throw error;
           }
-          if (ran < frames) {
+          const native = syncNativeBreakStatus();
+          if (ran < frames || (native && native.lastBreak && native.lastBreak.hit)) {
             state.paused = true;
             state.running = false;
-            syncNativeBreakStatus();
+            if (state.ready) state.fns.pauseEmu(1);
           }
           applyFreezes();
           state.frame += ran;
@@ -1078,7 +1179,10 @@
 
     function renderRecentFiles() {
       const current = ui.recentFileSelect.value;
-      ui.recentFileSelect.innerHTML = `<option value="">none</option>` + state.recentFiles.map((item) => `<option value="${item.id}">#${item.id} ${item.kind} ${item.name}</option>`).join("");
+      ui.recentFileSelect.innerHTML = `<option value="">none</option>` + state.recentFiles.map((item) => {
+        const label = item.slot ? `${item.kind} ${item.name} [${item.slot}]` : `${item.kind} ${item.name}`;
+        return `<option value="${item.id}">${label.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</option>`;
+      }).join("");
       ui.recentFileSelect.value = state.recentFiles.some((item) => String(item.id) === current) ? current : "";
     }
 
@@ -1105,14 +1209,15 @@
     }
 
     async function recordRecentFile(kind, name, bytes = null, slot = "") {
-      const id = state.nextRecentId++;
+      const existing = state.recentFiles.find((item) => item.kind === kind && item.name === name && item.slot === String(slot || ""));
+      const id = existing?.id || createRecentId();
       const item = { id, kind, name, slot: String(slot || ""), size: bytes ? bytes.length : 0 };
       if (item.slot) rememberSlot(item.slot);
       if (bytes) {
         item.key = `recent:${kind}:${id}`;
         await idbPut(item.key, bytes);
       }
-      state.recentFiles = [item, ...state.recentFiles.filter((x) => !(x.kind === kind && x.name === name && x.slot === item.slot))].slice(0, 6);
+      state.recentFiles = [item, ...state.recentFiles.filter((x) => x.id !== id)].slice(0, 6);
       renderRecentFiles();
       return item;
     }
@@ -1131,8 +1236,10 @@
         const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
         const highlighted = Number.isFinite(address) && state.highlightedDisasmAddress === address;
         const hasBp = state.breakpoints.some((bp) => bp.type === "exec" && bp.cpu === state.selectedCpu && bp.address === address);
-        const looksLikeEntry = /\b(push|bl)\b/i.test(line);
-        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", looksLikeEntry ? "entry-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const opcode = line.replace(/^=>/, "  ");
+        const isCallLike = /\bbl(?!x)\b/i.test(opcode) || /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode) || /\bpush\b/i.test(opcode);
+        const isBranchLike = /\b(?:b(?:[a-z]{0,2})|bx(?:[a-z]{0,2})|blx(?:[a-z]{0,2}))\b/i.test(opcode) && !/\bbl(?!x)\b/i.test(opcode);
+        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "entry-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
     }
@@ -1158,11 +1265,33 @@
       }
       renderRegisters();
       renderCallStack(JSON.parse(state.fns.dbgCallStackJson()));
-      const disasm = await commands.disassemble(disasmParams);
+      const disasm = await commands.disassemble(disasmRefreshParams(disasmParams));
       renderDisassembly(disasm.text);
+      if (ui.memoryAuto.value === "1") renderMemoryDump(await commands.dumpMemory({ cpu: disasmParams.cpu }));
       syncNativeBreakStatus();
       updateStatus();
       return disasm;
+    }
+
+    function stopAutoUpdateLoop() {
+      if (state.autoUpdate.timer) clearTimeout(state.autoUpdate.timer);
+      state.autoUpdate.timer = 0;
+    }
+
+    function queueAutoUpdateLoop() {
+      stopAutoUpdateLoop();
+      if (!state.autoUpdate.enabled) return;
+      const hz = Math.max(1, Math.min(20, Number(state.autoUpdate.hz) || 4));
+      state.autoUpdate.timer = setTimeout(async () => {
+        if (state.autoUpdate.enabled && state.ready && hasLoadedRom() && !state.loadingFile) {
+          try {
+            await refreshDebuggerViews({ keepHighlight: true });
+          } catch (error) {
+            log(error.message || String(error));
+          }
+        }
+        queueAutoUpdateLoop();
+      }, Math.max(50, Math.round(1000 / hz)));
     }
 
     async function runTraceStepper(label, params = {}, shouldStop) {
@@ -1192,17 +1321,25 @@
     function renderMemoryDump(result) {
       const bytes = result.bytes || [];
       const lines = [];
+      const view = String(result.view || ui.memoryView?.value || "mixed");
+      const breakpointAddresses = new Set(state.breakpoints.filter((bp) => bp.cpu === state.selectedCpu && (bp.type === "read" || bp.type === "write")).map((bp) => bp.address >>> 0));
       for (let i = 0; i < bytes.length; i += 16) {
         const slice = bytes.slice(i, i + 16);
         const cells = slice.map((b, j) => {
           const addr = result.address + i + j;
-          return `<span class="memory-byte" data-memory-address="${hex(addr)}" data-memory-value="${b.toString(16).padStart(2, "0")}">${b.toString(16).padStart(2, "0")}</span>`;
+          const cls = ["memory-byte", breakpointAddresses.has(addr >>> 0) ? "breakpoint-memory" : ""].filter(Boolean).join(" ");
+          return `<span class="${cls}" data-memory-address="${hex(addr)}" data-memory-value="${b.toString(16).padStart(2, "0")}">${b.toString(16).padStart(2, "0")}</span>`;
         }).join(" ");
         const words = [];
         for (let j = 0; j + 3 < slice.length; j += 4) {
-          words.push(hex(readSized(slice, j, 4)));
+          const wordAddress = (result.address + i + j) >>> 0;
+          const highlightWord = breakpointAddresses.has(wordAddress) || breakpointAddresses.has((wordAddress + 1) >>> 0) || breakpointAddresses.has((wordAddress + 2) >>> 0) || breakpointAddresses.has((wordAddress + 3) >>> 0);
+          const word = hex(readSized(slice, j, 4));
+          words.push(highlightWord ? `<span class="memory-u32 breakpoint-memory">${word}</span>` : `<span class="memory-u32">${word}</span>`);
         }
-        lines.push(`<span class="memory-line"><span>${hex(result.address + i)}</span><span class="memory-bytes">${cells}</span><span class="memory-u32">${words.join("  ")}</span></span>`);
+        if (view === "packed32") lines.push(`<span class="memory-line">${hex(result.address + i)}  ${words.join("  ")}</span>`);
+        else if (view === "bytes") lines.push(`<span class="memory-line">${hex(result.address + i)}  <span class="memory-bytes">${cells}</span></span>`);
+        else lines.push(`<span class="memory-line">${hex(result.address + i)}  <span class="memory-bytes">${cells}</span>${words.length ? `  ${words.join("  ")}` : ""}</span>`);
       }
       ui.memoryOutput.innerHTML = lines.join("\n");
     }
@@ -1274,7 +1411,7 @@
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
         if (native) syncNativeBreakStatus(native);
         if (native && state.fns.dbgGetLastStateChunk) native.lastStateLoad = { chunk: state.fns.dbgGetLastStateChunk(), phase: state.fns.dbgGetLastStatePhase() };
-        return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, native };
+        return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, autoUpdate: { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz }, native };
       },
       async loadRomFile() {
         ensureReady();
@@ -1455,7 +1592,7 @@
       async listRecentFiles() { renderRecentFiles(); return { recentFiles: state.recentFiles }; },
       async reloadRecentFile(params = {}) {
         ensureReady();
-        const id = Number(params.id ?? ui.recentFileSelect.value);
+        const id = String(params.id ?? ui.recentFileSelect.value);
         const item = state.recentFiles.find((x) => x.id === id);
         if (!item) throw new Error(`recent file not found: ${id}`);
         if (item.slot) rememberSlot(item.slot);
@@ -1506,7 +1643,16 @@
         }
         return { ok: true, type, name, width: ui.screen.width, height: ui.screen.height, cooldownMs, dataUrl: params.includeDataUrl ? dataUrl : undefined };
       },
-      async pause() { ensureReady(); state.paused = true; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
+      async setAutoUpdate(params = {}) {
+        state.autoUpdate.enabled = !!params.enabled;
+        state.autoUpdate.hz = Math.max(1, Math.min(20, Number(params.hz ?? params.rate ?? ui.autoUpdateRate.value) || 4));
+        ui.autoUpdateToggle.checked = state.autoUpdate.enabled;
+        ui.autoUpdateRate.value = String(state.autoUpdate.hz);
+        if (state.autoUpdate.enabled) queueAutoUpdateLoop();
+        else stopAutoUpdateLoop();
+        return { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz };
+      },
+      async pause() { ensureReady(); state.paused = true; state.running = false; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
       async resume() {
         ensureReady();
         if (!hasLoadedRom()) {
@@ -1552,6 +1698,7 @@
       async setSpeed(params) { state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1))); ui.speedSelect.value = String(state.speed); updateStatus(); return { speed: state.speed }; },
       async stepFrames(params) {
         ensureRomLoaded("frame stepping requires a loaded ROM");
+        if (state.running && !state.paused && params.pauseWhenRunning !== false) return commands.pause();
         const frames = Math.max(1, Number(params.frames ?? 1));
         const wasPaused = state.paused;
         state.fns.pauseEmu(0);
@@ -1574,9 +1721,11 @@
         state.frame += ran;
         drawFrame();
         pumpAudio(ran);
-        if (ran < frames) syncNativeBreakStatus();
-        if (wasPaused || ran < frames) state.fns.pauseEmu(1);
-        state.paused = wasPaused || ran < frames;
+        const native = syncNativeBreakStatus();
+        const hitBreak = !!(native && native.lastBreak && native.lastBreak.hit);
+        if (wasPaused || ran < frames || hitBreak) state.fns.pauseEmu(1);
+        state.paused = wasPaused || ran < frames || hitBreak;
+        state.running = !state.paused;
         updateStatus();
         return { frames: ran, requested: frames, paused: state.paused };
       },
@@ -1591,6 +1740,58 @@
       async setScale(params) { state.scale = Number(params.scale ?? params.value ?? 2); ui.scaleSelect.value = String(state.scale); applyScaleRotation(); return { scale: state.scale }; },
       async setRotation(params) { state.rotation = Number(params.rotation ?? params.value ?? 0); ui.rotationSelect.value = String(state.rotation); applyScaleRotation(); return { rotation: state.rotation }; },
       async setInput(params) { setKey(params.button, !!params.pressed); return { keys: state.keys }; },
+      async runInputHold(params = {}) {
+        ensureRomLoaded("input hold requires a loaded ROM");
+        const buttons = toButtonList(params);
+        const durationMs = Math.max(0, Number(params.durationMs ?? params.holdMs ?? 0));
+        const deadline = params.timeoutMs ? performance.now() + Math.max(1, Number(params.timeoutMs)) : 0;
+        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runInputHold");
+        buttons.forEach((button) => setKey(button, true));
+        try {
+          await waitChecked(durationMs, deadline, "runInputHold");
+        } finally {
+          buttons.forEach((button) => setKey(button, false));
+        }
+        await waitChecked(params.waitAfterMs ?? 0, deadline, "runInputHold");
+        return { ok: true, buttons, durationMs };
+      },
+      async runInputTap(params = {}) {
+        ensureRomLoaded("input tap requires a loaded ROM");
+        const buttons = toButtonList(params);
+        const repeat = Math.max(1, Number(params.repeat ?? params.count ?? 1));
+        const holdMs = Math.max(0, Number(params.holdMs ?? params.pressMs ?? 50));
+        const gapMs = Math.max(0, Number(params.gapMs ?? params.waitMs ?? 50));
+        const deadline = params.timeoutMs ? performance.now() + Math.max(1, Number(params.timeoutMs)) : 0;
+        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runInputTap");
+        for (let i = 0; i < repeat; i++) {
+          buttons.forEach((button) => setKey(button, true));
+          try {
+            await waitChecked(holdMs, deadline, "runInputTap");
+          } finally {
+            buttons.forEach((button) => setKey(button, false));
+          }
+          if (i < repeat - 1) await waitChecked(gapMs, deadline, "runInputTap");
+        }
+        await waitChecked(params.waitAfterMs ?? 0, deadline, "runInputTap");
+        return { ok: true, buttons, repeat, holdMs, gapMs };
+      },
+      async runTouchHold(params = {}) {
+        ensureRomLoaded("touch hold requires a loaded ROM");
+        const x = Math.max(0, Math.min(255, Number(params.x)));
+        const y = Math.max(0, Math.min(191, Number(params.y)));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y are required");
+        const durationMs = Math.max(0, Number(params.durationMs ?? params.holdMs ?? 0));
+        const deadline = params.timeoutMs ? performance.now() + Math.max(1, Number(params.timeoutMs)) : 0;
+        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runTouchHold");
+        setTouchState(true, x, y);
+        try {
+          await waitChecked(durationMs, deadline, "runTouchHold");
+        } finally {
+          setTouchState(false, x, y);
+        }
+        await waitChecked(params.waitAfterMs ?? 0, deadline, "runTouchHold");
+        return { ok: true, x, y, durationMs };
+      },
       async setKeyBinding(params) {
         const button = String(params.button);
         const key = String(params.key);
@@ -1625,6 +1826,7 @@
         ensureRomLoaded("memory dump requires a loaded ROM");
         const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
         const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
+        const view = String(params.view ?? ui.memoryView?.value ?? "mixed");
         const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
         const bytes = [...state.module.HEAPU8.slice(ptr, ptr + length)];
         const lines = [];
@@ -1637,9 +1839,11 @@
             words32.push({ address: addr + i + j, value: word });
             formattedWords.push(hex(word));
           }
-          lines.push(`${hex(addr + i)}  ${slice.map((b) => b.toString(16).padStart(2, "0")).join(" ")}${formattedWords.length ? `    ${formattedWords.join("  ")}` : ""}`);
+          if (view === "packed32") lines.push(`${hex(addr + i)}  ${formattedWords.join("  ")}`);
+          else if (view === "bytes") lines.push(`${hex(addr + i)}  ${slice.map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+          else lines.push(`${hex(addr + i)}  ${slice.map((b) => b.toString(16).padStart(2, "0")).join(" ")}${formattedWords.length ? `    ${formattedWords.join("  ")}` : ""}`);
         }
-        return { address: addr, bytes, words32, text: lines.join("\n") };
+        return { address: addr, bytes, words32, view, text: lines.join("\n") };
       },
       async injectMemoryFile(params = {}) {
         ensureRomLoaded("memory injection requires a loaded ROM");
@@ -1732,6 +1936,7 @@
         state.breakpoints = state.breakpoints.filter((x) => !(x.cpu === bp.cpu && x.type === bp.type && x.address === bp.address));
         if (bp.enabled) state.breakpoints.push(bp);
         renderBreakpoints();
+        refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message));
         return { id: bp.id, breakpoints: state.breakpoints };
       },
       async setSpecialBreakpoint(params = {}) {
@@ -1754,6 +1959,7 @@
         state.fns[fn](cpuIndex(bp.cpu), bp.address, 0);
         state.breakpoints = state.breakpoints.filter((x) => x.id !== id);
         renderBreakpoints();
+        refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message));
         return { ok: true, removed: bp, breakpoints: state.breakpoints };
       },
       async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
@@ -1980,11 +2186,11 @@
     ui.romFile.addEventListener("change", () => runCommand("loadRomFile").catch((e) => log(e.message)));
     ui.saveFile.addEventListener("change", () => runCommand("importSaveFile").catch((e) => log(e.message)));
     ui.stateFile.addEventListener("change", () => runCommand("importStateFile").catch((e) => log(e.message)));
-    ui.pauseBtn.addEventListener("click", () => runCommand("pause").catch((e) => log(e.message)));
+    ui.pauseBtn.addEventListener("click", () => runCommand("pause").then(() => hasLoadedRom() ? refreshDebuggerViews({ keepHighlight: true }) : null).catch((e) => log(e.message)));
     ui.resumeBtn.addEventListener("click", () => runCommand("resume").catch((e) => log(e.message)));
     ui.resetBtn.addEventListener("click", () => runCommand("reset").catch((e) => log(e.message)));
     ui.romReloadBtn.addEventListener("click", () => runCommand("reloadRom", { waitMs: Number(ui.romWaitMs.value), resume: !ui.resetHoldToggle.checked }).catch((e) => log(e.message)));
-    ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).catch((e) => log(e.message)));
+    ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.stepNBtn.addEventListener("click", () => runCommand("stepFrames", { frames: Number(ui.framesInput.value) }).catch((e) => log(e.message)));
     ui.speedSelect.addEventListener("change", () => runCommand("setSpeed", { speed: Number(ui.speedSelect.value) }).catch((e) => log(e.message)));
     ui.scaleSelect.addEventListener("change", () => runCommand("setScale", { scale: Number(ui.scaleSelect.value) }).catch((e) => log(e.message)));
@@ -1992,28 +2198,42 @@
     ui.renderToggle.addEventListener("change", () => runCommand("setRenderEnabled", { enabled: ui.renderToggle.checked }).catch((e) => log(e.message)));
     ui.audioToggle.addEventListener("change", () => runCommand("setAudio", { enabled: ui.audioToggle.checked, volume: Number(ui.volumeRange.value) }).catch((e) => log(e.message)));
     ui.cpuSelect.addEventListener("change", () => { state.selectedCpu = ui.cpuSelect.value; renderRegisters(); updateStatus(); });
-    ui.refreshDebugBtn.addEventListener("click", () => refreshDebuggerViews().catch((e) => log(e.message)));
+    ui.refreshTopBtn.addEventListener("click", () => refreshDebuggerViews({ keepHighlight: true }).catch((e) => log(e.message)));
+    ui.refreshDebugBtn.addEventListener("click", () => refreshDebuggerViews({ keepHighlight: true }).catch((e) => log(e.message)));
+    ui.refreshBreakpointsBtn.addEventListener("click", () => refreshDebuggerViews({ keepHighlight: true }).catch((e) => log(e.message)));
     ui.nearPcBtn.addEventListener("click", () => {
-      ui.disasmAddress.value = "pc";
+      setFollowPc(true);
       state.highlightedDisasmAddress = null;
       state.highlightedCallstackAddress = null;
-      refreshDebuggerViews({ address: "pc" }).catch((e) => log(e.message));
+      refreshDebuggerViews({ address: "pc", keepHighlight: true }).catch((e) => log(e.message));
     });
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnToolbarBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallDebugBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnDebugBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
     ui.callstackBody.addEventListener("click", (e) => {
       const button = e.target.closest("button[data-jump-address]");
       if (!button) return;
+      setFollowPc(false);
       ui.disasmAddress.value = button.dataset.jumpAddress;
       state.highlightedDisasmAddress = parseAddress(button.dataset.jumpAddress, 0, state.selectedCpu);
       state.highlightedCallstackAddress = state.highlightedDisasmAddress;
-      runCommand("disassemble", { address: button.dataset.jumpAddress, before: Number(ui.disasmBefore.value) }).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(JSON.parse(state.fns.dbgCallStackJson()))).catch((error) => log(error.message));
+      runCommand("disassemble", disasmRefreshParams({ address: button.dataset.jumpAddress, keepHighlight: true })).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(JSON.parse(state.fns.dbgCallStackJson()))).catch((error) => log(error.message));
     });
+    ui.disasmAddress.addEventListener("change", () => setFollowPc(String(ui.disasmAddress.value).trim().toLowerCase() === "pc"));
+    ui.disasmCount.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
+    ui.disasmBefore.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
+    ui.disasmMode.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
+    ui.autoUpdateToggle.addEventListener("change", () => runCommand("setAutoUpdate", { enabled: ui.autoUpdateToggle.checked, hz: Number(ui.autoUpdateRate.value) }).catch((e) => log(e.message)));
+    ui.autoUpdateRate.addEventListener("change", () => runCommand("setAutoUpdate", { enabled: ui.autoUpdateToggle.checked, hz: Number(ui.autoUpdateRate.value) }).catch((e) => log(e.message)));
+    ui.memoryView.addEventListener("change", () => { if (state.ready && hasLoadedRom()) runCommand("dumpMemory", {}).then(renderMemoryDump).catch((e) => log(e.message)); });
     ui.traceToggle.addEventListener("change", () => runCommand("setStackTraceMode", { enabled: ui.traceToggle.checked }).catch((e) => log(e.message)));
     ui.tracePrivilegeToggle.addEventListener("change", () => runCommand("setStackTracePrivilegeCheck", { enabled: ui.tracePrivilegeToggle.checked }).catch((e) => log(e.message)));
     ui.memoryDumpBtn.addEventListener("click", () => runCommand("dumpMemory", {}).then(renderMemoryDump).catch((e) => log(e.message)));
@@ -2063,7 +2283,7 @@
     ui.saveSlotLoadBtn.addEventListener("click", () => runCommand("loadSaveSlot", { slot: ui.stateSlot.value }).catch((e) => log(e.message)));
     ui.stateSlot.addEventListener("change", () => rememberSlot(ui.stateSlot.value));
     ui.stateSlotSelect.addEventListener("change", () => { ui.stateSlot.value = ui.stateSlotSelect.value; rememberSlot(ui.stateSlot.value); });
-    ui.recentReloadBtn.addEventListener("click", () => runCommand("reloadRecentFile", { id: Number(ui.recentFileSelect.value) }).catch((e) => log(e.message)));
+    ui.recentReloadBtn.addEventListener("click", () => runCommand("reloadRecentFile", { id: ui.recentFileSelect.value }).catch((e) => log(e.message)));
     ui.hotkeyButton.addEventListener("change", renderHotkey);
     ui.hotkeyRefreshBtn.addEventListener("click", renderHotkey);
     ui.hotkeySetBtn.addEventListener("click", () => runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key: ui.hotkeyCode.value }).catch((e) => log(e.message)));
