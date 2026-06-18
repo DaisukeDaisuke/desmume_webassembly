@@ -219,7 +219,9 @@ int loadROM(int len) {
   SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
   SPU_SetVolume(35);
 
-  if (!NDS_LoadROM("rom.nds")) return emuLastError;
+  if (!NDS_LoadROM("rom.nds")) {
+    return emuLastError;
+  }
   romLoaded = true;
   paused = false;
   frameCounter = 0;
