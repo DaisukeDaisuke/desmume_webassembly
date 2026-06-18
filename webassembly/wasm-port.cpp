@@ -193,8 +193,6 @@ void *getSymbol(int id) {
 }
 // wasm-port.cpp
 
-EMUFILE_MEMORY *savFile = new EMUFILE_MEMORY();
-
 int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
