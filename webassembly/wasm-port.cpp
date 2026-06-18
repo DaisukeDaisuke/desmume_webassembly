@@ -217,6 +217,9 @@ int loadROM(int len) {
   // NDS_LoadROM の前に新しいポインタを用意しておく
   savFile = new EMUFILE_MEMORY();
 
+  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
+  SPU_SetVolume(35);
+
   if (!NDS_LoadROM("rom.nds")) return emuLastError;
   romLoaded = true;
   paused = false;
