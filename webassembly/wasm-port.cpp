@@ -191,10 +191,14 @@ void *getSymbol(int id) {
   if (id == 7) return MMU.MAIN_MEM;
   return 0;
 }
+// wasm-port.cpp
+
+EMUFILE_MEMORY *savFile = new EMUFILE_MEMORY();
 
 int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
+  savFile = new EMUFILE_MEMORY();  // ★ 追加
   NDS_Reset();
   frameCounter = 0;
   lastBreak.hit = false;
@@ -210,9 +214,12 @@ int loadROM(int len) {
   if (hadRom) {
     NDS_FreeROM();
   }
+  // ★ ここで savFile を新しいインスタンスに差し替える
+  // BackupDevice のデストラクタが旧 savFile を delete するので、
+  // NDS_LoadROM の前に新しいポインタを用意しておく
+  savFile = new EMUFILE_MEMORY();
+
   if (!NDS_LoadROM("rom.nds")) return emuLastError;
-  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
-  SPU_SetVolume(35);
   romLoaded = true;
   paused = false;
   frameCounter = 0;

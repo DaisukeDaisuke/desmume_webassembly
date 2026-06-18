@@ -71,3 +71,10 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
+
+
+ステップ	実行内容	使ったツール / コード
+️1 画面へ移動	https://daisukedaisuke.github.io/desmume_webassembly/ を開く	navigate_page（URL）
+2 ROM ボタンを探す	「Files」→「ROM」のボタン（UID 1_42）が表示されていることを確認	—
+3 ファイルをアップロード	ユーザー側のローカルファイル D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds を選択して読み込み	upload_file（uid: "1_42", filePath: "D:\\software\\desmume-win-x64_2025_8_11\\nds\\dq9_new2.nds"）
+4 ROM がロードされたことを確認	コンソールに ROM game code: YDQJ 等のメッセージが表示される	list_console_messages（上位 10 件）

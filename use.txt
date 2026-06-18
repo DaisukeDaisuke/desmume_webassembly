@@ -1,0 +1,36 @@
+使い方
+「Script Injection」セクション
+
+「Isolated script」のテキストエリアに任意の JavaScript を入力します。
+スクリプトは mcp（DeSmuME WebMCP）オブジェクトを利用して実行され、結果やエラーが Run Script ボタン の下にある StaticText 要素に表示されます。
+サンプルコードの入力例
+
+
+Copy
+js
+// エミュレータの状態取得
+return await mcp.call("status", {});
+
+Copy
+js
+// 利用可能なコマンド一覧を取得
+return await mcp.call("list", {});
+結果の確認
+
+成功すると JSON 文字列が表示されます。
+エラーが発生した場合はエラーメッセージ（例：lert is not defined）が同じ場所に表示されます。
+その他のコマンドも試せる
+
+mcp.call("pause", {}), mcp.call("resume", {}), mcp.call("reset", {waitMs:600, holdPaused:true}) など、API のドキュメントに記載されているほぼ全てのコマンドを入力経由で呼び出せます。
+
+（実際に試す場合は「ROM」ボタンから ROM をロードしておくと状態取得がより意味を持ちます）
+
+まとめ
+コード直実行（evaluate_script など）ではなく、UI 上の入力欄から スクリプトインジェクション を使ってエミュレータに対するコマンド呼び出しが可能です。
+実行結果はページ内で即座に確認できるため、ブラウザ上だけでデバッグや自動化のテストを行う際に便利です。
+エラー時も同じ場所に表示されるので、入力ミスや実行失敗を簡単に検知できます。
+何か他に試したいコマンドや具体的なユースケースがあれば教えてください！
+
+
+mcp chrome-devtoolsを使って、https://daisukedaisuke.github.io/desmume_webassembly/見て少し操作して、感想を教えて
+romは"D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds"にある
