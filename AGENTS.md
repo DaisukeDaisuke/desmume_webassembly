@@ -52,16 +52,17 @@ In a UI description, you need to explain what it is, what happens as a result, a
 **Codespace** は究極のサンドボックスである。`ssh -c <name> "<command>"` 経由で `sudo apt install`・ファイル削除・クリーンアップ等、何でも自由に行って構わない。
 
 **セッション管理ルール:**
-- **セッション開始時**: `gh codespace ssh -c <name> "echo hi"` を実行すれば停止中でも自動起動される。必要なときになったら起動すること。
+- **セッション開始時**: `gh codespace ssh -c <name> "echo started"` を実行すれば停止中でも自動起動される。必要なときになったらそのときに起動すること。
 - chrome mcpで、テストするなら、codespaceでbuildして、public/desmume.jsをローカルに転送してからテストすること。
 - **セッション終了時（タスク完了後）**: Codespaceはセッションごとにクリーンアップされるため、**必ず `gh codespace stop -c <name>` で停止**すること。停止しないと無料枠（月120時間/コア）を消費し続ける
-
+- Github bot 対策回避、アカウント保全のため、gh cpは4セッション以上同時に使わないこと。
+- スクリーンショットは、canvasだけで取ること。あとキャンバスサイズはトークン消費量のために1倍にすること。
 **`sudo apt` 使用ルール:**
 - 必ず `-y` を付けて非対話的に実行すること
 - ログは全部 `> /dev/null 2>&1` で捨てること
 - 正しい例:
   ```bash
-  gh codespace ssh -c <name> "sudo apt-get install -y emscripten > /dev/null 2>&1"
+  gh codespace ssh -c <name> "sudo apt update && sudo apt-get install -y emscripten > /dev/null 2>&1"
   ```
 
 **ローカル実機（ホスト）はWindows 11** であるため、`rm` や `find -delete` などのLinuxコマンドはそもそも動作しない。
