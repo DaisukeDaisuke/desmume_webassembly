@@ -249,7 +249,7 @@ gh codespace stop -c <name>
 - `old/desmume` に変更がある場合は、先に `old/desmume` 内でコミットし、プロジェクトルートに戻って `git add ./old/desmume` でサブモジュール参照を更新してから親リポジトリをコミットする。
 - ローカルコミットでGPGが落ちた場合のみ、GPG設定を変更せずに次の回避を試してよい:
   1. `"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe" /bye` で先に1回起動する(20秒間程度かかるので、完了待ちしない)
-  2. `"C:\Program Files\GnuPG\bin\gpg-agent.exe"` を5回同時起動する。自動終了やエラーは無視してよい。このとき標準出力は捨てる。
+  2. `"C:\Program Files\GnuPG\bin\gpg-agent.exe"` を200msづつ、遅延を入れながら5回同時起動する。自動終了やエラーは無視してよい。このとき標準出力は捨てる。
   3. 20秒待ってからコミットを再試行する。
   4. これでもコミットに失敗した場合は、ファイル変更だけで助けを求める。
 - GPG/SSHの再構成、鍵ファイル操作、認証情報の変更は禁止。
