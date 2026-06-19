@@ -63,6 +63,7 @@
 - ホストではソフトウェア追加禁止。C/Dドライブのワークスペース外ファイルを編集・削除しない。
 - 外部にアップロードされず完全にローカル処理されることが明確な場合のみ、ユーザー指定の外部ファイルをChrome DevTools MCPで参照してよい。
 - ROM/セーブ/ステートなどの実データ本文をチャットへ出さない。公開リポジトリに機密情報をアップロードしない。
+- ローカルはssh認証済み、https未認証、gpg設定済み。認証情報を変えない。`~/.ssh` やGPG設定を勝手に触らない。ghトークンや秘密鍵を表示・ダンプしない。
 
 ## `sudo apt` 使用ルール
 
@@ -226,6 +227,32 @@ gh codespace stop -c <name>
 - GitHub Pagesへ毎回デプロイしない。HTML変更や軽い確認はローカル/プレビューサーバーで高速に回す。
 - C++/WASM変更の開発では `webassembly/build_safe_heap.sh` (クラッシュ時、cpp側スタックトレースありモード) と `webassembly/build_sanitize.sh` を積極的に使う。
 - GitHub Actionsでデプロイする場合は、最終段階でまとめて行い、cache-bustする。
+- Actions完了待ちは実デプロイを見たいなら必。。例: `gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3` で対象runを確認し、`gh run watch <run-id> --repo DaisukeDaisuke/desmume_webassembly --exit-status` で終了まで待つ。
+- Codespaceでのbuildと構文チェックは本番Actionsほど重要ではない。軽い変更は本番環境で確認してよい。ただしビルドはリアルタイムで約5分かかるため、複数の問題をまとめて確認する。
+
+### Chrome MCPでのファイルアップロード
+
+- AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。
+- file inputのIDは毎回変わる可能性がある。固定IDを仮定しない。
+- アップロード用ツールはデフォルトで見えていないことがある。必要なら `tool_search` で `take_snapshot` と `upload_file` を探して使う。
+- 手順:
+  1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
+  2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
+  3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。
+  4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
+- DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
+
+## コミットと同期
+
+- コミットは許可されている。
+- pushはAIが行うと失敗することがあるため、基本は人間が行う。pushが必要な場合は事前に確認する。強制pushは禁止。
+- `old/desmume` に変更がある場合は、先に `old/desmume` 内でコミットし、プロジェクトルートに戻って `git add ./old/desmume` でサブモジュール参照を更新してから親リポジトリをコミットする。
+- ローカルコミットでGPGが落ちた場合のみ、GPG設定を変更せずに次の回避を試してよい:
+  1. `"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe" /bye` で先に1回起動する(20秒間程度かかるので、完了待ちしない)
+  2. `"C:\Program Files\GnuPG\bin\gpg-agent.exe"` を5回同時起動する。自動終了やエラーは無視してよい。このとき標準出力は捨てる。
+  3. 20秒待ってからコミットを再試行する。
+  4. これでもコミットに失敗した場合は、ファイル変更だけで助けを求める。
+- GPG/SSHの再構成、鍵ファイル操作、認証情報の変更は禁止。
 
 ### ローカルPHPテストサーバー
 
@@ -278,7 +305,7 @@ kill <PID>
 - `old/desmume` はスタックトレース改造版で、`webassembly` ブランチでのコミットが許可されている。変更した場合は先にサブモジュール側をコミットし、親リポジトリでサブモジュール参照を更新する。
 - `public/index.html` がUI。`public/desmume.js` はEmscriptenの `-sSINGLE_FILE=1` 生成物。
 - `webassembly/wasm-port.cpp` が主なWASMポート実装。
-- `main.cpp` は関係ない。
+- ルートの `main.cpp` と `CMakeLists.txt` はこのWeb実装には関係ない。
 - `coi-serviceworker/coi-serviceworker.js` はGitHub Pagesで真のマルチスレッドを使うためのCOOP/COEP用ハック。
 - すべてのAPIには説明を書く。
 - 実装詳細・最近の注意点は `handoff.md` に残す。作業で得た重要な知見は Addendum として追記する。
