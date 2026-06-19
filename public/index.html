@@ -511,13 +511,14 @@
               <option>A</option><option>B</option><option>X</option><option>Y</option><option>L</option><option>R</option><option>Start</option><option>Select</option>
               <option>Up</option><option>Down</option><option>Left</option><option>Right</option>
             </select></label>
-            <label>Keyboard code<input id="hotkey-code" class="mono" value="KeyX"></label>
+            <label>Key<input id="hotkey-code" class="mono" value="KeyX" readonly></label>
             <label>Current<input id="hotkey-current" class="mono" value="" readonly></label>
           </div>
           <div class="row">
             <button id="hotkey-set-btn" type="button">Set Hotkey</button>
             <button id="hotkey-refresh-btn" type="button">Refresh</button>
           </div>
+          <p class="tiny">Key欄を選んで、割り当てたい実キーを1つ押してください。設定はこのブラウザに保存され、次回起動時も同じ割り当てで使えます。</p>
         </div>
         <div class="section">
           <h2>WebMCP</h2>
@@ -685,6 +686,39 @@
     function createRecentId() {
       if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
       return `recent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function normalizeKeyboardCode(event) {
+      const code = String(event?.code || "");
+      if (code && code !== "Unidentified") return code;
+      const key = String(event?.key || "");
+      const keyCode = Number(event?.keyCode ?? event?.which ?? 0);
+      const right = event?.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT;
+      if (key === "Shift" || keyCode === 16) return right ? "ShiftRight" : "ShiftLeft";
+      if (key === "Control" || keyCode === 17) return right ? "ControlRight" : "ControlLeft";
+      if (key === "Alt" || keyCode === 18) return right ? "AltRight" : "AltLeft";
+      if (key === "Meta" || keyCode === 91 || keyCode === 92) return right ? "MetaRight" : "MetaLeft";
+      if (keyCode >= 65 && keyCode <= 90) return `Key${String.fromCharCode(keyCode)}`;
+      if (keyCode >= 48 && keyCode <= 57) return `Digit${keyCode - 48}`;
+      return code;
+    }
+
+    function saveKeymap() {
+      try {
+        localStorage.setItem("desmume-keymap", JSON.stringify(state.keymap));
+      } catch {}
+    }
+
+    function loadKeymap() {
+      try {
+        const stored = JSON.parse(localStorage.getItem("desmume-keymap") || "{}");
+        if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
+        const next = {};
+        for (const [code, button] of Object.entries(stored)) {
+          if (typeof code === "string" && state.buttons[String(button)] !== undefined) next[code] = String(button);
+        }
+        if (Object.keys(next).length) state.keymap = next;
+      } catch {}
     }
 
     function parseNumber(value, fallback = 0) {
@@ -2002,11 +2036,14 @@
       },
       async setKeyBinding(params) {
         const button = String(params.button);
-        const key = String(params.key);
+        const key = String(params.key || "").trim();
+        if (state.buttons[button] === undefined) throw new Error(`unknown button: ${button}`);
+        if (!key) throw new Error("key is required");
         for (const [code, mapped] of Object.entries(state.keymap)) {
           if (mapped === button || code === key) delete state.keymap[code];
         }
         state.keymap[key] = button;
+        saveKeymap();
         renderHotkey();
         return { keymap: state.keymap };
       },
@@ -2502,6 +2539,30 @@
     ui.hotkeyButton.addEventListener("change", renderHotkey);
     ui.hotkeyRefreshBtn.addEventListener("click", renderHotkey);
     ui.hotkeySetBtn.addEventListener("click", () => runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key: ui.hotkeyCode.value }).catch((e) => log(e.message)));
+    ui.hotkeyCode.addEventListener("focus", () => {
+      ui.hotkeyCode.value = "Press a key";
+      ui.hotkeyCode.select();
+    });
+    ui.hotkeyCode.addEventListener("blur", renderHotkey);
+    ui.hotkeyCode.addEventListener("keydown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = normalizeKeyboardCode(event);
+      if (!key) {
+        renderHotkey();
+        return;
+      }
+      ui.hotkeyCode.value = key;
+      runCommand("setKeyBinding", { button: ui.hotkeyButton.value, key })
+      .then(() => {
+        ui.hotkeyCode.blur();
+        log(`Hotkey saved: ${ui.hotkeyButton.value} = ${key}`);
+      })
+      .catch((error) => {
+        log(error.message);
+        renderHotkey();
+      });
+    });
     ui.canvasShotBtn.addEventListener("click", () => runCommand("takeScreenshot", {}).catch((e) => log(e.message)));
     ui.registers.querySelectorAll("input[data-register-input]").forEach((input) => {
       const row = input.closest("div[data-register]");
@@ -2551,8 +2612,8 @@
     ui.pad.addEventListener("pointerup", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, false); });
     ui.pad.addEventListener("pointerleave", () => Object.keys(state.buttons).forEach((button) => setKey(button, false)));
     window.addEventListener("focusin", () => { if (isTypingTarget()) releaseAllKeys(); });
-    window.addEventListener("keydown", (e) => { if (isTypingTarget(e.target)) return; if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], true); } });
-    window.addEventListener("keyup", (e) => { if (isTypingTarget(e.target)) return; if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], false); } });
+    window.addEventListener("keydown", (e) => { if (isTypingTarget(e.target)) return; const code = normalizeKeyboardCode(e); if (state.keymap[code]) { e.preventDefault(); setKey(state.keymap[code], true); } });
+    window.addEventListener("keyup", (e) => { if (isTypingTarget(e.target)) return; const code = normalizeKeyboardCode(e); if (state.keymap[code]) { e.preventDefault(); setKey(state.keymap[code], false); } });
     ui.screenShell.addEventListener("pointerdown", (e) => { ui.screenShell.setPointerCapture(e.pointerId); updateTouch(e, true); });
     ui.screenShell.addEventListener("pointermove", (e) => { if (state.touch.active) updateTouch(e, true); });
     ui.screenShell.addEventListener("pointerup", () => { state.touch.active = false; });
@@ -2572,6 +2633,7 @@
       const storedSlots = JSON.parse(localStorage.getItem("desmume-known-slots") || "[]");
       if (Array.isArray(storedSlots) && storedSlots.length) state.knownSlots = [...new Set([...storedSlots.map((slot) => String(slot)), ...state.knownSlots])].slice(0, 24);
     } catch {}
+    loadKeymap();
     ui.readyText.textContent = "ROM待ち";
     renderBreakpoints();
     renderFreezes();
