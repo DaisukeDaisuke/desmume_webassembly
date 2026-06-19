@@ -135,7 +135,7 @@ extern "C" void wasmEnterFunctionHook(int proc) {
   armcpu_t *cpu = cpuFor(proc);
   if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   const u32 sp = cpu->R[13];
-  while (!callStack.empty() && callStack.back().sp <= sp) callStack.pop_back();
+  while (!callStack.empty() && callStack.back().sp < sp) callStack.pop_back();
   const u32 callee = cpu->instruct_adr;
   const u32 id = callCountMap[callee]++;
   callStack.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id});
@@ -148,6 +148,7 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
   const u32 expected = callStack.empty() ? 0 : callStack.back().caller;
   const bool mismatch = expected != 0 && ((target & ~1U) != (expected & ~1U));
   const bool alwaysRecord = kind >= 3 || reg != 14 || expected == 0;
+  if (expected != 0 && !mismatch) callStack.pop_back();
   if (!alwaysRecord && !mismatch) return;
   traceControlEvents.push_back({cpu->instruct_adr, target, expected, cpu->R[13], cpu->CPSR.val, kind, reg, mismatch});
   if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
@@ -619,9 +620,9 @@ const char *dbgStackTrace(int proc, int words) {
   os << "trace=" << (traceEnabled ? "on" : "off")
      << " privilegeCheck=" << (tracePrivilegeCheck ? "on" : "off")
      << " sp=0x" << std::hex << sp << "\n";
-  os << "return   callee(id)      caller      sp\n";
-  for (size_t i = 0; i < callStack.size(); i++) {
-    const CallStackEntry &entry = callStack[i];
+  os << "return   callee(id)      caller      sp  newest first\n";
+  for (size_t offset = 0; offset < callStack.size(); offset++) {
+    const CallStackEntry &entry = callStack[callStack.size() - 1 - offset];
     const u32 caller = ((entry.caller & ~1U) - 4) & 0xffffffffU;
     os << "0x" << std::hex << entry.caller << "  0x" << entry.callee << "(" << std::dec << entry.id << ")"
        << " caller=0x" << std::hex << caller
@@ -656,10 +657,10 @@ const char *dbgCallStackJson() {
      << ",\"privilegeCheck\":" << (tracePrivilegeCheck ? "true" : "false")
      << ",\"depth\":" << callStack.size()
      << ",\"frames\":[";
-  for (size_t i = 0; i < callStack.size(); i++) {
-    const CallStackEntry &entry = callStack[i];
+  for (size_t offset = 0; offset < callStack.size(); offset++) {
+    const CallStackEntry &entry = callStack[callStack.size() - 1 - offset];
     const u32 caller = ((entry.caller & ~1U) - 4) & 0xffffffffU;
-    if (i) os << ",";
+    if (offset) os << ",";
     os << "{\"caller\":" << caller
        << ",\"returnAddress\":" << entry.caller
        << ",\"callee\":" << entry.callee

@@ -106,7 +106,7 @@ const apiDescriptions = {
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
     stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
-    callStack: "記録済みコールスタックをJSONで取得します。各frameのcallerはLRから4を引いた呼び出し元命令アドレスで、returnAddressに元のLRを残します。ageLabelはnewestまたは最新フレームからの深さです。",
+    callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。各frameのcallerはLRから4を引いた呼び出し元命令アドレスで、returnAddressに元のLRを残します。ageLabelはnewestまたは最新フレームからの深さです。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -169,7 +169,7 @@ function normalizeCallStackData(data) {
             const hasReturnAddress = frame.returnAddress != null;
             const returnAddress = Number(hasReturnAddress ? frame.returnAddress : frame.caller) >>> 0;
             const caller = hasReturnAddress ? (Number(frame.caller) >>> 0) : (((returnAddress & ~1) - 4) >>> 0);
-            const depthFromNewest = frames.length - 1 - index;
+            const depthFromNewest = index;
             return {
                 ...frame,
                 caller,
@@ -1014,7 +1014,7 @@ function renderCallStack(data) {
         const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
         const cls = ["callstack-row", highlighted ? "highlight" : "", frame.modeClass].filter(Boolean).join(" ");
         const execMode = `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
-        return `<tr class="${cls}"><td title="newest frame is the bottom row">${frame.ageLabel}</td><td title="return ${hex(frame.returnAddress)}">${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
+        return `<tr class="${cls}"><td title="newest frame is the top row">${frame.ageLabel}</td><td title="return ${hex(frame.returnAddress)}">${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
     }).join("");
 }
 

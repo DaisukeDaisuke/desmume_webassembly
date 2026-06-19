@@ -88,4 +88,5 @@
 - Stack trace JSON includes `controlFlow`. With ARM9 trace enabled, PC-writing/return events are retained up to 128 entries with `pc/target/expected/sp/cpsr/kind/reg/mismatch`.
 - Disassembler purple highlighting is limited to instructions that write PC. `add r0, pc` style ADR should not be purple. Current PC green highlight takes precedence.
 - WASM break hit must set `execute=false` in `recordBreak()`. `pauseEmu(0)` / `loadROM()` restores `execute=true`.
-- Call Stack table age shows the bottom row as `newest`; rows above show `↑+Nd`.
+- Call Stack table age shows the top row as `newest`; rows below show `↑+Nd`.
+- Call stack frames are now emitted newest-first for UI/API/MCP. Return-like PC writes pop the top frame when the branch target matches the recorded LR, including ARM `BX LR` / `LDM ... {PC}` and Thumb `BX` / `POP {..., PC}`.

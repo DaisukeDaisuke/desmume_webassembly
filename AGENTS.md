@@ -342,6 +342,9 @@ kill <PID>
 - [GitHub Docs: Using Codespaces with GitHub CLI](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli)
 - [AGENTS.md Open Standard](https://agents.md/)
 
+# 動作確認
+- あなたは、chrome mcpで動作確認をするべきです。この場合ユーザーが再現方法を述べているため、これを使用し、コードが期待通りに修正されているか確かめる必要があります。
+
 # agents.md End
 
 If the context has been injected up to this point, do not reread AGENTS.md file.
