@@ -56,4 +56,4 @@
 - 2026-06-18: ツール欄の `input` / `textarea` / `select` にフォーカスがある間は、グローバルの DS キー入力を横取りしない。フォーカス侵入時は押しっぱなし防止のため仮想キーを全解除する。
 - 2026-06-18: ブレークヒット時はまず `pauseEmu(1)` と `paused=true` を確定し、その後 `near pc` 追尾 (`disasmAddress="pc"`) と debugger refresh を非同期で入れる。`lastBreakKey` が変わったときだけ refresh する。
 - 2026-06-18: `webassembly/wasm-port.cpp` の `dbgStep` / `dbgStepOver` は、現在PCにある exec breakpoint だけを最初の1命令ぶん一時解除して即復元する。これで同じPCの breakpoint を永遠に踏み直すのを防ぐ。`stepOver` は他の breakpoint に当たり得るので、ログでも plain `step` 推奨を出す。
-- 2026-06-19: Hotkeys は `desmume-keymap` に保存する。右Shiftは `KeyboardEvent.code === "ShiftRight"` を優先し、`code` が空の経路では `keyCode/which === 16` と `location === DOM_KEY_LOCATION_RIGHT` から `ShiftRight` に正規化する。UIのKey欄はフォーカス後に押した実キー1つをそのまま採用する。
+- 2026-06-19: Hotkeys は `desmume-keymap` に保存する。右Shiftは `KeyboardEvent.code === "ShiftRight"` を優先し、`code` が空の経路では `keyCode/which === 16` を原則 `ShiftRight` に正規化する。`location === DOM_KEY_LOCATION_LEFT` が明示される場合だけ `ShiftLeft` として扱う。既存保存値が `ShiftLeft=Select` だけなら起動時に `ShiftRight=Select` へ移行する。UIのKey欄はフォーカス後に押した実キー1つをそのまま採用する。

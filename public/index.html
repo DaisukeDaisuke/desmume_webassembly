@@ -694,7 +694,7 @@
       const key = String(event?.key || "");
       const keyCode = Number(event?.keyCode ?? event?.which ?? 0);
       const right = event?.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT;
-      if (key === "Shift" || keyCode === 16) return right ? "ShiftRight" : "ShiftLeft";
+      if (key === "Shift" || keyCode === 16) return event?.location === KeyboardEvent.DOM_KEY_LOCATION_LEFT ? "ShiftLeft" : "ShiftRight";
       if (key === "Control" || keyCode === 17) return right ? "ControlRight" : "ControlLeft";
       if (key === "Alt" || keyCode === 18) return right ? "AltRight" : "AltLeft";
       if (key === "Meta" || keyCode === 91 || keyCode === 92) return right ? "MetaRight" : "MetaLeft";
@@ -717,7 +717,16 @@
         for (const [code, button] of Object.entries(stored)) {
           if (typeof code === "string" && state.buttons[String(button)] !== undefined) next[code] = String(button);
         }
-        if (Object.keys(next).length) state.keymap = next;
+        let migrated = false;
+        if (next.ShiftLeft === "Select" && !next.ShiftRight) {
+          delete next.ShiftLeft;
+          next.ShiftRight = "Select";
+          migrated = true;
+        }
+        if (Object.keys(next).length) {
+          state.keymap = next;
+          if (migrated) saveKeymap();
+        }
       } catch {}
     }
 

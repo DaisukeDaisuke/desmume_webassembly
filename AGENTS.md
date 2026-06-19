@@ -524,7 +524,7 @@ AIによるありとあらゆる操作の実現
 - 積極的にwebassembly/build_safe_heap.sh、webassembly/build_sanitize.shを活用すること。というより開発はこっちですること。
 - テストサーバーはphpでたてろ。
 ```
-(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id    
+(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id    
 ```
 
 ```
