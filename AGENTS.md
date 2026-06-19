@@ -1,6 +1,6 @@
 # GitHub Codespace Agent Guide
 
-## グローバルルール
+## 最優先ルール
 
 - **このファイルをチャット開始時に必ず読むこと。**
 - **依頼された問題だけを解決すること。余計な作業をしない。**
@@ -13,11 +13,6 @@
 - ファイルを読む価値があるか不明なら、まず先頭100〜280行だけ読んでから判断する。
 - `apply_patch` 使用時、全行削除して同じ内容で書き直すことは可能な限り避ける（ファイルの置き換え自体は否定しない）。
 - `apply_patch` で日本語を書いても文字化けしない。文字化けはPowerShellの問題。文字化けが発生した場合はユーザーが通知する。
-- PowerShellでファイルを読む場合は以下を使う:
-  ```powershell
-  [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -Encoding UTF8 file.txt
-  [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $i=1; Get-Content -Encoding UTF8 file.txt | % { "$i: $_"; $i++ }
-  ```
 - 文字化けを理由にすべてを英語化しない。`apply_patch` を使う限り文字化けは起きない。
 - 循環参照はできる限り避ける。
 - 編集した行番号を最終提出時に報告しなくてよい。Gitがあればファイル名だけで十分。
@@ -27,20 +22,31 @@
 - `git diff` で全差分を確認して行番号を報告するのはトークンの無駄。行わない。
 - **許可なしに追加ソフトウェアをインストールしない。**
   許可とはメッセージ表示だけでなく、処理を中断してユーザーにインストール許可を求め、確認を得てからタスクを完了することを意味する。
-- `public/branches` および `public/emulators.json` を読まない（自動生成アセットのため検索対象外）。
-- UIを実装する際、CLS防止のためにJavaScriptで起動時に要素を挿入しない。
-  すべての要素はHTMLに実装し、オプション要素はデフォルトで非表示（ただし幅は確保）にする。
-  - これはJavaScriptで動的要素を使ってはいけないという意味ではない。テンプレートを使った動的追加は許可。
-  - また、動的要素を起動時に初期化してはいけないという意味でもない。
+- `public/branches`、`public/emulators.json`、`public/desmume.js` を読まない・検索対象に入れない（自動生成/ビルド成果物）。
+- `AGENTS.md`、`handoff.md`、`system.md` は作業前後の重要情報源として扱う。エミュレーター実装・デバッグ作業では `handoff.md` も読むこと。
 
-* PLEASE DO NOT RESTORE the differences that I deleted for my own convenience.
-  * These deletions were intentional. Do not attempt to restore them, assuming that "THE CHAT HISTORY IS CORRECT BUT WAS DELETED!!!!!"
-  * Restoring this would be a waste of time for both parties.
+## ユーザー変更の扱い
 
-A UI description is not a specification report. When adding a description, you should write about what the user should expect and what they should input, rather than just saying "it's based on xx" or "it uses performance.now()".
-In a UI description, you need to explain what it is, what happens as a result, and what the user needs to do
+- PLEASE DO NOT RESTORE the differences that I deleted for my own convenience.
+  - These deletions were intentional. Do not attempt to restore them, assuming that "THE CHAT HISTORY IS CORRECT BUT WAS DELETED!!!!!"
+  - Restoring this would be a waste of time for both parties.
+- ユーザー由来の未追跡ファイルや削除を勝手に戻さない。
 
----
+## PowerShellでUTF-8を読む
+
+```powershell
+[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -Encoding UTF8 file.txt
+[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $i=1; Get-Content -Encoding UTF8 file.txt | % { "$i: $_"; $i++ }
+```
+
+## UIルール
+
+- UIを実装する際は `old/interface-design/.claude/skills/interface-design/SKILL.md` を読むこと。
+- CLS防止のため、JavaScriptで起動時に要素を挿入しない。すべての要素はHTMLに実装し、オプション要素はデフォルトで非表示（ただし幅は確保）にする。
+  - テンプレートを使った動的追加は許可。
+  - 動的要素を起動時に初期化してはいけない、という意味ではない。
+  - 動的エレメントは、テンプレートエレメントを使用するべきである。
+- UI description is not a specification report. When adding a description, write what the user should expect, what happens as a result, and what the user needs to do.
 
 ## 環境の区別
 
@@ -49,41 +55,23 @@ In a UI description, you need to explain what it is, what happens as a result, a
 | **Codespace** | Linux | GitHubが管理する安全な環境 | `sudo apt` で自由に導入可 | **ファイルのクリーンアップ含め何でも可** |
 | **ホスト（Codex実行環境）** | **Windows 11** | あなた自身がホストされている実機 | **追加インストール禁止** | ワークスペース外のC/Dドライブ編集禁止 |
 
-**Codespace** は究極のサンドボックスである。`ssh -c <name> "<command>"` 経由で `sudo apt install`・ファイル削除・クリーンアップ等、何でも自由に行って構わない。
+- Codespace は `gh codespace ssh -c <name> "<command>"` 経由で使う。停止中でも ssh で自動起動される。
+- タスク完了後、Codespaceを起動した場合は **必ず `gh codespace stop -c <name>` で停止**する。
+- Codespace名は実行前に `gh codespace list` で確認する。
+- `gh codespace cp` は必ず `-e` を付ける。例: `gh codespace cp ./webassembly/wasm-port.cpp remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cpp -c <name> -e`
+- gh cpは4セッション以上同時に使わない。
+- ホストではソフトウェア追加禁止。C/Dドライブのワークスペース外ファイルを編集・削除しない。
+- 外部にアップロードされず完全にローカル処理されることが明確な場合のみ、ユーザー指定の外部ファイルをChrome DevTools MCPで参照してよい。
+- ROM/セーブ/ステートなどの実データ本文をチャットへ出さない。公開リポジトリに機密情報をアップロードしない。
 
-**セッション管理ルール:**
-- **セッション開始時**: `gh codespace ssh -c <name> "echo started"` を実行すれば停止中でも自動起動される。必要なときになったらそのときに起動すること。
-- chrome mcpで、テストするなら、codespaceでbuildして、public/desmume.jsをローカルに転送してからテストすること。
-- **セッション終了時（タスク完了後）**: Codespaceはセッションごとにクリーンアップされるため、**必ず `gh codespace stop -c <name>` で停止**すること。停止しないと無料枠（月120時間/コア）を消費し続ける
-- Github bot 対策回避、アカウント保全のため、gh cpは4セッション以上同時に使わないこと。
-- スクリーンショットは、canvasだけで取ること。あとキャンバスサイズはトークン消費量のために1倍にすること。
-**`sudo apt` 使用ルール:**
-- 必ず `-y` を付けて非対話的に実行すること
-- ログは全部 `> /dev/null 2>&1` で捨てること
-- 正しい例:
-  ```bash
-  gh codespace ssh -c <name> "sudo apt update && sudo apt-get install -y emscripten > /dev/null 2>&1"
-  ```
+## `sudo apt` 使用ルール
 
-**ローカル実機（ホスト）はWindows 11** であるため、`rm` や `find -delete` などのLinuxコマンドはそもそも動作しない。
-PowerShell・cmdの破壊的操作として以下を厳守する:
-- ソフトウェアの追加インストール禁止
-- C・Dドライブのワークスペース外ファイルを編集・削除禁止
-- ただし、**外部にアップロードされることがなく完全にローカルで処理されることが明確な場合**に限り、ユーザーが指定した外部ファイルをChrome DevTools MCPで読み取ったり参照したりすることは許可される
+- 必ず `-y` を付けて非対話的に実行すること。
+- ログは全部 `> /dev/null 2>&1` で捨てること。
 
----
-
-このファイルはAIコーディングエージェント（OpenAI Codex等）がGitHub Codespaceを操作する際のルールと手順を定義する。
-
----
-
-## 前提条件
-
-- `gh` CLI がインストール済み (`winget install --id GitHub.cli`)
-- 認証済み: `gh auth login` および `gh auth refresh -h github.com -s codespace`
-- Codespace名は実行前に `gh codespace list` で確認すること
-
----
+```bash
+gh codespace ssh -c <name> "sudo apt update && sudo apt-get install -y emscripten > /dev/null 2>&1"
+```
 
 ## ⛔ 絶対禁止コマンド（settings.json の deny + 追加制約）
 
@@ -155,115 +143,42 @@ gh api --method DELETE        # 同上
 curl -X DELETE https://api.github.com/...  # curlによるGitHub API DELETE禁止
 ```
 
----
-
-## デバッグ方針（HTML / JS / WebAssembly）
-
-### 方針A: ローカルファイルを直接 Chrome DevTools MCP で開く
-
-ビルド成果物がローカルに存在する場合はこちらを優先。
+## 許可される代表コマンド
 
 ```bash
-# ビルドのみCodespaceで実行し、成果物をローカルに同期
-gh codespace ssh -c <name> "cd /workspaces/repo && npm run build"
-gh codespace cp -r remote:/workspaces/repo/dist/ ./dist/ -c <name>
+# gh 読み取り・確認
+gh * browse
+gh * checks
+gh * diff
+gh * list
+gh * logs
+gh * search
+gh * status
+gh * verify
+gh * view
+gh * watch
+gh * clone
+gh * download
+gh api *issues/*/comments*
+gh api *pulls/*/comments*
+gh api *pulls/*/reviews*
 
-# → Chrome DevTools MCP でローカルの dist/index.html を直接開く
-```
+# git
+git add
+git blame
+git branch
+git checkout
+git diff
+git fetch
+git log
+git ls-files
+git rev-parse
+git show
+git stash list
+git status
+git tag
 
-### 方針B: Codespaceでサーバーを立てて Chrome DevTools MCP 経由でプレビュー
-
-DockerやDevcontainer上のサーバーに接続する場合。
-
-```bash
-# Codespace上でサーバー起動（バックグラウンド）
-gh codespace ssh -c <name> "cd /workspaces/repo && npm run dev &"
-
-# ポートをローカルにフォワード
-gh codespace ports forward 3000:3000 -c <name>
-
-# → Chrome DevTools MCP で http://localhost:3000 を開く
-```
-
-### ファイル同期の原則
-
-- **ファイルの中身を応答に復唱しない**
-- ビルドのみの場合: 成果物（`dist/`、`build/`、`.wasm` 等）をローカルに同期すること
-- **ソースを修正した場合: ローカルで `apply_patch` を適用してから `gh codespace cp` でCodespaceへ転送して確実に上書きする**
-  ```bash
-  # 正しい手順
-  # 1. ローカルで apply_patch を使いファイルを編集
-  # 2. Codespace へ cp で上書き転送（-c オプションで Codespace 名を指定）
-  gh codespace cp ./src/foo.ts remote:/workspaces/repo/src/foo.ts -c <name>
-  # 3. Codespace 上でビルド
-  gh codespace ssh -c <name> "cd /workspaces/repo && npm run build"
-  ```
-- 双方向の大量ファイル同期が必要なら `gh codespace ssh` + `rsync` を検討する
-
-```bash
-# rsync 経由での同期（sshconfig を使う場合）
-gh codespace ssh --config -c <name> >> ~/.ssh/config
-rsync -avz --exclude node_modules ./src/ <codespace-host>:/workspaces/repo/src/
-```
-
----
-
-## 許可コマンド一覧（settings.json の allow より）
-
-### 読み取り・確認系（副作用なし）
-
-```bash
-gh * browse      # ブラウザで開く
-gh * checks      # CI/CDチェック確認
-gh * diff        # 差分確認
-gh * list        # 一覧取得
-gh * logs        # ログ確認
-gh * search      # 検索
-gh * status      # 状態確認
-gh * verify      # 検証
-gh * view        # 詳細表示
-gh * watch       # 監視
-gh browse
-gh search
-gh status
-```
-
-### ダウンロード・クローン（ローカルへの取得）
-
-```bash
-gh * clone       # リポジトリクローン
-gh * download    # アセット等のダウンロード
-```
-
-### GitHub API（読み取り・コメント系のみ）
-
-```bash
-gh api *issues/*/comments*   # Issueコメント
-gh api *pulls/*/comments*    # PRコメント
-gh api *pulls/*/reviews*     # PRレビュー
-```
-
-### git 操作（許可されているもの）
-
-```bash
-git add          # ステージング
-git blame        # 行履歴確認
-git branch       # ブランチ一覧・作成（削除は -D 禁止、-d はマージ済みのみ）
-git checkout     # ブランチ切り替え・ファイル復元
-git diff         # 差分確認
-git fetch        # リモート情報取得（マージしない）
-git log          # ログ確認
-git ls-files     # 追跡ファイル一覧
-git rev-parse    # リビジョン解析
-git show         # コミット・オブジェクト表示
-git stash list   # スタッシュ一覧（dropやclearは禁止）
-git status       # 状態確認
-git tag          # タグ一覧・作成
-```
-
-### Nix 系（ビルド・評価・フォーマット）
-
-```bash
+# Nix / lint / format
 nix build
 nix develop
 nix eval
@@ -272,118 +187,73 @@ nix fmt
 nix search
 nix-fast-build
 nixfmt
-```
-
-### Lint / Format 系
-
-```bash
-actionlint       # GitHub Actions ワークフロー lint
-deadnix          # Nix 未使用コード検出
+actionlint
+deadnix
 editorconfig-checker
 prettier
 shellcheck
 shfmt
-statix           # Nix static analysis
-typos            # スペルチェック
-zizmor           # GitHub Actions セキュリティ lint
+statix
+typos
+zizmor
 ```
 
----
-
-## Codespace 操作（安全な操作のみ）
+## Codespace操作
 
 ```bash
-# 一覧・確認
 gh codespace list
 gh codespace list --repo owner/repo
 gh codespace view -c <name>
 gh codespace logs -c <name> --tail 100
 gh codespace ports -c <name>
-
-# 非対話型コマンド実行
 gh codespace ssh -c <name> "<command>"
-gh codespace ssh -c <name> "cd /workspaces/repo && make build"
-
-# ファイル転送
-gh codespace cp local-file.txt remote:~/path/ -c <name>
-gh codespace cp -r remote:/workspaces/repo/dist/ ./dist/ -c <name>
-
-# ポートフォワード
+gh codespace cp local-file.txt remote:~/path/ -c <name> -e
+gh codespace cp -r remote:/workspaces/repo/dist/ ./dist/ -c <name> -e
 gh codespace ports forward 8080:8080 -c <name>
 gh codespace ports visibility 8080:org -c <name>
-
-# セッション開始（停止中でも ssh で自動起動される）
-gh codespace ssh -c <name> "echo hi"
-
-# 停止（タスク完了後は必ず実行 — 無料枠消費を防ぐ）
 gh codespace stop -c <name>
 ```
 
----
+- `gh codespace cp` が失敗する場合は、Codespaceが停止している可能性が高い。`gh codespace ssh -c <name> "echo started"` で起動を試す。
+- 壊れていると思った場合でも、禁止コマンドに該当する操作（例: `gh codespace delete`）は実行しない。ユーザーに相談する。
 
-## クリーンアップ（タスク完了後・提出前）
+## デバッグ・ビルド方針
 
-### ポートフォワーディングの停止（必須）
+- Chrome MCPでテストする場合は、Codespaceでビルドして `public/desmume.js` をローカルへ転送してからテストする。
+- ソースを修正した場合は、ローカルで `apply_patch` を適用してから `gh codespace cp -e` でCodespaceへ転送し、Codespace上でビルドする。
+- ファイルの中身を応答に復唱しない。
+- スクリーンショットはcanvasだけで取る。canvasサイズはトークン消費を抑えるため1倍にする。ユーザーが詳細にバグを指定した場合は、ピクセル検査スクリプトを使う。
+- GitHub Pagesへ毎回デプロイしない。HTML変更や軽い確認はローカル/プレビューサーバーで高速に回す。
+- C++/WASM変更の開発では `webassembly/build_safe_heap.sh` (クラッシュ時、cpp側スタックトレースありモード) と `webassembly/build_sanitize.sh` を積極的に使う。
+- GitHub Actionsでデプロイする場合は、最終段階でまとめて行い、cache-bustする。
 
-ポートフォワーディングは**提出前に必ず停止**すること。
-フォワードプロセスはターミナルのフォアグラウンドで動作するため、`Ctrl+C` で停止する。
+### ローカルPHPテストサーバー
+
+```powershell
+(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id
+```
+
+URL:
+
+```text
+http://localhost:8766/
+```
+
+## クリーンアップ
+
+- ポートフォワーディングは提出前に必ず停止する。
+- 停止できない・忘れた場合は、次をチャットで必ず明記してユーザーに伝えること。
 
 ```bash
-# フォワード状態を確認
-gh codespace ports -c <name>
-
-# フォワードしているプロセスのPIDを確認してkill
-lsof -i :8080
+gh codespace ports -c <codespace-name>
+# フォワードしているターミナルで Ctrl+C、またはプロセスを kill してください
+lsof -i :<port>
 kill <PID>
 ```
 
-停止できない・忘れた場合はチャットで以下を**必ず**明記してユーザーに伝えること:
+- Codespaceを起動した場合、タスク完了後に `gh codespace stop -c <name>` を実行する。
 
-> **⚠️ ポートフォワーディングが残っています。以下のコマンドで手動停止してください:**
-> ```bash
-> gh codespace ports -c <codespace-name>   # フォワード中のポートを確認
-> # フォワードしているターミナルで Ctrl+C、またはプロセスを kill してください
-> lsof -i :<port>
-> kill <PID>
-> ```
-
-### 一時ファイルの扱い
-
-**Codespace内**はサンドボックスのため、`rm` で自由にクリーンアップして構わない:
-
-```bash
-# Codespace内での削除は ssh 経由で直接 rm を使える
-gh codespace ssh -c <name> "rm /tmp/work.log"
-gh codespace ssh -c <name> "rm -rf /tmp/workdir/"
-```
-
-**ローカル実機**では `rm` が禁止のため、一時ファイルを削除できない。
-ただし、ワークスペース内の一時ファイルであれば削除してよいが、コマンドをミスらないように細心の注意を払う。
-
-```bash
-> C:\Users\<user>\AppData\Local\Temp\work.log
-```
-
-- ファイルの転送はcsp使うな。gh codespace cp使え。cpが失敗する場合おそらくサーバーが落ちてる。編集だけしてあとはすぐに私に助けを求めろ。
-- もし助けを求めるのが癪なら、codespace消していいので、再作成すること。おかしいと思ったらすぐに再作成すること。
-```
-gh codespace list
-gh codespace stop -c <name>
-gh codespace delete -c <name>
-gh codespace create --idle-timeout "15m" -r DaisukeDaisuke/desmume_webassembly -b main --machine basicLinux32gb 
-```
-
-
-# important
-
-To avoid the gh codespace cp bug, be sure to use the -e flag.
-```
-gh codespace cp ./webassembly/wasm-port.cpp remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cpp -c curly-parakeet-v6797wvg9vw2wvr9 -e
-```
-
----
-
-## チェックリスト（タスク実行前）
+## 作業前チェックリスト
 
 - [ ] コマンドに `delete` が含まれていないか
 - [ ] `rm` が含まれていないか（引数問わず禁止）
@@ -395,14 +265,49 @@ gh codespace cp ./webassembly/wasm-port.cpp remote:/workspaces/desmume_webassemb
 - [ ] `-e` フラグをユーザー入力と組み合わせていないか（シェルインジェクション）
 - [ ] デバッグ時にファイル内容を応答に復唱していないか
 - [ ] ポートフォワーディングを提出前に停止したか（または停止方法をチャットで明記したか）
-- [ ] Codespaceに転送したファイルは `apply_patch` → `cp` の手順を踏んだか
+- [ ] Codespaceに転送したファイルは `apply_patch` → `cp -e` の手順を踏んだか
 - [ ] ホスト環境にソフトウェアを追加インストールしていないか
 - [ ] `sudo apt install` に `-y` を付けてログを `> /dev/null 2>&1` で捨てているか
 - [ ] タスク完了後に `gh codespace stop -c <name>` で停止したか
 
----
+## プロジェクト概要
 
----
+- 目的: `old/desmume` をサブモジュールとして使い、DeSmuMEのWebAssembly版をフルデバッグ対応・WebMCP対応で実装する。
+- 公開先: `https://daisukedaisuke.github.io/desmume_webassembly/`
+- リポジトリ: `git@github.com:DaisukeDaisuke/desmume_webassembly.git`
+- `old/desmume` はスタックトレース改造版で、`webassembly` ブランチでのコミットが許可されている。変更した場合は先にサブモジュール側をコミットし、親リポジトリでサブモジュール参照を更新する。
+- `public/index.html` がUI。`public/desmume.js` はEmscriptenの `-sSINGLE_FILE=1` 生成物。
+- `webassembly/wasm-port.cpp` が主なWASMポート実装。
+- `main.cpp` は関係ない。
+- `coi-serviceworker/coi-serviceworker.js` はGitHub Pagesで真のマルチスレッドを使うためのCOOP/COEP用ハック。
+- すべてのAPIには説明を書く。
+- 実装詳細・最近の注意点は `handoff.md` に残す。作業で得た重要な知見は Addendum として追記する。
+
+## 実装要件の要約
+
+- ROM、セーブ、ステートのインポート/エクスポート。ROM等はローカル処理のみ。
+- ステートはローカル保存に対応する。
+- 停止/再開、Nフレーム進行、0.25x〜4x速度変更、画面描画off、音量設定/無効化、画面回転、表示倍率1x〜4x。
+- 人間用UIとAI用MCPの両方で、キー入力・任意キー・ホットキー設定を扱う。
+- デバッガー: レジスタ取得/変更、PC付近、メモリダンプ/書き込み、ARM7/ARM9 disassemble、thumb/arm/auto、step/step over/continue、exec/read/write breakpoint、breakpoint一覧、ブレーク位置表示。
+- メモリビュワー・スタックトレースなど重い機能はon/off可能にする。メモリビュワーの読み込みでread breakpointを誤発火させない。
+- MCPでは状態取得、Nフレーム進行、スクリプト注入、JS eval相当、機能セットのon/offを提供する。安全な隔離を優先し、ネットワーク無効が望ましい。
+- 停止中にロードステートした場合は停止状態を維持する。
+- DQ9のROM/セーブ/ステートはユーザー指定のローカルパスにある。本文をコンテキストやリポジトリへ出さない。
+- AIはゲームプレイを目的にせず、ボタン機能などの動作確認だけを行う。バグの再現手順など、指定があればその通りにする。
+
+## DQ9検証用ローカルパス
+
+- ROM: `D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds`
+- Save: `D:\software\desmume-win-x64_2025_8_11\dq9_save-main\dq9_save\re一人旅_v2\28_ends.sav`
+- State: `D:\software\state.dst`
+- 重要Lua:
+  - `D:\lua_new\lua\Ctable_jp.lua`
+  - `D:\lua_new\lua\AChange.lua`
+  - `D:\lua_new\lua\callstack_test.lua`
+  - `D:\lua_new\lua\nigeru.lua`
+  - `D:\lua_new\lua\setCTable_jp.lua`
+  - `D:\lua_new\lua\enc_jp.lua`
 
 ## 参照
 
@@ -410,130 +315,6 @@ gh codespace cp ./webassembly/wasm-port.cpp remote:/workspaces/desmume_webassemb
 - [GitHub Docs: Using Codespaces with GitHub CLI](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli)
 - [AGENTS.md Open Standard](https://agents.md/)
 
----
-
 # agents.md End
-If the context has been injected up to this point, do not reread AGENTS.md file
 
-# UIルール
-
-`old/interface-design/.claude/skills/interface-design/SKILL.md`を読むこと
-
-# coi-serviceworker
-coi-serviceworkerは、github pageで真のマルチスレッドを使用するためのハック(模擬ワーカーハックではなく)
-coi-serviceworker/coi-serviceworker.js
-
-
-## 参照
-
-- [GitHub CLI Codespace Manual](https://cli.github.com/manual/gh_codespace)
-- [GitHub Docs: Using Codespaces with GitHub CLI](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli)
-- [AGENTS.md Open Standard](https://agents.md/)
-
----
-
-# project rule
-The GitHub codespace allows you to execute the emcc command and build projects
-It also allows you to set up a server and debug it using Chrome
-emcc provides build scripts and also supports building with githubactions.
-You are allowed to create commits, push (except with -f), and add submodules.
-You can submodule the old code for deployment
-Regarding `old\desmume`, commits are permitted on the `webassembly` branch. Also, you will be updating the submodules.
-You need to keep detailed records of the deployment using GitHub Actions and future AI-related notes.
-system.md is always created
-GitHub Codespace is the ultimate sandbox for you, provided you don't make any quotation mistakes.
-The ROM for DQ9 is located at "D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds". Use this to debug. Do not dump this into context.
-The save data for DQ9 is located at "D:\software\desmume-win-x64_2025_8_11\dq9_save-main\dq9_save\re一人旅_v2\28_ends.sav".
-The save state is located at "D:\software\state.dst".
-You are not an AI designed for gaming, so you will only be testing button functionality. Please do not try to enjoy the game.
-The important Lua code is as follows (this will run on the web emulator with features like JS eval and slot upload functionality):
-- "D:\lua_new\lua\Ctable_jp.lua": This completely dumps the battle random numbers in the C table.
-- "D:\lua_new\lua\AChange.lua": Spam changes to A Table
-- "D:\lua_new\lua\callstack_test.lua": This is a fully functional stack trace damper, and I would like to incorporate this as a mode, but it comes at a significant performance cost.
-- nigeru.lua: Guaranteed battle escape cheat
-- "D:\lua_new\lua\setCTable_jp.lua": Sets a random number for the ctable.
-- "D:\lua_new\lua\enc_jp.lua": (Optional) fully functional pre-encounter emulator
-You need to write a description for every API.
-You can evaluate any JavaScript code and test it with the emulator.
-- Use chrome-devtools-mcp for debugging.
-- It is also allowed to do git commit, git pull in codespace, and synchronize the repository (but do not upload old, make it a submodule)
-- vs22, vs26, vs26 build tools are installed.
-- cmake ninja gcc installed
-- php 8.4 installed
-- nodejs installed
-- git@github.com:DaisukeDaisuke/desmume_webassembly.git
-- 公開repositoryなので、機密情報アップロード不可。
-- 細かくコミット、push、して、codespace git pullで同期することを許可
-- コミットはcodespace側ですること。転送したい場合はローカルでしてもいいが、AI経由だとなぜかうまくいかない
-- /home/codespace
-
-- The pioneering implementation can be found at old/desmume-wasm/desmume/wasm-port/main.cpp
-
-# deployment
-remote url: https://daisukedaisuke.github.io/desmume_webassembly/
-
-
-# Project Overview
-old/desmumeについて、このフォークをサブモジュール化してから、desmumeウェブ版を実装してほしい。本家同様フルデバック対応、webmcpによるAIデバック対応。
-シングルファイルで。メモリ制限2GB?
-github actionsによるデプロイはC:\Users\owner\Documents\BattleEmulator\.github\workflows\webassembly.ymlを参考
-必要な機能
-AIによるありとあらゆる操作の実現
-- ステートのインポート、ローカルストレージへのステート保存?(ただし256mb)、ステートエクスポート。
-- 0.25倍速~4倍速までの倍速機能(mcpあり)
-- 状態取得mcp
-- Nフレーム進めるmcp
-- 画面の描写をoffにできる
-- 音量をさげることができる。無効化可能
-- js evalまたは、wab mcp経由で様々な機能の実現。
-- 内臓ディスアセンブラによるネアーpcダンプ、キー入力(ボタン or 任意キー(人間用))
-- セーブデータのインポート、エクスポート
-- AIが操作できる、デバッカー、レジスタの取得、pc付近の取得、指定メモリのディスアセンブル、指定レジスタの変更、ステップ、ステップオーバー、メモリブレイクポイント、メモリ書き込みブレイクポイント、メモリ読み取りブレイクポイント、メモリのダンプ、アセンブリの取得(アドレスあり、正規表現あり)、ステートの読み込み、ステートの保存、外部ステートの読み込み、jsコードインジェクションによるlua相当の機能の提供によるこれらの達成、web mcpによる達成、コード解析自体はghidra mcpでするので、ある程度のダンプがあればok、実行ブレイクポイントの作成、削除、人間が操作できるデバッカー。N回ステップする、contする、ramの範囲ダンプ、メモリ全ダンプ？メモリとディスアセンブラのautoアップデート機能、画面の回転、ロムのアップロード(ただしローカルで処理)、mcpによるスクリプト注入(ただし安全な隔離で)、thumb、auto、armの自動判別(ディスアセンブラ)、arm7ディスアセンブラ、arm9ディスアセンブラ、指定レジスタの取得、ブレイクポイント位置に赤の目印をリアルタイムで。メモリブレイクポイントとメモリビュワーによる読み込みは競合するので注意する。ブレイクポイント一覧、スタックトレースモードon/off、スタックトレースダンプ、
-- エミュレーターの停止、再開(停止中にロードステートした場合は停止したままロードする)
-- ホットキー設定
-- bois、ファームウェアアップロード？(基本的にフリーbios使いたい。どっかに含まれてるはず)
-- メモリビュワー、スタックトレースは重いのでon offできるようにする。
-  本番はgithub actionsでビルドする
-- テストはcodespaceでする。git pull+コミット術を使ってファイルを同期するか、ghでコピーする。
-  agents.mdにいろいろ書いてるのでそれに従う。
-  nextcall: "D:\lua_new\lua\callstack_test.lua"で使われてる仕組みで実現可能
-  info registers cpsr
-  continue: 再開
-- エミュレーターサイズの指定(1x 1.5x 2x 2.5x 3.0x 3.5x 4.0x)
-- 実行速度の指定
-- ありとあらゆるmcp(安全なコードインジェクションを含む、ただし隔離環境ネットワーク無効が望ましい)
-- ミラーメモリに対するデバック。メモリブレイクポイント(本家は非対応)
-- 機能セットを丸ごとオフにできるmcp、ボタンで高速動作。ただ遊びたい場合のみにも対応する。
-- ソースコードはサブモジュールを使う。old\desmumeはスタックトレース改造版である。
-- 音量の設定(デフォルトで爆音であるため)
-- 実装はまとめてせず、試しながら実装する。ただしchrome mcpはめちゃくちゃトークン食うので注意すること。
-- webassembly jsはシングルファイルにすること。ファイル分けすること。
-- main.cppは関係ない。
-- read handoff.md and Addend to the handoff.md
-- gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3　gh run watch ???? --repo DaisukeDaisuke/desmume_webassembly --exit-statusで、actionsが終わるまで待機すること。codespaceでのbuildと構文チェックはそこまで重要ではない。軽い変更ならテストも本番環境でやればいい。ただしビルドはリアルタイムで5分かかるので、できれば複数の問題をまとめてすること。
-- ローカルは、ssh認証済み(リポジトリはsshモード)、https未認証、gpg設定済み。gh一部権限使用可能(リポジトリ削除などははく奪済み)。ローカルなので認証情報を変えるな、ghのトークンダンプするな。sshフォルダはワークスペース外なのでいじるな。鍵をコンテキストにダンプするな。
-- (ローカルコミットで、gpgがコミットで落ちた場合は、"C:\Program Files\GnuPG\bin\gpg-connect-agent.exe"を常駐無し引数で1回起動し、"C:\Program Files\GnuPG\bin\gpg-agent.exe"を5回同時起動(自動終了、エラー吐くが無視すればいい)すれば　その後20秒待機すればたいていの場合うまくいく。勝手にgpg再構成するな。)
-- github actionsのデプロイは毎回してると遅いので、可能であれば最終提出ですること、cp転送後、npxなどなどdockerなどなどのキャッシュ無し即時リロードができる、サーバーをローカルかプレビューページにポートフォワーディングして、ローカルでアクセスしたほうがキャッシュもあいまって2倍ほど速い。github 本番デプロイで前回1時間以上作業してたので、これが速くなると嬉しい。
-- もしくはnodejs(Windows ディフェンダー未許可)に配信をやらせればいい。
-- また、codespaceはランダムに電源が落ちるのでそういうものだと思って再起動する。ぶっ壊れた場合は応答しなくなるので再作成する。gh codespace cp失敗はただ電源が落ちてるだけ。
-- ローカル、codespaceデバックの場合でもコミットは毎回すること。push+待機は最終提出まで保留すること
-- 絶対に検証ごとに毎回デプロイしないこと。ただし軽い変更はこの通りではない。前回のように120分も待ってられないので、codespaceホストか、ローカルホストで高速サイクルを回すこと。
-- pushに失敗するときはhttp pushと、ssh push両方試すこと。基本的にcodespaceでhttps pushすれば、ホストの影響を受けず、いろんな意味で安全。
-- デプロイは毎回cache-bustすること。
-- 時間かかるので絶対に毎回github pageにデプロイせず、ローカルサーバーで確認すること。html変更の場合即座に、cpp変更は2分なので段違いに速い。
-- 積極的にwebassembly/build_safe_heap.sh、webassembly/build_sanitize.shを活用すること。というより開発はこっちですること。
-- テストサーバーはphpでたてろ。
-```
-(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id    
-```
-
-```
-http://localhost:8766/
-```
-
-AI側からのrom読み込みは、アップロード/要素idと、アップロードツールの組み合わせでできるよ。IDは毎回変わるよ
-デフォルトで見えてないからツールサーチしないとだめだけど、id take_snapshot、id upload_fileツールの合わせ技で、任意のファイルを任意の場所にアップロードできるよ。
-- public/desmume.jsは検索対象にいれないこと。
-
-# agents.md End
-If the context has been injected up to this point, do not reread AGENTS.md file
+If the context has been injected up to this point, do not reread AGENTS.md file.

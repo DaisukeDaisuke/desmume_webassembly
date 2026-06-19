@@ -1,63 +1,91 @@
 # Handoff Notes
 
-- ファイル書き込みは必ず `apply_patch`。生成物以外をコマンド置換で編集しない。
+このファイルは DeSmuME WebAssembly 実装の引き継ぎメモです。グローバルルール、禁止コマンド、Codespace運用は `AGENTS.md` を参照してください。
+
+## Current Direction
+
+- Source ownership: `old/desmume` is the DeSmuME source submodule and tracks the `webassembly` branch of `git@github.com:DaisukeDaisukeForks/desmume.git`.
+- Browser output: `public/index.html` is the single-page debugger UI. Emscripten builds `public/desmume.js` with `-sSINGLE_FILE=1`, so the wasm payload is embedded in one JavaScript file.
+- Memory policy: initial memory is 256MB and maximum memory is 2GB through Emscripten memory growth.
+- Data policy: ROMs, saves, states, and scripts are processed locally in the browser. The UI does not upload user files.
+- Build note: `public/desmume.js` is generated. Prefer changing `webassembly/wasm-port.cpp` and `public/index.html`, then rebuild.
+
+## Current Implemented Surface
+
+- ROM import, save import/export, state import/export, and IndexedDB state slot storage with a 256MB per-state guard.
+- Emulator pause/resume/reset, N-frame advance, render toggle, display scale, rotation, speed control from 0.25x to 4x, and basic button/hotkey input.
+- WebMCP command entry through `window.DesmumeMCP.call()`, `postMessage`, and browser `modelContext` tool registration when available.
+- Debugger entry points for register read/write, PC/CPSR status, memory dump/write, execution/read/write breakpoint registration, stepping, stack trace, and address/opcode disassembly rows.
+- Isolated script injection through a short-lived Worker that exposes only the MCP call capability and shadows network/DOM APIs.
+
+## Critical Notes
+
 - `gh codespace cp` を使う場合は必ず `-e` を付ける。
-- `public/desmume.js` は生成物。基本は `webassembly/wasm-port.cpp` と `public/index.html` を直してビルドで再生成する。
-- 前回の作業では、`old/desmume` サブモジュール未初期化と `emcc` 未導入でCodespaceビルドが失敗した。Codespaceでビルドするなら `git submodule update --init old/desmume` と Codespace内だけの `sudo apt-get install -y emscripten > /dev/null 2>&1` が必要だった。
-- ローカル `file://` で開くと `coi-serviceworker.js` は登録失敗する。これはプロトコル制約で、HTTP/GitHub Pagesの問題とは分けて扱う。
-- これはhttps://daisukedaisuke.github.io/desmume_webassembly/を直接見にに行けばいい。ファイルを同期してから、codespace側でコミットして、push、ghコマンドでworkflow終了まで待ち、それからhttps://daisukedaisuke.github.io/desmume_webassembly/に見に行く。
+- Codespace build may need `git submodule update --init old/desmume` and Codespace-only `sudo apt-get install -y emscripten > /dev/null 2>&1`.
+- Correct remote path example: `remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cpp`.
+- Local `file://` cannot register `coi-serviceworker.js`; test over HTTP/GitHub Pages when COOP/COEP matters.
 - `EMUFILE_MEMORY` に `changed` メンバーは無い。セーブ変更検知に使わない。
-- セーブインポートは `savImportFromFile(forceSize)` にファイルサイズを渡す方針。
-- ステートロードはリセットなしで `loadStateFromBuffer()` する方針。停止中なら停止状態を維持する。
-- タッチはDS下画面だけが有効。上画面クリックを座標に入れない。
-- 音声は `44100` Hz基準で、倍速時は生成サンプル量と `AudioBufferSourceNode.playbackRate` を速度に連動させる。
-- 停止中に重い場合は `requestAnimationFrame` を常時回さず、停止中だけ低頻度タイマーに落とす。
-- キー設定の現行デフォルト方針: `KeyX=A`, `KeyZ=B`, `KeyA=X`, `KeyS=Y`, `KeyQ=L`, `KeyW=R`, `Enter=Start`, `ShiftRight=Select`。
-- メモリ検索は `searchMemory` / `resetMemorySearch`。初回検索とRefineを分け、Refineは前回候補だけを絞り込む。
-- `AGENTS.md` や未追跡の `.gitignore`, `CMakeLists.txt`, `main.cpp` はユーザー由来の可能性がある。勝手に戻さない。
-- remote:/workspaces/desmume_webassembly/webassembly/wasm-port.cppが正しいremote url。
-- 環境未初期化のcodespaceが渡される場合があるので、その場合は勝手に初期化してよい。
+- `dbgDisassemble()` depends on DeSmuME `frontend/modules/Disassembler.cpp`; keep that file explicitly included in `webassembly/build.sh`.
+- `NDS_setPad()` does not accept MCP bit order directly. Browser order is `A,B,Select,Start,Right,Left,Up,Down,R,L,X,Y`; `wasm-port.cpp` maps to native order.
+- Touch input is valid only on the DS lower screen. Do not pass upper-screen clicks as touch coordinates.
+- Audio is based on 44100 Hz. Speed changes must adjust generated samples and `AudioBufferSourceNode.playbackRate` together.
+- When paused, avoid a constant `requestAnimationFrame` loop; use lower-frequency polling where possible.
+- Default hotkey policy: `KeyX=A`, `KeyZ=B`, `KeyA=X`, `KeyS=Y`, `KeyQ=L`, `KeyW=R`, `Enter=Start`, `ShiftRight=Select`.
+- Memory search uses `searchMemory` / `resetMemorySearch`. Initial search and refine are separate; refine filters only previous candidates.
+
+## Load/Reset Notes
+
+- Save import should use file size-aware `savImportFromFile(forceSize)` behavior.
+- State load should not reset first. Load with `loadStateFromBuffer()` / file-backed state load and preserve paused state if the emulator was paused.
+- Save import/reload paths should rewrite known-good `state.romBytes` to WASM FS before `loadROM()`; do not trust a possibly stale `rom.nds` in FS.
+- `NDS_Reset()` directly after save import can corrupt ARM9 PC. Use the full ROM reload path for reset-like operations.
+- During save/state load, pause native execution and stop auto `.sav` slot saves. Restore the prior run/pause state afterward.
+- After savestate/recent state/import state load, suppress auto save flush for 30 seconds by default. After ROM reload, suppress for 10 seconds by default.
+- `loadRomBytes` exists for WebMCP debugging, but do not put real ROM bytes in public chat. Prefer GUI file picker for DQ9 validation.
+
+## Debugger Notes
+
+- Breakpoints are id-managed in UI/API. Address strings like `20cb6c4` / `020cb6c4` must be treated as hex, not decimal.
+- Breakpoint hit must set both `paused=true` and native `execute=false`; otherwise the CPU loop can continue past the hit.
+- Execute breakpoints are checked before instruction execution in `armcpu_exec()`. Read/write breakpoints are checked on real MMU access.
+- GUI memory viewer uses `MMU_AT_DEBUG` reads and must not trigger read breakpoints.
+- Data abort, prefetch abort, and undefined instruction should stop the emulator and store the last source PC/CPSR in `status().native.lastBreak`, not destroy the emulator.
+- `dbgStep` / `dbgStepOver` temporarily skip only the execute breakpoint at the current PC for the first instruction, then restore it.
+- `step` is CPU-instruction stepping; `stepFrames` is frame-level execution.
+- Call stack UI should use `dbgCallStackJson().frames`, not SP-relative dump rows.
+- Internal `CallStackEntry::caller` is raw LR/return address. API/UI `caller` is adjusted to caller instruction address `(returnAddress & ~1) - 4`; raw LR remains `returnAddress`.
 
 ## 2026-06-17 Addendum
 
 - スタックトレースは SP 周辺ダンプではなく、`registerenterfunc` Lua フック相当の関数入口記録が主目的。WASM では `OP_STMDB_W` と `OP_PUSH_LR` から `wasmEnterFunctionHook()` を呼び、`wasm-port.cpp` 側の call stack に `caller/lr`, `callee`, `sp`, `cpsr`, thumb状態, 同一callee内idを記録する。
 - `traceSetEnabled(0)` は call stack と call count をクリアする。IRQ除外は `traceSetPrivilegeCheck()` で切り替える。
-- ブレークポイントは UI/API とも id 管理。アドレス文字列 `20cb6c4` / `020cb6c4` は 10進ではなく16進として扱う。
 - `setCTable_jp.lua` 相当は JS/API の `setCTableSeed` で実装可能。既定では `0x02385f0c = 0x4b539adb`, `0x02385f10 = 0` を書く。
 - 最近読み込んだ save/state は最大6件を id 付きで保持し、`reloadRecentFile` から再ロードできる。
-- ステートロード前に `reset()` しないこと。ステートは CPU/PC を含む完全状態なので、reset 後に読むと PC や周辺状態が壊れて無限ループ化しやすい。セーブロードだけは、カートリッジ保存領域を反映するため import 後に `reset()` する。
-- ブレークポイントはヒットしたら必ず `paused=true` にする。実行ブレークは `armcpu_exec()` の命令実行前、read/write は MMU の実アクセスで止める。GUI のメモリビューワーは `MMU_AT_DEBUG` 読みなので read breakpoint を発火させない。
-- data abort / prefetch abort / undefined instruction はエミュレーター破棄ではなく、最後の発生元 PC/CPSR を `status().native.lastBreak` に残して停止する。
-- call stack UI は SP ダンプではなく `dbgCallStackJson()` の `frames` を表で出す。callee の Jump は disassembler address に入れるだけで、PC は変更しない。
-- 2026-06-17: save/stateロード中は `loadingFile` で実行ループと自動 `.sav` slot保存を止め、WASM側を `pauseEmu(1)` にしてから import/reset/loadState する。ロード後は直前のrun/pause状態へ戻す。走行中のまま保存領域やsavestateバッファを触ると公開ページでメインスレッドが固まりやすい。
-- 2026-06-17: セーブimport後に `NDS_Reset()` だけを呼ぶとARM9 PCが `0x0f000000` 付近へ飛び、WASMが `table index is out of bounds` で壊れる。セーブ反映は選択済みROMを `loadROM()` し直す経路にする。
-- 2026-06-17: `MMU_new.backupDevice.importData()` をROM実行後に呼んでも同じPC破壊が起きた。Webのセーブ入力は `importData()` を使わず、WASM FSの `rom.sav` / `rom.dsv` を置き換えてから `loadROM()` し直す方式にする。
-- 2026-06-17: 外部ステートは `stateGetPointer(size)` 後にJSがHEAPへ書く。`loadStateFromBuffer(size)` 側で再度 `truncate(size)` するとEMUEFILE_MEMORY内の読み込み済みバイトが壊れ、`savestate_load()` が `-1` になる。ロード側はサイズ一致確認と `fseek(0)` のみにする。
-- 2026-06-17: `.dst` は `DeSmuME SState` version 12 で圧縮ありだった。`-sUSE_ZLIB=1` だけでは `saves.cpp` の `#ifdef HAVE_LIBZ` が有効にならないため、圧縮savestateは即falseになる。`webassembly/build.sh` のcompileで `-DHAVE_LIBZ` を付ける。
-- 2026-06-17: 圧縮展開後、`EMUFILE_MEMORY` 経由の `savestate_load(*stateFile)` は `memory access out of bounds` を起こした。外部 `.dst` はWASM FSの `import.dst` に書いて `savestate_load("import.dst")` する `loadStateFromFile()` 経路へ変更。
-- 2026-06-17: `D:\software\state.dst` はWi-Fi chunk `111` を含み、ブラウザビルドで `wifiHandler->LoadState()` に入ると `table index is out of bounds` で落ちた。EmscriptenビルドではWi-Fi emulationを使わないため、`old/desmume/desmume/src/saves.cpp` のchunk `111` は読み飛ばす。
-- 2026-06-18: `FS.unlink()` は対象ファイルが無いと `ErrnoError errno 44` を投げる。save import 前の `rom.sav` / `rom.dsv` 掃除では `FS.analyzePath(path).exists` で存在確認してから消し、ENOENTをコンソールへ出さない。
-- 2026-06-18: セーブ反映などのROM再ロードはWASM FS上の既存 `rom.nds` を信頼せず、ファイル選択時に得た `Uint8Array` を `state.romBytes` に保持して毎回 `FS.writeFile("rom.nds", romBytes)` し直してから `loadROM()` する。FS側が壊れた/空になった状態を再利用すると、メモリ00埋めのままPCだけ進んでクラッシュする。
-- 2026-06-18: UI/APIの `reset` は `NDS_Reset()` 直叩きではなく、実行を止めて `state.romBytes` をWASM FSへ再書き込みし、`loadROM()` 手順を通す。ロード直後はネイティブを `pauseEmu(1)` で止め、既定600ms待機してから、GUI/API指定に応じて停止維持または再開する。ネイティブ側にも `romLoaded` ガードを置き、ROM未ロード時の `runFrame()` と `reset()` は進めない。
-- 2026-06-18: デバッグ用に `status().romLoaded` / `status().loadingFile`、`reloadRom`、WebMCP `batch`、GUIのReset hold/ROM wait/Reload ROM/Batch JSONを追加した。リセットクラッシュ再現時は新規ページでROMを読み、`DesmumeMCP.call("reset", { holdPaused: true, waitMs: 1000 })` の結果と `status` を見る。
-- 2026-06-18: WebMCPからROMロード手順を確認できるよう `loadRomBytes` を追加した。`bytes` 配列または `base64` を受け取るが、公開チャットに実ROMを流さないこと。通常のDQ9検証はGUI file pickerで読む。
-- 2026-06-18: ネイティブ `loadROM()` は極小/不正バイト列でも成功扱いになり得るため、JS側 `writeRomFile()` で `0x200` 未満とヘッダ先頭 `0x200` 全ゼロを拒否する。ゼロ埋めROM状態の再発防止なので外さない。
-- 2026-06-18: `BackupDevice::data_command()` の `table index is out of bounds` はJS自動flushではなく、ARM7実行中のセーブSPIアクセスで発生していた。`tick()`/`stepFrames()` の `runFrame(s)` はWASM RuntimeError時に即停止・30秒save flush抑止・ログ保存した後、必ずrethrowする。例外を握りつぶすとフリーズ型クラッシュになる。
-- 2026-06-18: savestate load/recent state load/import state後は既定30秒 `saveSaveSlot()` の自動flushを止める。ROM reload後は既定10秒止める。`saveFlushBlockMs` で上書き可能。
-- 2026-06-18: ブラウザが `navigator.modelContext` または `document.modelContext` を持つ場合、WebMCPとして `desmume.<command>` と `desmume.call` を `registerTool()` する。ローカル `D:\software\WebMCP.html` では `Document.modelContext` が仕様記載だが、実装差異を見て navigator も先に見る。
-- 2026-06-18: Chrome MCPで実ROMを読むため、同一origin/CORS URLからROMを読む `loadRomUrl` を追加した。ローカル検証では一時HTTPサーバーで `D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds` を `/dq9.nds` として返し、ROM本文をチャットに出さない。
-- 2026-06-18: `savGetPointer(desiredSize)` は `EMUFILE_MEMORY::truncate()` を呼ばない。要求サイズが現セーブバッファより大きい場合は `NULL` を返し、書き込みは `savImportFromFile()` 経由に限定する。
-- 2026-06-18: Chrome MCP検証用に `loadStateBytes` / `loadStateUrl` を追加した。`D:\software\state.dst` を一時PHPルーターで `/state.dst` として返し、ROMロード→stateロード→20F実行→Resetボタンクリックを確認。`table index is out of bounds` は出ず、reset後も `romLoaded=true`、PCは0ではない。
-- 2026-06-18: `NDS_LoadROM()` は内部で `NDS_Reset()` するが既存ROMの `gameInfo.closeROM()` はしない。WASM `loadROM()` はロード済みROMがある場合、再ロード前に `NDS_FreeROM()` を呼んで古いROM/slot/save関連状態を閉じる。
-- 2026-06-18: ローカル `http://localhost:8766/` の Chrome MCP 検証で、未ROM `DesmumeMCP.call("resume", {})` は即 `{ ok:false, romLoaded:false }` を返すことを確認。`waitMs` も動作。
-- 2026-06-18: 同検証で、`saveState` 後の `loadState` / browser state slot load は `table index is out of bounds` または `memory access out of bounds` を起こし、`status().native.lastStateLoad` は chunk `61`, phase `10` 付近で止まった。`mmu_savestate` / `BackupDevice::load_state()` 周辺の再調査が必要。
-- 2026-06-18: 同検証で、`Save In` は UI log に `function signature mismatch` を残し、その後 `status().romLoaded` が `false` になった。ROM 再ロード経路か upload 後ハンドラのどこかで壊れている。
-- 2026-06-18: `public/index.html` は `desmume.js` を初期表示で読まず、ROM 選択後に `ensureWasmReady()` で遅延ロードする。`loadRomFile` は file picker 完了後にスクリプト/WASM初期化を await してから ROM を処理する。
-- 2026-06-18: ツール欄の `input` / `textarea` / `select` にフォーカスがある間は、グローバルの DS キー入力を横取りしない。フォーカス侵入時は押しっぱなし防止のため仮想キーを全解除する。
-- 2026-06-18: ブレークヒット時はまず `pauseEmu(1)` と `paused=true` を確定し、その後 `near pc` 追尾 (`disasmAddress="pc"`) と debugger refresh を非同期で入れる。`lastBreakKey` が変わったときだけ refresh する。
-- 2026-06-18: `webassembly/wasm-port.cpp` の `dbgStep` / `dbgStepOver` は、現在PCにある exec breakpoint だけを最初の1命令ぶん一時解除して即復元する。これで同じPCの breakpoint を永遠に踏み直すのを防ぐ。`stepOver` は他の breakpoint に当たり得るので、ログでも plain `step` 推奨を出す。
-- 2026-06-19: Hotkeys は `desmume-keymap` に保存する。右Shiftは `KeyboardEvent.code === "ShiftRight"` を優先し、`code` が空の経路では `keyCode/which === 16` を原則 `ShiftRight` に正規化する。`location === DOM_KEY_LOCATION_LEFT` が明示される場合だけ `ShiftLeft` として扱う。既存保存値が `ShiftLeft=Select` だけなら起動時に `ShiftRight=Select` へ移行する。UIのKey欄はフォーカス後に押した実キー1つをそのまま採用する。
-- 2026-06-19: スタックトレースJSONに `controlFlow` を追加。ARM9 trace有効時、`BX`, `MOV PC`, `MOVS PC`, `SUBS PC`, `LDM ... {PC}`, `LDM ... {PC}^` のPC書き換え/復帰イベントを最大128件保持し、`pc/target/expected/sp/cpsr/kind/reg/mismatch` を返す。通常の `BX LR` / `MOV PC, LR` は期待LR通りなら記録せず、期待外・非LRレジスタ・例外復帰系は記録する。
-- 2026-06-19: ディスアセンブラの紫判定は「PCを読む命令」ではなく「PCへ書く命令」に限定。`add r0, pc` のADR風命令は紫にせず、`BX LR`, `MOV PC, LR/Rx`, `BX Rx`, `LDR PC, [...]`, `LDM..., {PC}`, `MOVS PC, LR`, `SUBS PC, LR, #4/#8`, `LDM..., {PC}^` は紫扱い。現在PC行の緑表示は highlight/branch/return より優先する。
-- 2026-06-19: WASMブレークヒットは `paused=true` だけでは `NDS_exec()` のCPUループを即脱出しない。`recordBreak()` で `execute=false` も必ず立て、`pauseEmu(0)` / `loadROM()` で `execute=true` に戻す。read/write breakpoint のPCが後続命令へ流れる症状はここが原因。
-- 2026-06-19: call stack の内部 `CallStackEntry::caller` は raw LR/return address として維持するが、API/UI/コピー/ジャンプ/強調に出す `caller` は呼び出し元命令アドレスとして `(returnAddress & ~1) - 4` に補正する。raw LR は `returnAddress` として残す。Call Stack 表の age は最下段が `newest`、上側は `↑+Nd`。
+- `.dst` は `DeSmuME SState` version 12 で圧縮ありだった。`webassembly/build.sh` のcompileで `-DHAVE_LIBZ` を付ける。
+- 外部 `.dst` はWASM FSの `import.dst` に書いて `savestate_load("import.dst")` する `loadStateFromFile()` 経路へ変更。
+- `D:\software\state.dst` はWi-Fi chunk `111` を含む。EmscriptenビルドではWi-Fi emulationを使わないため、`old/desmume/desmume/src/saves.cpp` のchunk `111` は読み飛ばす。
+
+## 2026-06-18 Addendum
+
+- `FS.unlink()` は対象ファイルが無いと `ErrnoError errno 44` を投げる。save import 前の `rom.sav` / `rom.dsv` 掃除では `FS.analyzePath(path).exists` で存在確認してから消す。
+- `reset` は `NDS_Reset()` 直叩きではなく、実行を止めて `state.romBytes` をWASM FSへ再書き込みし、`loadROM()` 手順を通す。
+- デバッグ用に `status().romLoaded` / `status().loadingFile`、`reloadRom`、WebMCP `batch`、GUIのReset hold/ROM wait/Reload ROM/Batch JSONを追加した。
+- `writeRomFile()` rejects ROMs smaller than `0x200` and headers whose first `0x200` bytes are all zero.
+- `BackupDevice::data_command()` の `table index is out of bounds` はARM7実行中のセーブSPIアクセスで発生していた。`tick()`/`stepFrames()` はWASM RuntimeError時に即停止、save flush抑止、ログ保存後にrethrowする。
+- Browser `modelContext` registration uses `navigator.modelContext` or `document.modelContext`, depending on implementation.
+- `loadRomUrl`, `loadStateBytes`, and `loadStateUrl` exist for local Chrome MCP validation. Serve local ROM/state through a temporary same-origin URL; never print the data.
+- `savGetPointer(desiredSize)` does not call `EMUFILE_MEMORY::truncate()`. Oversized writes must go through `savImportFromFile()`.
+- `NDS_LoadROM()` does not close an existing ROM. WASM `loadROM()` calls `NDS_FreeROM()` before reloading when a ROM is already loaded.
+- Known issue as of this date: `saveState` followed by browser state load had hit `table index is out of bounds` / `memory access out of bounds` around state chunk `61`, phase `10`; investigate `mmu_savestate` / `BackupDevice::load_state()` if this reappears.
+- Known issue as of this date: `Save In` had logged `function signature mismatch` and set `status().romLoaded=false`; investigate ROM reload or upload handler if this reappears.
+- `public/index.html` delays loading `desmume.js` until ROM selection through `ensureWasmReady()`.
+- While focus is in `input` / `textarea` / `select`, global DS key input must not capture keys. Clear virtual keys on focus entry.
+- On break hit, first set native pause and `paused=true`, then asynchronously refresh near-PC disassembly/debugger.
+
+## 2026-06-19 Addendum
+
+- Hotkeys are stored in `desmume-keymap`. Right Shift uses `KeyboardEvent.code === "ShiftRight"` where possible; legacy `keyCode/which === 16` generally normalizes to `ShiftRight` unless left location is explicit.
+- Stack trace JSON includes `controlFlow`. With ARM9 trace enabled, PC-writing/return events are retained up to 128 entries with `pc/target/expected/sp/cpsr/kind/reg/mismatch`.
+- Disassembler purple highlighting is limited to instructions that write PC. `add r0, pc` style ADR should not be purple. Current PC green highlight takes precedence.
+- WASM break hit must set `execute=false` in `recordBreak()`. `pauseEmu(0)` / `loadROM()` restores `execute=true`.
+- Call Stack table age shows the bottom row as `newest`; rows above show `↑+Nd`.
