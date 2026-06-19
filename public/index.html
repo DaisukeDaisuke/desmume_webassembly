@@ -16,8 +16,15 @@
       --amber: #f0b35a;
       --amber-soft: rgba(240, 179, 90, 0.18);
       --orange-mark: rgba(246, 156, 76, 0.22);
+      --jump-mark: rgba(255, 92, 168, 0.22);
+      --jump-edge: rgba(255, 92, 168, 0.82);
       --yellow-mark: rgba(233, 196, 106, 0.28);
       --yellow-edge: rgba(233, 196, 106, 0.6);
+      --mode-irq-mark: rgba(233, 196, 106, 0.24);
+      --mode-fiq-mark: rgba(255, 210, 92, 0.3);
+      --mode-svc-mark: rgba(180, 124, 255, 0.24);
+      --mode-abort-mark: rgba(255, 107, 107, 0.24);
+      --mode-und-mark: rgba(255, 80, 80, 0.3);
       --branch-mark: rgba(173, 127, 255, 0.2);
       --branch-edge: rgba(173, 127, 255, 0.52);
       --sky-edit-edge: rgba(129, 178, 255, 0.38);
@@ -183,12 +190,17 @@
     }
     .disasm-line { display: block; padding: 1px 4px; border-left: 2px solid transparent; white-space: pre; }
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
-    .disasm-line.highlight-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
+    .disasm-line.highlight-line { color: #ffd9ec; background: var(--jump-mark); border-left-color: var(--jump-edge); }
     .disasm-line.entry-line { background: var(--yellow-mark); border-left-color: var(--yellow-edge); }
     .disasm-line.return-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
     .disasm-line.branch-line { color: #efe4ff; background: var(--branch-mark); border-left-color: var(--branch-edge); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
-    .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: rgba(255, 107, 107, 0.18); }
+    .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: linear-gradient(90deg, rgba(255, 107, 107, 0.22), var(--jump-mark)); }
+    .disasm-line.mode-fiq { background: linear-gradient(90deg, var(--mode-fiq-mark), var(--jump-mark)); border-left-color: #ffd25c; }
+    .disasm-line.mode-irq { background: linear-gradient(90deg, var(--mode-irq-mark), var(--jump-mark)); border-left-color: var(--yellow-edge); }
+    .disasm-line.mode-svc { background: linear-gradient(90deg, var(--mode-svc-mark), var(--jump-mark)); border-left-color: #b47cff; }
+    .disasm-line.mode-abt { background: linear-gradient(90deg, var(--mode-abort-mark), var(--jump-mark)); border-left-color: var(--fault); }
+    .disasm-line.mode-und { background: linear-gradient(90deg, var(--mode-und-mark), var(--jump-mark)); border-left-color: #ff5050; }
     .disasm-line.current.entry-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(233, 196, 106, 0.24)); }
     .disasm-line.current.return-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(246, 156, 76, 0.26)); }
     .disasm-line.current.branch-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(173, 127, 255, 0.18)); }
@@ -199,11 +211,26 @@
     .disasm-line.highlight-line.current.entry-line,
     .disasm-line.highlight-line.current.return-line,
     .disasm-line.highlight-line.current.branch-line {
-      color: #fff2d6;
-      background: var(--orange-mark);
-      border-left-color: #f69c4c;
+      color: #ffd9ec;
+      background: var(--jump-mark);
+      border-left-color: var(--jump-edge);
     }
+    .disasm-line.highlight-line.mode-fiq { background: linear-gradient(90deg, var(--mode-fiq-mark), var(--jump-mark)); border-left-color: #ffd25c; }
+    .disasm-line.highlight-line.mode-irq { background: linear-gradient(90deg, var(--mode-irq-mark), var(--jump-mark)); border-left-color: var(--yellow-edge); }
+    .disasm-line.highlight-line.mode-svc { background: linear-gradient(90deg, var(--mode-svc-mark), var(--jump-mark)); border-left-color: #b47cff; }
+    .disasm-line.highlight-line.mode-abt { background: linear-gradient(90deg, var(--mode-abort-mark), var(--jump-mark)); border-left-color: var(--fault); }
+    .disasm-line.highlight-line.mode-und { background: linear-gradient(90deg, var(--mode-und-mark), var(--jump-mark)); border-left-color: #ff5050; }
     .callstack-row.highlight { background: rgba(246, 156, 76, 0.12); }
+    .callstack-row.mode-fiq { background: rgba(255, 210, 92, 0.08); }
+    .callstack-row.mode-irq { background: rgba(233, 196, 106, 0.08); }
+    .callstack-row.mode-svc { background: rgba(180, 124, 255, 0.08); }
+    .callstack-row.mode-abt,
+    .callstack-row.mode-und { background: rgba(255, 107, 107, 0.08); }
+    .callstack-row.highlight.mode-fiq { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(255, 210, 92, 0.12)); }
+    .callstack-row.highlight.mode-irq { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(233, 196, 106, 0.12)); }
+    .callstack-row.highlight.mode-svc { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(180, 124, 255, 0.12)); }
+    .callstack-row.highlight.mode-abt,
+    .callstack-row.highlight.mode-und { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(255, 107, 107, 0.14)); }
     .toolbar-block { display: grid; gap: 8px; }
     .toolbar-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .toolbar-strip.break-actions { align-items: stretch; }
@@ -215,9 +242,10 @@
     .callstack-table th:nth-child(2), .callstack-table td:nth-child(2),
     .callstack-table th:nth-child(3), .callstack-table td:nth-child(3),
     .callstack-table th:nth-child(4), .callstack-table td:nth-child(4) { width: 98px; }
-    .callstack-table th:nth-child(5), .callstack-table td:nth-child(5) { width: 56px; }
-    .callstack-table th:nth-child(6), .callstack-table td:nth-child(6),
-    .callstack-table th:nth-child(7), .callstack-table td:nth-child(7) { width: 86px; }
+    .callstack-table th:nth-child(5), .callstack-table td:nth-child(5) { width: 92px; }
+    .callstack-table th:nth-child(6), .callstack-table td:nth-child(6) { width: 64px; }
+    .callstack-table th:nth-child(7), .callstack-table td:nth-child(7),
+    .callstack-table th:nth-child(8), .callstack-table td:nth-child(8) { width: 86px; }
     .callstack-table td { overflow: hidden; text-overflow: ellipsis; }
     .callstack-table td button { width: 78px; }
     .breakpoint-line { color: var(--fault); }
@@ -405,14 +433,16 @@
             <button id="stack-next-call-btn" type="button">Next Call</button>
             <button id="stack-return-btn" type="button">Return To Pop</button>
             <button id="stack-clear-btn" type="button">Clear Trace</button>
+            <button id="stack-copy-md-btn" type="button">Copy Markdown</button>
+            <button id="stack-copy-csv-btn" type="button">Copy CSV</button>
           </div>
           <div class="table-wrap" aria-live="polite">
             <table class="callstack-table">
               <thead>
-                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>mode</th><th>caller</th><th>callee</th></tr>
+                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>cpsr</th><th>mode</th><th>caller</th><th>callee</th></tr>
               </thead>
               <tbody id="callstack-body">
-                <tr><td colspan="7">stack trace disabled</td></tr>
+                <tr><td colspan="8">stack trace disabled</td></tr>
               </tbody>
             </table>
           </div>
@@ -591,6 +621,7 @@
       search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 },
       highlightedDisasmAddress: null,
       highlightedCallstackAddress: null,
+      highlightedCallstackCpsr: null,
       knownSlots: ["dq9-debug"],
       screenshotCooldownUntil: 0,
       followPc: true,
@@ -656,7 +687,9 @@
       setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
       setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
       stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
-      callStack: "記録済みコールスタックをJSONで取得します。",
+      callStack: "記録済みコールスタックをJSONで取得します。各frameにはcaller/callee/sp/cpsr/thumb/idとCPSR mode解析を含みます。",
+      copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
+      copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
       runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
       runUntilNextCall: "次の関数入口フックが発火するまで実行します。",
       returnToPop: "runUntilReturn の別名です。現在の深度から1つ以上戻るまで進めます。",
@@ -681,6 +714,43 @@
     function hex(value, width = 8) {
       const n = Number(value) >>> 0;
       return "0x" + n.toString(16).padStart(width, "0");
+    }
+
+    function cpsrModeInfo(cpsr) {
+      const value = Number(cpsr) >>> 0;
+      const mode = value & 0x1f;
+      const modes = {
+        0x10: { key: "usr", label: "User", className: "" },
+        0x11: { key: "fiq", label: "FIQ", className: "mode-fiq" },
+        0x12: { key: "irq", label: "IRQ", className: "mode-irq" },
+        0x13: { key: "svc", label: "Supervisor", className: "mode-svc" },
+        0x17: { key: "abt", label: "Abort", className: "mode-abt" },
+        0x1b: { key: "und", label: "Undefined", className: "mode-und" },
+        0x1f: { key: "sys", label: "System", className: "" }
+      };
+      return modes[mode] || { key: `0x${mode.toString(16)}`, label: `Mode 0x${mode.toString(16)}`, className: "mode-svc" };
+    }
+
+    function normalizeCallStackData(data) {
+      const frames = data && Array.isArray(data.frames) ? data.frames : [];
+      return {
+        ...(data || {}),
+        frames: frames.map((frame) => {
+          const cpsr = Number(frame.cpsr) >>> 0;
+          const mode = cpsrModeInfo(cpsr);
+          return { ...frame, cpsr, cpsrHex: hex(cpsr), modeValue: cpsr & 0x1f, modeKey: mode.key, modeName: mode.label, modeClass: mode.className };
+        })
+      };
+    }
+
+    async function copyText(text, label) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        log(`${label} copied`);
+      } else {
+        log(`${label} prepared; clipboard is unavailable in this context`);
+      }
+      return text;
     }
 
     function createRecentId() {
@@ -1454,6 +1524,7 @@
         const current = line.startsWith("=>");
         const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
         const highlighted = Number.isFinite(address) && state.highlightedDisasmAddress === address;
+        const modeClass = highlighted && state.highlightedCallstackCpsr != null ? cpsrModeInfo(state.highlightedCallstackCpsr).className : "";
         const hasBp = state.breakpoints.some((bp) => bp.type === "exec" && bp.cpu === state.selectedCpu && bp.address === address);
         const opcode = instructionOpcode(line);
         const body = instructionBody(line);
@@ -1463,22 +1534,25 @@
         const isMemoryReturnLike = /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode);
         const isBranchLike = (info.mnemonic.startsWith("b") && !isBranchLinkMnemonic(info.mnemonic) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
           || ((info.mnemonic.startsWith("sub") || info.mnemonic.startsWith("add")) && /\bpc\b/i.test(info.body));
-        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "entry-line" : "", isReturnLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", modeClass, isCallLike ? "entry-line" : "", isReturnLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
     }
 
     function renderCallStack(data) {
+      data = normalizeCallStackData(data);
       const frames = data && Array.isArray(data.frames) ? data.frames : [];
       if (!frames.length) {
-        ui.callstackBody.innerHTML = `<tr><td colspan="7">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
+        ui.callstackBody.innerHTML = `<tr><td colspan="8">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
         return;
       }
       ui.callstackBody.innerHTML = frames.map((frame, index) => {
         const caller = hex(frame.caller);
         const callee = hex(frame.callee);
         const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
-        return `<tr class="callstack-row${highlighted ? " highlight" : ""}"><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td>${frame.thumb ? "thumb" : "arm"}</td><td><button type="button" data-jump-address="${caller}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-label="callee">Callee</button></td></tr>`;
+        const cls = ["callstack-row", highlighted ? "highlight" : "", frame.modeClass].filter(Boolean).join(" ");
+        const execMode = `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
+        return `<tr class="${cls}"><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
       }).join("");
     }
 
@@ -1486,6 +1560,7 @@
       if (!disasmParams.keepHighlight) {
         state.highlightedDisasmAddress = null;
         state.highlightedCallstackAddress = null;
+        state.highlightedCallstackCpsr = null;
       }
       renderRegisters();
       renderCallStack(JSON.parse(state.fns.dbgCallStackJson()));
@@ -1510,6 +1585,7 @@
           setFollowPc(true);
           state.highlightedDisasmAddress = null;
           state.highlightedCallstackAddress = null;
+          state.highlightedCallstackCpsr = null;
           await refreshDebuggerViews({ cpu, address: "pc", keepHighlight: true });
         } catch (error) {
           log(error.message || String(error));
@@ -1555,7 +1631,7 @@
         });
         steps++;
         const native = syncNativeBreakStatus();
-        const callStack = JSON.parse(state.fns.dbgCallStackJson());
+        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
         const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
         if (native && native.lastBreak && native.lastBreak.hit) {
           await refreshDebuggerViews({ cpu });
@@ -2227,8 +2303,25 @@
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
       async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-      async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-      async callStack() { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = JSON.parse(state.fns.dbgCallStackJson()); renderCallStack(callStack); return callStack; },
+      async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson())); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+      async callStack() { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson())); renderCallStack(callStack); return callStack; },
+      async copyCallStackMarkdown() {
+        ensureRomLoaded("call stack copy requires a loaded ROM");
+        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
+        const rows = callStack.frames.map((frame, index) => `| ${index} | ${hex(frame.caller)} | ${hex(frame.callee)} | ${hex(frame.sp)} | ${frame.cpsrHex} | ${frame.modeName} | ${frame.thumb ? "thumb" : "arm"} | ${frame.id} |`);
+        const text = ["| # | caller | callee | sp | cpsr | mode | isa | id |", "|---:|---|---|---|---|---|---|---:|", ...rows].join("\n");
+        renderCallStack(callStack);
+        return { text: await copyText(text, "call stack markdown"), callStack };
+      },
+      async copyCallStackCsv() {
+        ensureRomLoaded("call stack copy requires a loaded ROM");
+        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
+        const escape = (value) => `"${String(value).replace(/"/g, '""')}"`;
+        const rows = callStack.frames.map((frame, index) => [index, hex(frame.caller), hex(frame.callee), hex(frame.sp), frame.cpsrHex, frame.modeName, frame.thumb ? "thumb" : "arm", frame.id].map(escape).join(","));
+        const text = ["index,caller,callee,sp,cpsr,mode,isa,id", ...rows].join("\n");
+        renderCallStack(callStack);
+        return { text: await copyText(text, "call stack csv"), callStack };
+      },
       async runUntilReturn(params = {}) {
         return runTraceStepper("runUntilReturn", params, ({ depth, startDepth }) => depth < startDepth);
       },
@@ -2464,6 +2557,7 @@
       setFollowPc(true);
       state.highlightedDisasmAddress = null;
       state.highlightedCallstackAddress = null;
+      state.highlightedCallstackCpsr = null;
       refreshDebuggerViews({ address: "pc", keepHighlight: true }).catch((e) => log(e.message));
     });
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
@@ -2479,6 +2573,8 @@
     ui.stackNextCallDebugBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnDebugBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
+    ui.stackCopyMdBtn.addEventListener("click", () => runCommand("copyCallStackMarkdown").catch((e) => log(e.message)));
+    ui.stackCopyCsvBtn.addEventListener("click", () => runCommand("copyCallStackCsv").catch((e) => log(e.message)));
     ui.callstackBody.addEventListener("click", (e) => {
       const button = e.target.closest("button[data-jump-address]");
       if (!button) return;
@@ -2486,9 +2582,16 @@
       ui.disasmAddress.value = button.dataset.jumpAddress;
       state.highlightedDisasmAddress = parseAddress(button.dataset.jumpAddress, 0, state.selectedCpu);
       state.highlightedCallstackAddress = state.highlightedDisasmAddress;
+      state.highlightedCallstackCpsr = parseNumber(button.dataset.jumpCpsr, null);
       runCommand("disassemble", disasmRefreshParams({ address: button.dataset.jumpAddress, keepHighlight: true })).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(JSON.parse(state.fns.dbgCallStackJson()))).catch((error) => log(error.message));
     });
-    ui.disasmAddress.addEventListener("change", () => setFollowPc(String(ui.disasmAddress.value).trim().toLowerCase() === "pc"));
+    ui.disasmAddress.addEventListener("change", () => {
+      const followsPc = String(ui.disasmAddress.value).trim().toLowerCase() === "pc";
+      setFollowPc(followsPc);
+      state.highlightedDisasmAddress = followsPc ? null : parseAddress(ui.disasmAddress.value, 0, state.selectedCpu);
+      state.highlightedCallstackAddress = null;
+      state.highlightedCallstackCpsr = null;
+    });
     ui.disasmCount.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
     ui.disasmBefore.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
     ui.disasmMode.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
