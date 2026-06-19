@@ -811,7 +811,7 @@
         ["loadROM", "number", ["number"]], ["reset", "number", []], ["isRomLoaded", "number", []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
         ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
-        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["dbgGetLastStateChunk", "number", []], ["dbgGetLastStatePhase", "number", []], ["pauseEmu", "number", ["number"]],
+        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["captureFrameBuffer", "number", []], ["dbgGetLastStateChunk", "number", []], ["dbgGetLastStatePhase", "number", []], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
         ["traceSetPrivilegeCheck", "number", ["number"]], ["traceGetDepth", "number", []],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
@@ -1036,6 +1036,11 @@
       const bytes = state.module.HEAPU8.subarray(ptr, ptr + 256 * 384 * 4);
       state.imageData.data.set(bytes);
       ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
+    }
+
+    function drawLoadedStateFrame() {
+      if (state.ready && state.fns.captureFrameBuffer) state.fns.captureFrameBuffer();
+      drawFrame();
     }
 
     function pumpAudio(frames = 1) {
@@ -1743,7 +1748,7 @@
           if (ret !== 0) throw new Error(`state load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-          drawFrame();
+          drawLoadedStateFrame();
           return { ok: true, paused: runState.paused, reset: false };
         } finally {
           restoreAfterFileLoad(runState);
@@ -1759,7 +1764,7 @@
           if (ret !== 0) throw new Error(`state import failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-          drawFrame();
+          drawLoadedStateFrame();
           await recordRecentFile("state", file.name, bytes);
           log(`state imported: ${file.name}`);
           return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
@@ -1777,7 +1782,7 @@
           if (ret !== 0) throw new Error(`state byte load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-          drawFrame();
+          drawLoadedStateFrame();
           log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
           return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
         } finally {
@@ -1819,7 +1824,7 @@
           if (ret !== 0) throw new Error(`recent state load failed (${ret})`);
           state.frame = 0;
           blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-          drawFrame();
+          drawLoadedStateFrame();
           return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
         } finally {
           restoreAfterFileLoad(runState);

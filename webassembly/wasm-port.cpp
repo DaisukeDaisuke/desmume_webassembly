@@ -40,6 +40,7 @@ static int samplesDesired = 0;
 volatile bool execute = true;
 static bool paused = true;
 static bool debuggerEnabled = true;
+static int debuggerSuspendDepth = 0;
 static bool traceEnabled = false;
 static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
@@ -105,7 +106,7 @@ static void recordBreak(int proc, int kind, u32 address, int size, u32 value) {
 }
 
 extern "C" int wasmDebuggerShouldBreak(int proc, int kind, u32 address, int size, u32 value) {
-  if (!debuggerEnabled) return 0;
+  if (!debuggerEnabled || debuggerSuspendDepth > 0) return 0;
   const int idx = proc == 0 ? 0 : 1;
   bool hit = false;
   if (kind == 0) hit = hasBreakpoint(execBreakpoints[idx], address);
@@ -265,6 +266,17 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   if (!retrappedSameExecBreakpoint) frameCounter++;
   if (shouldDraw) gpu_screen_to_rgb((u32 *)dstFrameBuffer);
   return paused ? 1 : 0;
+}
+
+int captureFrameBuffer() {
+  if (!romLoaded) return -1;
+  gpu_screen_to_rgb((u32 *)dstFrameBuffer);
+  return 0;
+}
+
+extern "C" void wasmDebuggerSetInternalSuspend(int enabled) {
+  if (enabled) debuggerSuspendDepth++;
+  else if (debuggerSuspendDepth > 0) debuggerSuspendDepth--;
 }
 
 int runFrames(int count, int shouldDraw, u32 keys) {
