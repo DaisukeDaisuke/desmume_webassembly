@@ -185,15 +185,19 @@
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
     .disasm-line.highlight-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
     .disasm-line.entry-line { background: var(--yellow-mark); border-left-color: var(--yellow-edge); }
+    .disasm-line.call-line { color: #e8ffef; background: rgba(92, 200, 120, 0.14); border-left-color: #5cc878; }
     .disasm-line.branch-line { color: #efe4ff; background: var(--branch-mark); border-left-color: var(--branch-edge); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
     .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: rgba(255, 107, 107, 0.18); }
     .disasm-line.current.entry-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(233, 196, 106, 0.24)); }
+    .disasm-line.current.call-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(92, 200, 120, 0.28)); }
     .disasm-line.current.branch-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(173, 127, 255, 0.18)); }
     .disasm-line.highlight-line.entry-line,
+    .disasm-line.highlight-line.call-line,
     .disasm-line.highlight-line.branch-line,
     .disasm-line.highlight-line.current,
     .disasm-line.highlight-line.current.entry-line,
+    .disasm-line.highlight-line.current.call-line,
     .disasm-line.highlight-line.current.branch-line {
       color: #fff2d6;
       background: var(--orange-mark);
@@ -367,6 +371,7 @@
             <button id="refresh-debug-btn" type="button">Refresh Views</button>
             <button id="near-pc-btn" type="button">Near PC</button>
             <button id="cpu-step-debug-btn" type="button">Step</button>
+            <button id="cpu-smart-step-debug-btn" type="button">Smart Step</button>
             <button id="cpu-step-over-debug-btn" type="button">Step Over</button>
             <button id="stack-next-call-debug-btn" type="button">Next Call</button>
             <button id="stack-return-debug-btn" type="button">Return To Pop</button>
@@ -456,6 +461,7 @@
             <div class="toolbar-strip">
               <button id="refresh-breakpoints-btn" type="button">Refresh Views</button>
               <button id="cpu-step-btn" type="button">Step</button>
+              <button id="cpu-smart-step-btn" type="button">Smart Step</button>
               <button id="cpu-step-over-btn" type="button">Step Over</button>
               <button id="stack-next-call-toolbar-btn" type="button">Next Call</button>
               <button id="stack-return-toolbar-btn" type="button">Return To Pop</button>
@@ -588,7 +594,8 @@
       screenshotCooldownUntil: 0,
       followPc: true,
       autoUpdate: { enabled: false, hz: 1, timer: 0 },
-      breakRefreshPending: false
+      breakRefreshPending: false,
+      breakRefreshTimer: 0
     };
 
     const apiDescriptions = {
@@ -641,6 +648,7 @@
       removeBreakpoint: "ブレークポイントをid指定で削除します。",
       clearBreakStatus: "最後にヒットしたブレークポイント表示をクリアします。",
       step: "CPUステップを指定回数実行します。",
+      smartStep: "現在命令を見て、通常命令はStep、bx/bl/blxはStep Overで進めます。b系やpc書き換え系はそのまま1命令進めます。",
       stepOver: "ステップオーバーを1回実行します。",
       continue: "デバッグ停止から再開します。",
       setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
@@ -660,6 +668,8 @@
       batch: "複数のMCPコマンドを順番に実行し、各結果を配列で返します。",
       setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
     };
+
+    applyScaleRotation();
 
     function log(message) {
       const line = `[${new Date().toLocaleTimeString()}] ${message}\n`;
@@ -1091,7 +1101,6 @@
             if (state.ready) state.fns.pauseEmu(1);
           }
           applyFreezes();
-          state.frame += ran;
           drawFrame();
           pumpAudio(ran);
           updateStatus();
@@ -1164,9 +1173,37 @@
       return ["exec", "read", "write", "dataAbort", "prefetchAbort", "undefinedInstruction"][Number(kind)] || "unknown";
     }
 
+    function getNativeStatus() {
+      return state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
+    }
+
+    function currentInstructionAddress(cpu = state.selectedCpu) {
+      const native = getNativeStatus();
+      const node = native && native[String(cpu).toLowerCase() === "arm7" ? "arm7" : "arm9"];
+      return node ? (Number(node.pc) >>> 0) : null;
+    }
+
+    function currentExecBreakpoint(cpu = state.selectedCpu, address = currentInstructionAddress(cpu)) {
+      if (!Number.isFinite(address)) return null;
+      return state.breakpoints.find((bp) => bp.type === "exec" && bp.cpu === String(cpu) && (bp.address >>> 0) === (address >>> 0)) || null;
+    }
+
+    async function withCurrentExecBreakpointSuspended(cpu, callback) {
+      const address = currentInstructionAddress(cpu);
+      const bp = currentExecBreakpoint(cpu, address);
+      const idx = cpuIndex(cpu);
+      if (bp) state.fns.dbgSetExecBreakpoint(idx, address >>> 0, 0);
+      try {
+        return await callback(address);
+      } finally {
+        if (bp) state.fns.dbgSetExecBreakpoint(idx, address >>> 0, 1);
+      }
+    }
+
     function syncNativeBreakStatus(native = null) {
       if (!state.ready) return null;
       const status = native || JSON.parse(state.fns.dbgGetStatusJson());
+      if (Number.isFinite(Number(status.frame))) state.frame = Number(status.frame);
       const bp = status.lastBreak;
       if (bp && bp.hit) {
         state.paused = true;
@@ -1280,6 +1317,61 @@
       if (code) ui.hotkeyCode.value = code;
     }
 
+    function classifyInstruction(line) {
+      const raw = String(line || "").replace(/^=>/, "  ");
+      const body = raw.replace(/^\s*[0-9a-fA-F]+:\s*/, "").trim();
+      const match = body.match(/^([a-z][a-z0-9]*)(?:\s+(.*))?$/i);
+      const mnemonic = String(match?.[1] || "").toLowerCase();
+      const operands = String(match?.[2] || "").toLowerCase();
+      const isCall = mnemonic.startsWith("bl");
+      const isBx = mnemonic.startsWith("bx");
+      const isPurpleBranch = mnemonic.startsWith("b") && !isCall && !isBx;
+      const writesPcViaAlu = (mnemonic.startsWith("sub") || mnemonic.startsWith("add")) && /\bpc\b/.test(operands);
+      return {
+        mnemonic,
+        body,
+        kind: isCall ? "call" : isBx ? "bx" : (isPurpleBranch || writesPcViaAlu) ? "branch" : "normal",
+        isCall,
+        isBx,
+        isBranch: isPurpleBranch || writesPcViaAlu
+      };
+    }
+
+    async function getCurrentInstructionInfo(cpu = state.selectedCpu) {
+      const disasm = await commands.disassemble({ cpu, address: "pc", before: 0, count: 1, mode: "auto" });
+      const line = String(disasm.text || "").split("\n").find((item) => item.trim()) || "";
+      const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
+      return { line, address: Number.isFinite(address) ? (address >>> 0) : null, ...classifyInstruction(line) };
+    }
+
+    async function runDebuggerInstruction(kind, params = {}) {
+      ensureRomLoaded("debugger step requires a loaded ROM");
+      const cpu = String(params.cpu ?? state.selectedCpu);
+      let result = { kind, count: 0 };
+      if (kind === "step") {
+        result.count = state.fns.dbgStep(cpuIndex(cpu), Number(params.count ?? 1));
+      } else if (kind === "stepOver") {
+        result.count = state.fns.dbgStepOver(cpuIndex(cpu));
+        result.ret = result.count;
+      } else if (kind === "smartStep") {
+        const info = await getCurrentInstructionInfo(cpu);
+        const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
+        result = await runDebuggerInstruction(chosen, { ...params, cpu });
+        result.kind = "smartStep";
+        result.chosen = chosen;
+        result.instruction = info;
+        return result;
+      } else {
+        throw new Error(`unsupported debugger step: ${kind}`);
+      }
+      applyFreezes();
+      syncNativeBreakStatus();
+      updateStatus();
+      result.pc = getPc(cpu);
+      result.paused = state.paused;
+      return result;
+    }
+
     function renderDisassembly(text) {
       const lines = String(text || "").split("\n").filter(Boolean);
       ui.disasmOutput.innerHTML = lines.map((line) => {
@@ -1287,10 +1379,16 @@
         const address = parseInt((line.match(/(?:=>|  )\s*([0-9a-fA-F]+):/) || [])[1] || "", 16);
         const highlighted = Number.isFinite(address) && state.highlightedDisasmAddress === address;
         const hasBp = state.breakpoints.some((bp) => bp.type === "exec" && bp.cpu === state.selectedCpu && bp.address === address);
-        const opcode = line.replace(/^=>/, "  ");
-        const isCallLike = /\bbl(?!x)\b/i.test(opcode) || /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode) || /\bpush\b/i.test(opcode);
-        const isBranchLike = /\b(?:b(?:[a-z]{0,2})|bx(?:[a-z]{0,2})|blx(?:[a-z]{0,2}))\b/i.test(opcode) && !/\bbl(?!x)\b/i.test(opcode);
-        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "entry-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const info = classifyInstruction(line);
+        const cls = [
+          "disasm-line",
+          current ? "current" : "",
+          highlighted ? "highlight-line" : "",
+          info.kind === "call" ? "call-line" : "",
+          info.kind === "bx" ? "entry-line" : "",
+          info.kind === "branch" ? "branch-line" : "",
+          hasBp ? "breakpoint-line" : ""
+        ].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
     }
@@ -1327,15 +1425,21 @@
     function queueBreakpointRefresh(cpu = state.selectedCpu) {
       if (state.breakRefreshPending || !hasLoadedRom()) return;
       state.breakRefreshPending = true;
-      Promise.resolve().then(async () => {
+      if (state.breakRefreshTimer) clearTimeout(state.breakRefreshTimer);
+      state.breakRefreshTimer = setTimeout(async () => {
         state.breakRefreshPending = false;
-        state.selectedCpu = cpu;
-        ui.cpuSelect.value = cpu;
-        setFollowPc(true);
-        state.highlightedDisasmAddress = null;
-        state.highlightedCallstackAddress = null;
-        await refreshDebuggerViews({ cpu, address: "pc", keepHighlight: true });
-      }).catch((error) => log(error.message || String(error)));
+        state.breakRefreshTimer = 0;
+        try {
+          state.selectedCpu = cpu;
+          ui.cpuSelect.value = cpu;
+          setFollowPc(true);
+          state.highlightedDisasmAddress = null;
+          state.highlightedCallstackAddress = null;
+          await refreshDebuggerViews({ cpu, address: "pc", keepHighlight: true });
+        } catch (error) {
+          log(error.message || String(error));
+        }
+      }, 5);
     }
 
     function stopAutoUpdateLoop() {
@@ -1361,6 +1465,7 @@
 
     async function runTraceStepper(label, params = {}, shouldStop) {
       ensureRomLoaded(`${label} requires a loaded ROM`);
+      const cpu = String(params.cpu ?? state.selectedCpu);
       if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
       if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
         await commands.setStackTracePrivilegeCheck({ enabled: true });
@@ -1370,16 +1475,23 @@
       const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
       let steps = 0;
       while (performance.now() < deadline && steps < maxSteps) {
-        state.fns.dbgStep(cpuIndex(params.cpu), 1);
+        await withCurrentExecBreakpointSuspended(cpu, async () => {
+          state.fns.dbgStep(cpuIndex(cpu), 1);
+        });
         steps++;
+        const native = syncNativeBreakStatus();
         const callStack = JSON.parse(state.fns.dbgCallStackJson());
         const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+        if (native && native.lastBreak && native.lastBreak.hit) {
+          await refreshDebuggerViews({ cpu });
+          return { ok: false, stoppedByBreakpoint: true, steps, depth, pc: getPc(cpu), callStack, native };
+        }
         if (shouldStop({ startDepth, depth, callStack })) {
-          await refreshDebuggerViews({ cpu: params.cpu });
-          return { ok: true, steps, depth, pc: getPc(params.cpu), callStack };
+          await refreshDebuggerViews({ cpu });
+          return { ok: true, steps, depth, pc: getPc(cpu), callStack };
         }
       }
-      await refreshDebuggerViews({ cpu: params.cpu });
+      await refreshDebuggerViews({ cpu });
       throw new Error(`${label} timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
     }
 
@@ -1783,7 +1895,6 @@
           throw error;
         }
         applyFreezes();
-        state.frame += ran;
         drawFrame();
         pumpAudio(ran);
         const native = syncNativeBreakStatus();
@@ -2028,8 +2139,13 @@
         return { ok: true, removed: bp, breakpoints: state.breakpoints };
       },
       async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
-      async step(params = {}) { ensureRomLoaded("CPU step requires a loaded ROM"); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { count, pc: getPc(params.cpu), paused: state.paused }; },
-      async stepOver(params = {}) { ensureRomLoaded("step over requires a loaded ROM"); log("step over can still collide with other breakpoints; plain step is safer."); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
+      async step(params = {}) { return runDebuggerInstruction("step", params); },
+      async smartStep(params = {}) { return runDebuggerInstruction("smartStep", params); },
+      async stepOver(params = {}) {
+        ensureRomLoaded("step over requires a loaded ROM");
+        log("step over can still collide with other breakpoints; plain step is safer.");
+        return runDebuggerInstruction("stepOver", params);
+      },
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
       async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
@@ -2273,8 +2389,10 @@
       refreshDebuggerViews({ address: "pc", keepHighlight: true }).catch((e) => log(e.message));
     });
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
     ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));

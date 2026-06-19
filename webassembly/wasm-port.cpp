@@ -244,6 +244,8 @@ int isRomLoaded() { return romLoaded ? 1 : 0; }
 
 int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   if (paused || !romLoaded) return 0;
+  const u32 startPc9 = NDS_ARM9.instruct_adr;
+  const u32 startPc7 = NDS_ARM7.instruct_adr;
   if (!shouldDraw) NDS_SkipNextFrame();
   if (touched) {
     NDS_setTouchPos(touchX, touchY);
@@ -257,7 +259,10 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   NDS_beginProcessingInput();
   NDS_endProcessingInput();
   NDS_exec<false>();
-  frameCounter++;
+  const bool retrappedSameExecBreakpoint = lastBreak.hit && lastBreak.kind == 0 &&
+    ((lastBreak.proc == 0 && lastBreak.address == startPc9 && lastBreak.pc == startPc9) ||
+     (lastBreak.proc == 1 && lastBreak.address == startPc7 && lastBreak.pc == startPc7));
+  if (!retrappedSameExecBreakpoint) frameCounter++;
   if (shouldDraw) gpu_screen_to_rgb((u32 *)dstFrameBuffer);
   return paused ? 1 : 0;
 }

@@ -531,6 +531,7 @@ http://localhost:8766/
 
 AI側からのrom読み込みは、アップロード/要素idと、アップロードツールの組み合わせでできるよ。IDは毎回変わるよ
 デフォルトで見えてないからツールサーチしないとだめだけど、id take_snapshot、id upload_fileツールの合わせ技で、任意のファイルを任意の場所にアップロードできるよ。
+- public/desmume.jsは検索対象にいれないこと。
 
 # agents.md End
 If the context has been injected up to this point, do not reread AGENTS.md file

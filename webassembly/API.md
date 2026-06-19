@@ -59,6 +59,7 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `removeBreakpoint`: Removes one breakpoint by `{ "id": number }`.
 - `clearBreakStatus`: Clears the last breakpoint hit shown by `status.native.lastBreak`.
 - `step`: Runs `{ "count": N }` CPU instructions through `armcpu_exec` for ARM9 or ARM7. When the current PC is itself an execution breakpoint, the native side temporarily removes that one breakpoint for the first instruction so step can escape the trap, then restores it immediately.
+- `smartStep`: Looks at the current disassembly line and chooses a safer single-step mode automatically. Ordinary instructions use `step`, `bx*` uses `stepOver`, and `bl*`/`blx*` also use `stepOver`. Plain `b*` and `add/sub ... pc` stay as one-instruction steps.
 - `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping. Like `step`, it temporarily removes only the current PC execution breakpoint for the first instruction, but other breakpoints can still interrupt the run, so plain `step` is safer when you are parked on a breakpoint.
 - `continue`: Resumes from a debugger stop.
 - `setAutoUpdate`: Enables or disables GUI auto refresh with `{ "enabled": boolean, "hz": number }`. This is intended for UI/script automation and is callable through WebMCP and script injection.
@@ -66,8 +67,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setStackTracePrivilegeCheck`: Enables or disables IRQ-mode filtering with `{ "enabled": boolean }`.
 - `stackTrace`: Returns the recorded call stack plus stack words near SP for `{ "cpu": "arm9", "words": number }`.
 - `callStack`: Returns the recorded call stack as structured JSON.
-- `runUntilReturn`: Steps until the recorded call stack depth drops below the current depth. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure.
-- `runUntilNextCall`: Steps until the next function-entry hook is recorded. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure.
+- `runUntilReturn`: Steps until the recorded call stack depth drops below the current depth. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure. If the current instruction address itself has an exec breakpoint, only that one is suspended for the single trace-step and then restored.
+- `runUntilNextCall`: Steps until the next function-entry hook is recorded. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure. If the current instruction address itself has an exec breakpoint, only that one is suspended for the single trace-step and then restored.
 - `returnToPop`: Alias for `runUntilReturn`.
 - `nextFunctionEnter`: Alias for `runUntilNextCall`.
 - `nextCall`: Alias for `runUntilNextCall`.
