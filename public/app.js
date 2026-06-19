@@ -1,5 +1,5 @@
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
-const DESMUME_SCRIPT_URL = "desmume.js?v=20260618-safe-reset-rom-reload";
+const DESMUME_SCRIPT_URL = "desmume.js?v=20260619-immediate-memory-break";
 const state = {
     module: null,
     moduleInitPromise: null,
@@ -106,7 +106,7 @@ const apiDescriptions = {
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
     stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
-    callStack: "記録済みコールスタックをJSONで取得します。各frameにはcaller/callee/sp/cpsr/thumb/idとCPSR mode解析を含み、controlFlowにはBX/MOV PC/LDM PC/SUBS PCなどの復帰・PC書き換えイベントを含みます。",
+    callStack: "記録済みコールスタックをJSONで取得します。各frameのcallerはLRから4を引いた呼び出し元命令アドレスで、returnAddressに元のLRを残します。ageLabelはnewestまたは最新フレームからの深さです。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -163,10 +163,26 @@ function normalizeCallStackData(data) {
     };
     return {
         ...(data || {}),
-        frames: frames.map((frame) => {
+        frames: frames.map((frame, index) => {
             const cpsr = Number(frame.cpsr) >>> 0;
             const mode = cpsrModeInfo(cpsr);
-            return { ...frame, cpsr, cpsrHex: hex(cpsr), modeValue: cpsr & 0x1f, modeKey: mode.key, modeName: mode.label, modeClass: mode.className };
+            const hasReturnAddress = frame.returnAddress != null;
+            const returnAddress = Number(hasReturnAddress ? frame.returnAddress : frame.caller) >>> 0;
+            const caller = hasReturnAddress ? (Number(frame.caller) >>> 0) : (((returnAddress & ~1) - 4) >>> 0);
+            const depthFromNewest = frames.length - 1 - index;
+            return {
+                ...frame,
+                caller,
+                returnAddress,
+                depthFromNewest,
+                ageLabel: depthFromNewest === 0 ? "newest" : `↑+${depthFromNewest}d`,
+                cpsr,
+                cpsrHex: hex(cpsr),
+                modeValue: cpsr & 0x1f,
+                modeKey: mode.key,
+                modeName: mode.label,
+                modeClass: mode.className
+            };
         }),
         controlFlow: controlFlow.map((event) => {
             const cpsr = Number(event.cpsr) >>> 0;
@@ -992,13 +1008,13 @@ function renderCallStack(data) {
         ui.callstackBody.innerHTML = `<tr><td colspan="8">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
         return;
     }
-    ui.callstackBody.innerHTML = frames.map((frame, index) => {
+    ui.callstackBody.innerHTML = frames.map((frame) => {
         const caller = hex(frame.caller);
         const callee = hex(frame.callee);
         const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
         const cls = ["callstack-row", highlighted ? "highlight" : "", frame.modeClass].filter(Boolean).join(" ");
         const execMode = `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
-        return `<tr class="${cls}"><td>${index}</td><td>${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
+        return `<tr class="${cls}"><td title="newest frame is the bottom row">${frame.ageLabel}</td><td title="return ${hex(frame.returnAddress)}">${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
     }).join("");
 }
 
@@ -1754,8 +1770,8 @@ const commands = {
     async copyCallStackMarkdown() {
         ensureRomLoaded("call stack copy requires a loaded ROM");
         const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
-        const rows = callStack.frames.map((frame, index) => `| ${index} | ${hex(frame.caller)} | ${hex(frame.callee)} | ${hex(frame.sp)} | ${frame.cpsrHex} | ${frame.modeName} | ${frame.thumb ? "thumb" : "arm"} | ${frame.id} |`);
-        const text = ["| # | caller | callee | sp | cpsr | mode | isa | id |", "|---:|---|---|---|---|---|---|---:|", ...rows].join("\n");
+        const rows = callStack.frames.map((frame) => `| ${frame.ageLabel} | ${hex(frame.caller)} | ${hex(frame.returnAddress)} | ${hex(frame.callee)} | ${hex(frame.sp)} | ${frame.cpsrHex} | ${frame.modeName} | ${frame.thumb ? "thumb" : "arm"} | ${frame.id} |`);
+        const text = ["| age | caller | return | callee | sp | cpsr | mode | isa | id |", "|---|---|---|---|---|---|---|---|---:|", ...rows].join("\n");
         renderCallStack(callStack);
         return { text: await copyText(text, "call stack markdown"), callStack };
     },
@@ -1763,8 +1779,8 @@ const commands = {
         ensureRomLoaded("call stack copy requires a loaded ROM");
         const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
         const escape = (value) => `"${String(value).replace(/"/g, '""')}"`;
-        const rows = callStack.frames.map((frame, index) => [index, hex(frame.caller), hex(frame.callee), hex(frame.sp), frame.cpsrHex, frame.modeName, frame.thumb ? "thumb" : "arm", frame.id].map(escape).join(","));
-        const text = ["index,caller,callee,sp,cpsr,mode,isa,id", ...rows].join("\n");
+        const rows = callStack.frames.map((frame) => [frame.ageLabel, hex(frame.caller), hex(frame.returnAddress), hex(frame.callee), hex(frame.sp), frame.cpsrHex, frame.modeName, frame.thumb ? "thumb" : "arm", frame.id].map(escape).join(","));
+        const text = ["age,caller,return,callee,sp,cpsr,mode,isa,id", ...rows].join("\n");
         renderCallStack(callStack);
         return { text: await copyText(text, "call stack csv"), callStack };
     },

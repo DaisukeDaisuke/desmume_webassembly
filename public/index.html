@@ -250,7 +250,7 @@
     .toolbar-stack { display: grid; gap: 8px; }
     .topbar-actions { justify-content: flex-end; }
     .callstack-table { table-layout: fixed; }
-    .callstack-table th:nth-child(1), .callstack-table td:nth-child(1) { width: 42px; }
+    .callstack-table th:nth-child(1), .callstack-table td:nth-child(1) { width: 58px; }
     .callstack-table th:nth-child(2), .callstack-table td:nth-child(2),
     .callstack-table th:nth-child(3), .callstack-table td:nth-child(3),
     .callstack-table th:nth-child(4), .callstack-table td:nth-child(4) { width: 98px; }
@@ -451,7 +451,7 @@
           <div class="table-wrap" aria-live="polite">
             <table class="callstack-table">
               <thead>
-                <tr><th>#</th><th>caller</th><th>callee</th><th>sp</th><th>cpsr</th><th>mode</th><th>caller</th><th>callee</th></tr>
+                <tr><th>age</th><th>caller</th><th>callee</th><th>sp</th><th>cpsr</th><th>mode</th><th>caller</th><th>callee</th></tr>
               </thead>
               <tbody id="callstack-body">
                 <tr><td colspan="8">stack trace disabled</td></tr>

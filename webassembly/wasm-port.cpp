@@ -114,6 +114,7 @@ static void recordBreak(int proc, int kind, u32 address, int size, u32 value) {
   armcpu_t *cpu = cpuFor(proc);
   lastBreak = {true, proc, kind, address, size, value, cpu->instruct_adr, cpu->CPSR.val};
   paused = true;
+  execute = false;
 }
 
 extern "C" int wasmDebuggerShouldBreak(int proc, int kind, u32 address, int size, u32 value) {
@@ -230,6 +231,7 @@ void *getSymbol(int id) {
 int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
+  execute = false;
   NDS_Reset();
   frameCounter = 0;
   lastBreak.hit = false;
@@ -258,6 +260,7 @@ int loadROM(int len) {
   }
   romLoaded = true;
   paused = false;
+  execute = true;
   frameCounter = 0;
   lastBreak.hit = false;
   return 0;
@@ -404,6 +407,7 @@ int zlibDecompress(u8 *srcBuffer, size_t srcLen, u8 *dstBuffer, size_t dstLen) {
 
 int pauseEmu(int value) {
   paused = value != 0;
+  execute = !paused;
   return paused ? 1 : 0;
 }
 
@@ -615,10 +619,12 @@ const char *dbgStackTrace(int proc, int words) {
   os << "trace=" << (traceEnabled ? "on" : "off")
      << " privilegeCheck=" << (tracePrivilegeCheck ? "on" : "off")
      << " sp=0x" << std::hex << sp << "\n";
-  os << "caller   callee(id)      sp\n";
+  os << "return   callee(id)      caller      sp\n";
   for (size_t i = 0; i < callStack.size(); i++) {
     const CallStackEntry &entry = callStack[i];
+    const u32 caller = ((entry.caller & ~1U) - 4) & 0xffffffffU;
     os << "0x" << std::hex << entry.caller << "  0x" << entry.callee << "(" << std::dec << entry.id << ")"
+       << " caller=0x" << std::hex << caller
        << (entry.thumb ? " T" : " A") << "  0x" << std::hex << entry.sp << "\n";
   }
   os << "-- stack words --\n";
@@ -652,8 +658,10 @@ const char *dbgCallStackJson() {
      << ",\"frames\":[";
   for (size_t i = 0; i < callStack.size(); i++) {
     const CallStackEntry &entry = callStack[i];
+    const u32 caller = ((entry.caller & ~1U) - 4) & 0xffffffffU;
     if (i) os << ",";
-    os << "{\"caller\":" << entry.caller
+    os << "{\"caller\":" << caller
+       << ",\"returnAddress\":" << entry.caller
        << ",\"callee\":" << entry.callee
        << ",\"sp\":" << entry.sp
        << ",\"cpsr\":" << entry.cpsr
