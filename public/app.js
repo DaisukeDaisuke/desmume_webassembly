@@ -106,7 +106,7 @@ const apiDescriptions = {
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
     stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
-    callStack: "記録済みコールスタックをJSONで取得します。各frameにはcaller/callee/sp/cpsr/thumb/idとCPSR mode解析を含みます。",
+    callStack: "記録済みコールスタックをJSONで取得します。各frameにはcaller/callee/sp/cpsr/thumb/idとCPSR mode解析を含み、controlFlowにはBX/MOV PC/LDM PC/SUBS PCなどの復帰・PC書き換えイベントを含みます。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -152,12 +152,27 @@ function cpsrModeInfo(cpsr) {
 
 function normalizeCallStackData(data) {
     const frames = data && Array.isArray(data.frames) ? data.frames : [];
+    const controlFlow = data && Array.isArray(data.controlFlow) ? data.controlFlow : [];
+    const controlFlowKinds = {
+        1: "bx",
+        2: "mov-pc",
+        3: "movs-pc",
+        4: "subs-pc",
+        5: "ldm-pc",
+        6: "ldm-pc-spsr"
+    };
     return {
         ...(data || {}),
         frames: frames.map((frame) => {
             const cpsr = Number(frame.cpsr) >>> 0;
             const mode = cpsrModeInfo(cpsr);
             return { ...frame, cpsr, cpsrHex: hex(cpsr), modeValue: cpsr & 0x1f, modeKey: mode.key, modeName: mode.label, modeClass: mode.className };
+        }),
+        controlFlow: controlFlow.map((event) => {
+            const cpsr = Number(event.cpsr) >>> 0;
+            const mode = cpsrModeInfo(cpsr);
+            const kind = Number(event.kind);
+            return { ...event, cpsr, cpsrHex: hex(cpsr), modeValue: cpsr & 0x1f, modeKey: mode.key, modeName: mode.label, modeClass: mode.className, kindName: controlFlowKinds[kind] || `kind-${kind}` };
         })
     };
 }
@@ -872,6 +887,12 @@ function armConditionSuffix(text) {
     return /^(eq|ne|cs|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)$/i.test(String(text || ""));
 }
 
+function mnemonicMatches(mnemonic, base) {
+    const op = String(mnemonic || "").toLowerCase();
+    if (op === base) return true;
+    return op.startsWith(base) && armConditionSuffix(op.slice(base.length));
+}
+
 function isBranchLinkMnemonic(mnemonic) {
     const op = String(mnemonic || "").toLowerCase();
     return op === "bl" || (op.startsWith("bl") && armConditionSuffix(op.slice(2)));
@@ -888,16 +909,24 @@ function classifyInstruction(line) {
     const mnemonic = String(match?.[1] || "").toLowerCase();
     const operands = String(match?.[2] || "").toLowerCase();
     const isCall = isBranchLinkMnemonic(mnemonic) || isBranchLinkExchangeMnemonic(mnemonic);
-    const isBx = mnemonic.startsWith("bx");
+    const firstOperand = (operands.match(/^\s*([^,\s\]!]+)/) || [])[1] || "";
+    const destPc = firstOperand === "pc";
+    const isBx = mnemonicMatches(mnemonic, "bx");
+    const isMovPc = (mnemonicMatches(mnemonic, "mov") || mnemonicMatches(mnemonic, "movs")) && destPc;
+    const isLdrPc = mnemonicMatches(mnemonic, "ldr") && destPc;
+    const isLdmPc = /^ldm/i.test(mnemonic) && /\{[^}]*\bpc\b[^}]*\}\^?/i.test(operands);
+    const isSubsPc = mnemonicMatches(mnemonic, "subs") && destPc;
+    const isAluPcBranch = (mnemonicMatches(mnemonic, "add") || mnemonicMatches(mnemonic, "sub")) && destPc;
     const isPurpleBranch = mnemonic.startsWith("b") && !isCall && !isBx;
-    const writesPcViaAlu = (mnemonic.startsWith("sub") || mnemonic.startsWith("add")) && /\bpc\b/.test(operands);
+    const writesPc = isBx || isMovPc || isLdrPc || isLdmPc || isSubsPc || isAluPcBranch;
     return {
         mnemonic,
         body,
-        kind: isCall ? "call" : isBx ? "bx" : (isPurpleBranch || writesPcViaAlu) ? "branch" : "normal",
+        kind: isCall ? "call" : isBx ? "bx" : (isPurpleBranch || writesPc) ? "branch" : "normal",
         isCall,
         isBx,
-        isBranch: isPurpleBranch || writesPcViaAlu
+        isBranch: isPurpleBranch || writesPc,
+        writesPc
     };
 }
 
@@ -949,11 +978,9 @@ function renderDisassembly(text) {
         const body = instructionBody(line);
         const info = classifyInstruction(line);
         const isCallLike = isBranchLinkMnemonic(info.mnemonic) || /\bpush\b/i.test(opcode);
-        const isReturnLike = /\bbx(?:[a-z]{0,2})\b/i.test(body);
-        const isMemoryReturnLike = /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode);
-        const isBranchLike = (info.mnemonic.startsWith("b") && !isBranchLinkMnemonic(info.mnemonic) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
-            || ((info.mnemonic.startsWith("sub") || info.mnemonic.startsWith("add")) && /\bpc\b/i.test(info.body));
-        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", modeClass, isCallLike ? "entry-line" : "", isReturnLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const isMemoryReturnLike = /^ldm/i.test(info.mnemonic) && /\{[^}]*\bpc\b[^}]*\}\^?/i.test(body);
+        const isBranchLike = info.isBranch || info.writesPc;
+        const cls = ["disasm-line", highlighted ? "highlight-line" : "", modeClass, isCallLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : "", current ? "current" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
     }).join("");
 }

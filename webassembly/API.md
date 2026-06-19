@@ -66,7 +66,7 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `setStackTraceMode`: Enables or disables registerenterfunc-equivalent call stack collection with `{ "enabled": boolean }`.
 - `setStackTracePrivilegeCheck`: Enables or disables IRQ-mode filtering with `{ "enabled": boolean }`.
 - `stackTrace`: Returns the recorded call stack plus stack words near SP for `{ "cpu": "arm9", "words": number }`.
-- `callStack`: Returns the recorded call stack as structured JSON.
+- `callStack`: Returns the recorded call stack as structured JSON. Besides `frames`, the result includes a `controlFlow` list for traced ARM9 PC-write/return events such as `BX`, `MOV PC`, `MOVS PC`, `SUBS PC`, `LDM ... {PC}`, and `LDM ... {PC}^`; each event includes `pc`, `target`, `expected`, `sp`, `cpsr`, `kindName`, and `mismatch`.
 - `runUntilReturn`: Steps until the recorded call stack depth drops below the current depth. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure. If the current instruction address itself has an exec breakpoint, only that one is suspended for the single trace-step and then restored.
 - `runUntilNextCall`: Steps until the next function-entry hook is recorded. Pass `{ "timeoutMs": number, "maxSteps": number }`; timeout is reported as failure. If the current instruction address itself has an exec breakpoint, only that one is suspended for the single trace-step and then restored.
 - `returnToPop`: Alias for `runUntilReturn`.

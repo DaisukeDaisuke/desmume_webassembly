@@ -220,6 +220,18 @@
     .disasm-line.highlight-line.mode-svc { background: linear-gradient(90deg, var(--mode-svc-mark), var(--jump-mark)); border-left-color: #b47cff; }
     .disasm-line.highlight-line.mode-abt { background: linear-gradient(90deg, var(--mode-abort-mark), var(--jump-mark)); border-left-color: var(--fault); }
     .disasm-line.highlight-line.mode-und { background: linear-gradient(90deg, var(--mode-und-mark), var(--jump-mark)); border-left-color: #ff5050; }
+    .disasm-line.current,
+    .disasm-line.current.entry-line,
+    .disasm-line.current.return-line,
+    .disasm-line.current.branch-line,
+    .disasm-line.highlight-line.current,
+    .disasm-line.highlight-line.current.entry-line,
+    .disasm-line.highlight-line.current.return-line,
+    .disasm-line.highlight-line.current.branch-line {
+      color: #ecfff0;
+      background: rgba(124, 255, 155, 0.16);
+      border-left-color: var(--trace);
+    }
     .callstack-row.highlight { background: rgba(246, 156, 76, 0.12); }
     .callstack-row.mode-fiq { background: rgba(255, 210, 92, 0.08); }
     .callstack-row.mode-irq { background: rgba(233, 196, 106, 0.08); }

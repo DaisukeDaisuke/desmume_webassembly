@@ -76,6 +76,19 @@ struct CallStackEntry {
 static std::vector<CallStackEntry> callStack;
 static std::map<u32, u32> callCountMap;
 
+struct TraceControlEvent {
+  u32 pc;
+  u32 target;
+  u32 expected;
+  u32 sp;
+  u32 cpsr;
+  int kind;
+  int reg;
+  bool mismatch;
+};
+
+static std::vector<TraceControlEvent> traceControlEvents;
+
 u32 dstFrameBuffer[2][256 * 192];
 
 extern "C" unsigned cpu_features_get_core_amount(void) { return 1; }
@@ -126,6 +139,17 @@ extern "C" void wasmEnterFunctionHook(int proc) {
   const u32 id = callCountMap[callee]++;
   callStack.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id});
   if (callStack.size() > 1024) callStack.erase(callStack.begin(), callStack.begin() + (callStack.size() - 1024));
+}
+
+extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
+  if (!traceEnabled || proc != 0) return;
+  armcpu_t *cpu = cpuFor(proc);
+  const u32 expected = callStack.empty() ? 0 : callStack.back().caller;
+  const bool mismatch = expected != 0 && ((target & ~1U) != (expected & ~1U));
+  const bool alwaysRecord = kind >= 3 || reg != 14 || expected == 0;
+  if (!alwaysRecord && !mismatch) return;
+  traceControlEvents.push_back({cpu->instruct_adr, target, expected, cpu->R[13], cpu->CPSR.val, kind, reg, mismatch});
+  if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
 }
 
 static void gpu_screen_to_rgb(u32 *dst) {
@@ -395,6 +419,7 @@ int traceSetEnabled(int value) {
   if (!traceEnabled) {
     callStack.clear();
     callCountMap.clear();
+    traceControlEvents.clear();
   }
   return traceEnabled ? 1 : 0;
 }
@@ -634,6 +659,19 @@ const char *dbgCallStackJson() {
        << ",\"cpsr\":" << entry.cpsr
        << ",\"thumb\":" << (entry.thumb ? "true" : "false")
        << ",\"id\":" << entry.id << "}";
+  }
+  os << "],\"controlFlow\":[";
+  for (size_t i = 0; i < traceControlEvents.size(); i++) {
+    const TraceControlEvent &event = traceControlEvents[i];
+    if (i) os << ",";
+    os << "{\"pc\":" << event.pc
+       << ",\"target\":" << event.target
+       << ",\"expected\":" << event.expected
+       << ",\"sp\":" << event.sp
+       << ",\"cpsr\":" << event.cpsr
+       << ",\"kind\":" << event.kind
+       << ",\"reg\":" << event.reg
+       << ",\"mismatch\":" << (event.mismatch ? "true" : "false") << "}";
   }
   os << "]}";
   textScratch = os.str();
