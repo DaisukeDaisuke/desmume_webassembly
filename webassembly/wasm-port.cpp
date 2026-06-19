@@ -626,6 +626,15 @@ int dbgClearBreakStatus() {
   return 0;
 }
 
+int dbgClearAllBreakpoints() {
+  for (int i = 0; i < 2; i++) {
+    execBreakpoints[i].clear();
+    readBreakpoints[i].clear();
+    writeBreakpoints[i].clear();
+  }
+  return 0;
+}
+
 int dbgStep(int proc, int count) {
   if (count < 1) count = 1;
   bool wasPaused = paused;
@@ -652,7 +661,7 @@ int dbgStepOver(int proc) {
   int count = 0;
   stepInstructionInternal(proc, true);
   count++;
-  while (!paused && cpu->instruct_adr != next && count < 4096) {
+  while (!paused && cpu->instruct_adr != next && count < 500000) {
     if (proc == 0) armcpu_exec<0>();
     else armcpu_exec<1>();
     count++;

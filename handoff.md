@@ -91,3 +91,4 @@
 - Call Stack table age shows the top row as `newest`; rows below show `↑+Nd`.
 - Call stack frames are now emitted newest-first for UI/API/MCP. Return-like PC writes pop the top frame when the branch target matches the recorded LR, including ARM `BX LR` / `LDM ... {PC}` and Thumb `BX` / `POP {..., PC}`.
 - Call stack tracking is split into dynamic stack lanes when the ARM9 SP jumps beyond `0x2000`; UI/API expose lane tabs/`stacks`. Empty lanes are removed after their last frame returns. `callStack` / `stackTrace` default to `limit: 128` and cap at 1024 frames to avoid huge MCP responses.
+- Execute breakpoints are not hardcoded for DQ9/memcpy addresses. If a removed breakpoint appears to survive, suspect native `execBreakpoints[]` drift from the browser list; `dbgClearAllBreakpoints()` exists so JS can resync browser-side breakpoints before `step` / `stepOver`.

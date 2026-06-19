@@ -408,7 +408,7 @@ async function initWasm() {
         ["dbgWrite32", "number", ["number", "number", "number"]], ["dbgDumpMemory", "number", ["number", "number", "number"]],
         ["dbgSetExecBreakpoint", "number", ["number", "number", "number"]], ["dbgSetReadBreakpoint", "number", ["number", "number", "number"]],
         ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgSetSpecialBreakpoint", "number", ["number", "number"]],
-        ["dbgClearBreakStatus", "number", []], ["dbgStep", "number", ["number", "number"]],
+        ["dbgClearBreakStatus", "number", []], ["dbgClearAllBreakpoints", "number", []], ["dbgStep", "number", ["number", "number"]],
         ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
         ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["dbgCallStackJsonLimit", "string", ["number"]], ["emuSetOpt", "number", ["number", "number"]]
     ].forEach(([name, ret, args]) => wrap(name, ret, args));
@@ -978,11 +978,22 @@ async function getCurrentInstructionInfo(cpu = state.selectedCpu) {
     return { line, address: Number.isFinite(address) ? (address >>> 0) : null, ...classifyInstruction(line) };
 }
 
+function syncBreakpointsToNative() {
+    if (!state.fns.dbgClearAllBreakpoints) return;
+    state.fns.dbgClearAllBreakpoints();
+    for (const bp of state.breakpoints) {
+        if (!bp.enabled) continue;
+        const fn = bp.type === "read" ? "dbgSetReadBreakpoint" : bp.type === "write" ? "dbgSetWriteBreakpoint" : "dbgSetExecBreakpoint";
+        state.fns[fn](cpuIndex(bp.cpu), bp.address >>> 0, 1);
+    }
+}
+
 async function runDebuggerInstruction(kind, params = {}) {
     ensureRomLoaded("debugger step requires a loaded ROM");
     const cpu = String(params.cpu ?? state.selectedCpu);
     let result = { kind, count: 0 };
     state.breakRefreshKey = "";
+    syncBreakpointsToNative();
     if (kind === "step") {
         result.count = state.fns.dbgStep(cpuIndex(cpu), Number(params.count ?? 1));
     } else if (kind === "stepOver") {
