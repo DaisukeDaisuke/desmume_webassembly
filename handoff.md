@@ -52,3 +52,7 @@
 - 2026-06-18: ローカル `http://localhost:8766/` の Chrome MCP 検証で、未ROM `DesmumeMCP.call("resume", {})` は即 `{ ok:false, romLoaded:false }` を返すことを確認。`waitMs` も動作。
 - 2026-06-18: 同検証で、`saveState` 後の `loadState` / browser state slot load は `table index is out of bounds` または `memory access out of bounds` を起こし、`status().native.lastStateLoad` は chunk `61`, phase `10` 付近で止まった。`mmu_savestate` / `BackupDevice::load_state()` 周辺の再調査が必要。
 - 2026-06-18: 同検証で、`Save In` は UI log に `function signature mismatch` を残し、その後 `status().romLoaded` が `false` になった。ROM 再ロード経路か upload 後ハンドラのどこかで壊れている。
+- 2026-06-18: `public/index.html` は `desmume.js` を初期表示で読まず、ROM 選択後に `ensureWasmReady()` で遅延ロードする。`loadRomFile` は file picker 完了後にスクリプト/WASM初期化を await してから ROM を処理する。
+- 2026-06-18: ツール欄の `input` / `textarea` / `select` にフォーカスがある間は、グローバルの DS キー入力を横取りしない。フォーカス侵入時は押しっぱなし防止のため仮想キーを全解除する。
+- 2026-06-18: ブレークヒット時はまず `pauseEmu(1)` と `paused=true` を確定し、その後 `near pc` 追尾 (`disasmAddress="pc"`) と debugger refresh を非同期で入れる。`lastBreakKey` が変わったときだけ refresh する。
+- 2026-06-18: `webassembly/wasm-port.cpp` の `dbgStep` / `dbgStepOver` は、現在PCにある exec breakpoint だけを最初の1命令ぶん一時解除して即復元する。これで同じPCの breakpoint を永遠に踏み直すのを防ぐ。`stepOver` は他の breakpoint に当たり得るので、ログでも plain `step` 推奨を出す。

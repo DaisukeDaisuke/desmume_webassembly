@@ -541,11 +541,13 @@
     </main>
   </div>
 
-  <script src="desmume.js?v=20260618-safe-reset-rom-reload"></script>
   <script>
     const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
+    const DESMUME_SCRIPT_URL = "desmume.js?v=20260618-safe-reset-rom-reload";
     const state = {
       module: null,
+      moduleInitPromise: null,
+      scriptLoadPromise: null,
       ready: false,
       running: false,
       paused: true,
@@ -585,7 +587,8 @@
       knownSlots: ["dq9-debug"],
       screenshotCooldownUntil: 0,
       followPc: true,
-      autoUpdate: { enabled: false, hz: 1, timer: 0 }
+      autoUpdate: { enabled: false, hz: 1, timer: 0 },
+      breakRefreshPending: false
     };
 
     const apiDescriptions = {
@@ -752,11 +755,44 @@
       state.fns[name] = state.module.cwrap(name, ret, args);
     }
 
+    async function loadEmulatorScript() {
+      if (typeof CreateDesmumeModule === "function") return;
+      if (!state.scriptLoadPromise) {
+        ui.readyText.textContent = "loading emulator";
+        state.scriptLoadPromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = DESMUME_SCRIPT_URL;
+          script.async = true;
+          script.onload = resolve;
+          script.onerror = () => reject(new Error("desmume.js load failed"));
+          document.head.append(script);
+        }).catch((error) => {
+          state.scriptLoadPromise = null;
+          throw error;
+        });
+      }
+      await state.scriptLoadPromise;
+    }
+
+    async function ensureWasmReady() {
+      if (state.ready) return state.module;
+      if (!state.moduleInitPromise) {
+        state.moduleInitPromise = (async () => {
+          await loadEmulatorScript();
+          await initWasm();
+          return state.module;
+        })().catch((error) => {
+          state.moduleInitPromise = null;
+          throw error;
+        });
+      }
+      return state.moduleInitPromise;
+    }
+
     async function initWasm() {
+      if (state.ready) return state.module;
       if (typeof CreateDesmumeModule !== "function") {
-        ui.readyText.textContent = "desmume.js がありません";
-        log("Run webassembly/build.sh first.");
-        return;
+        throw new Error("desmume.js is not loaded");
       }
       window.wasmReady = () => log("native module signaled ready");
       state.module = await CreateDesmumeModule({ noInitialRun: false });
@@ -1110,6 +1146,20 @@
       ui.readyText.textContent = state.ready ? (state.breakLabel || (state.paused ? "paused" : "running")) : ui.readyText.textContent;
     }
 
+    function isTypingTarget(element = document.activeElement) {
+      if (!element) return false;
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
+      if (element instanceof HTMLInputElement) {
+        const nonTextTypes = new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]);
+        return !nonTextTypes.has(String(element.type || "text").toLowerCase());
+      }
+      return !!element.isContentEditable;
+    }
+
+    function releaseAllKeys() {
+      Object.keys(state.buttons).forEach((button) => setKey(button, false));
+    }
+
     function breakpointKindName(kind) {
       return ["exec", "read", "write", "dataAbort", "prefetchAbort", "undefinedInstruction"][Number(kind)] || "unknown";
     }
@@ -1127,6 +1177,7 @@
         if (state.lastBreakKey !== key) {
           state.lastBreakKey = key;
           log(`break ${breakpointKindName(bp.kind)} ${bp.cpu} at ${hex(bp.address)} pc ${hex(bp.pc)}`);
+          queueBreakpointRefresh(String(bp.cpu || state.selectedCpu));
         }
       }
       return status;
@@ -1273,6 +1324,20 @@
       return disasm;
     }
 
+    function queueBreakpointRefresh(cpu = state.selectedCpu) {
+      if (state.breakRefreshPending || !hasLoadedRom()) return;
+      state.breakRefreshPending = true;
+      Promise.resolve().then(async () => {
+        state.breakRefreshPending = false;
+        state.selectedCpu = cpu;
+        ui.cpuSelect.value = cpu;
+        setFollowPc(true);
+        state.highlightedDisasmAddress = null;
+        state.highlightedCallstackAddress = null;
+        await refreshDebuggerViews({ cpu, address: "pc", keepHighlight: true });
+      }).catch((error) => log(error.message || String(error)));
+    }
+
     function stopAutoUpdateLoop() {
       if (state.autoUpdate.timer) clearTimeout(state.autoUpdate.timer);
       state.autoUpdate.timer = 0;
@@ -1414,8 +1479,8 @@
         return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, autoUpdate: { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz }, native };
       },
       async loadRomFile() {
-        ensureReady();
         const { file, bytes } = ui.romFile.files && ui.romFile.files[0] ? await readFileFromInput(ui.romFile) : await openPicker(ui.romFile);
+        await ensureWasmReady();
         pauseForFileLoad();
         try {
           writeRomFile(file.name, bytes);
@@ -1427,7 +1492,7 @@
         }
       },
       async loadRomBytes(params = {}) {
-        ensureReady();
+        await ensureWasmReady();
         const bytes = bytesFromParams(params);
         pauseForFileLoad();
         try {
@@ -1964,7 +2029,7 @@
       },
       async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
       async step(params = {}) { ensureRomLoaded("CPU step requires a loaded ROM"); const count = state.fns.dbgStep(cpuIndex(params.cpu), Number(params.count ?? 1)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { count, pc: getPc(params.cpu), paused: state.paused }; },
-      async stepOver(params = {}) { ensureRomLoaded("step over requires a loaded ROM"); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
+      async stepOver(params = {}) { ensureRomLoaded("step over requires a loaded ROM"); log("step over can still collide with other breakpoints; plain step is safer."); const ret = state.fns.dbgStepOver(cpuIndex(params.cpu)); applyFreezes(); syncNativeBreakStatus(); updateStatus(); return { ret, pc: getPc(params.cpu), paused: state.paused }; },
       async continue() { return commands.resume(); },
       async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
       async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
@@ -2335,8 +2400,9 @@
     ui.pad.addEventListener("pointerdown", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, true); });
     ui.pad.addEventListener("pointerup", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, false); });
     ui.pad.addEventListener("pointerleave", () => Object.keys(state.buttons).forEach((button) => setKey(button, false)));
-    window.addEventListener("keydown", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], true); } });
-    window.addEventListener("keyup", (e) => { if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], false); } });
+    window.addEventListener("focusin", () => { if (isTypingTarget()) releaseAllKeys(); });
+    window.addEventListener("keydown", (e) => { if (isTypingTarget(e.target)) return; if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], true); } });
+    window.addEventListener("keyup", (e) => { if (isTypingTarget(e.target)) return; if (state.keymap[e.code]) { e.preventDefault(); setKey(state.keymap[e.code], false); } });
     ui.screenShell.addEventListener("pointerdown", (e) => { ui.screenShell.setPointerCapture(e.pointerId); updateTouch(e, true); });
     ui.screenShell.addEventListener("pointermove", (e) => { if (state.touch.active) updateTouch(e, true); });
     ui.screenShell.addEventListener("pointerup", () => { state.touch.active = false; });
@@ -2356,12 +2422,13 @@
       const storedSlots = JSON.parse(localStorage.getItem("desmume-known-slots") || "[]");
       if (Array.isArray(storedSlots) && storedSlots.length) state.knownSlots = [...new Set([...storedSlots.map((slot) => String(slot)), ...state.knownSlots])].slice(0, 24);
     } catch {}
+    ui.readyText.textContent = "ROM待ち";
     renderBreakpoints();
     renderFreezes();
     renderRecentFiles();
     renderStateSlotOptions(ui.stateSlot.value);
     renderHotkey();
-    initWasm().catch((error) => log(error.stack || error.message));
+    updateStatus();
   </script>
 </body>
 </html>

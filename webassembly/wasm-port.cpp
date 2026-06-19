@@ -87,6 +87,17 @@ static bool hasBreakpoint(const std::vector<u32> &list, u32 addr) {
   return std::find(list.begin(), list.end(), addr) != list.end();
 }
 
+static bool removeBreakpoint(std::vector<u32> &list, u32 addr) {
+  std::vector<u32>::iterator it = std::find(list.begin(), list.end(), addr);
+  if (it == list.end()) return false;
+  list.erase(it);
+  return true;
+}
+
+static void restoreBreakpoint(std::vector<u32> &list, u32 addr, bool removed) {
+  if (removed && !hasBreakpoint(list, addr)) list.push_back(addr);
+}
+
 static void recordBreak(int proc, int kind, u32 address, int size, u32 value) {
   armcpu_t *cpu = cpuFor(proc);
   lastBreak = {true, proc, kind, address, size, value, cpu->instruct_adr, cpu->CPSR.val};
@@ -445,6 +456,19 @@ static int setBreakpoint(std::vector<u32> &list, u32 addr, int enabled) {
   return 0;
 }
 
+static int execBreakpointIndex(int proc) { return proc == 0 ? 0 : 1; }
+
+static int stepInstructionInternal(int proc, bool bypassCurrentExecBreakpoint) {
+  armcpu_t *cpu = cpuFor(proc);
+  std::vector<u32> &execList = execBreakpoints[execBreakpointIndex(proc)];
+  const u32 startPc = cpu->instruct_adr;
+  const bool removed = bypassCurrentExecBreakpoint && removeBreakpoint(execList, startPc);
+  if (proc == 0) armcpu_exec<0>();
+  else armcpu_exec<1>();
+  restoreBreakpoint(execList, startPc, removed);
+  return paused ? 1 : 0;
+}
+
 int dbgSetExecBreakpoint(int proc, u32 addr, int enabled) {
   return setBreakpoint(execBreakpoints[proc == 0 ? 0 : 1], addr, enabled);
 }
@@ -469,27 +493,35 @@ int dbgClearBreakStatus() {
 int dbgStep(int proc, int count) {
   if (count < 1) count = 1;
   bool wasPaused = paused;
+  lastBreak.hit = false;
   paused = false;
+  int executed = 0;
   for (int i = 0; i < count; i++) {
-    if (proc == 0) armcpu_exec<0>();
-    else armcpu_exec<1>();
+    executed++;
+    stepInstructionInternal(proc, i == 0);
     if (paused) {
-      count = i + 1;
       break;
     }
   }
   paused = paused || wasPaused;
-  return count;
+  return executed;
 }
 
 int dbgStepOver(int proc) {
   armcpu_t *cpu = cpuFor(proc);
   const u32 next = cpu->instruct_adr + (cpu->CPSR.bits.T ? 2 : 4);
+  bool wasPaused = paused;
+  lastBreak.hit = false;
+  paused = false;
   int count = 0;
-  do {
-    dbgStep(proc, 1);
+  stepInstructionInternal(proc, true);
+  count++;
+  while (!paused && cpu->instruct_adr != next && count < 4096) {
+    if (proc == 0) armcpu_exec<0>();
+    else armcpu_exec<1>();
     count++;
-  } while (cpu->instruct_adr != next && count < 4096);
+  }
+  paused = paused || wasPaused;
   return count;
 }
 

@@ -58,8 +58,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `listBreakpoints`: Returns the browser-side breakpoint list used for UI markers. Each item has an `id` for deletion.
 - `removeBreakpoint`: Removes one breakpoint by `{ "id": number }`.
 - `clearBreakStatus`: Clears the last breakpoint hit shown by `status.native.lastBreak`.
-- `step`: Runs `{ "count": N }` CPU instructions through `armcpu_exec` for ARM9 or ARM7.
-- `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping.
+- `step`: Runs `{ "count": N }` CPU instructions through `armcpu_exec` for ARM9 or ARM7. When the current PC is itself an execution breakpoint, the native side temporarily removes that one breakpoint for the first instruction so step can escape the trap, then restores it immediately.
+- `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping. Like `step`, it temporarily removes only the current PC execution breakpoint for the first instruction, but other breakpoints can still interrupt the run, so plain `step` is safer when you are parked on a breakpoint.
 - `continue`: Resumes from a debugger stop.
 - `setAutoUpdate`: Enables or disables GUI auto refresh with `{ "enabled": boolean, "hz": number }`. This is intended for UI/script automation and is callable through WebMCP and script injection.
 - `setStackTraceMode`: Enables or disables registerenterfunc-equivalent call stack collection with `{ "enabled": boolean }`.
