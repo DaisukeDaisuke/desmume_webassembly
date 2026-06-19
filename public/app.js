@@ -41,6 +41,7 @@ const state = {
     highlightedDisasmAddress: null,
     highlightedCallstackAddress: null,
     highlightedCallstackCpsr: null,
+    selectedCallstackLaneId: null,
     knownSlots: ["dq9-debug"],
     screenshotCooldownUntil: 0,
     followPc: true,
@@ -105,8 +106,8 @@ const apiDescriptions = {
     continue: "デバッグ停止から再開します。",
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
-    stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。",
-    callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。各frameのcallerはLRから4を引いた呼び出し元命令アドレスで、returnAddressに元のLRを残します。ageLabelはnewestまたは最新フレームからの深さです。",
+    stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。limitで返すframe数を制限できます。",
+    callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。SP帯が大きく変わった経路は別laneとしてstacksに分かれます。limitの既定は128です。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -152,6 +153,7 @@ function cpsrModeInfo(cpsr) {
 
 function normalizeCallStackData(data) {
     const frames = data && Array.isArray(data.frames) ? data.frames : [];
+    const rawStacks = data && Array.isArray(data.stacks) ? data.stacks : [];
     const controlFlow = data && Array.isArray(data.controlFlow) ? data.controlFlow : [];
     const controlFlowKinds = {
         1: "bx",
@@ -161,29 +163,41 @@ function normalizeCallStackData(data) {
         5: "ldm-pc",
         6: "ldm-pc-spsr"
     };
+    const normalizeFrames = (items) => items.map((frame, index) => {
+        const cpsr = Number(frame.cpsr) >>> 0;
+        const mode = cpsrModeInfo(cpsr);
+        const hasReturnAddress = frame.returnAddress != null;
+        const returnAddress = Number(hasReturnAddress ? frame.returnAddress : frame.caller) >>> 0;
+        const caller = hasReturnAddress ? (Number(frame.caller) >>> 0) : (((returnAddress & ~1) - 4) >>> 0);
+        const depthFromNewest = index;
+        return {
+            ...frame,
+            caller,
+            returnAddress,
+            depthFromNewest,
+            ageLabel: depthFromNewest === 0 ? "newest" : `↑+${depthFromNewest}d`,
+            cpsr,
+            cpsrHex: hex(cpsr),
+            modeValue: cpsr & 0x1f,
+            modeKey: mode.key,
+            modeName: mode.label,
+            modeClass: mode.className
+        };
+    });
+    const stacks = rawStacks.length ? rawStacks.map((stack) => ({
+        ...stack,
+        id: Number(stack.id),
+        depth: Number(stack.depth) || 0,
+        sp: Number(stack.sp) >>> 0,
+        spHex: hex(Number(stack.sp) >>> 0),
+        frames: normalizeFrames(Array.isArray(stack.frames) ? stack.frames : [])
+    })) : (frames.length ? [{ id: Number(data?.activeStackId ?? 1), active: true, depth: Number(data?.depth ?? frames.length) || 0, sp: 0, spHex: hex(0), frames: normalizeFrames(frames) }] : []);
+    const activeStackId = Number(data?.activeStackId ?? stacks.find((stack) => stack.active)?.id ?? stacks[0]?.id ?? 1);
     return {
         ...(data || {}),
-        frames: frames.map((frame, index) => {
-            const cpsr = Number(frame.cpsr) >>> 0;
-            const mode = cpsrModeInfo(cpsr);
-            const hasReturnAddress = frame.returnAddress != null;
-            const returnAddress = Number(hasReturnAddress ? frame.returnAddress : frame.caller) >>> 0;
-            const caller = hasReturnAddress ? (Number(frame.caller) >>> 0) : (((returnAddress & ~1) - 4) >>> 0);
-            const depthFromNewest = index;
-            return {
-                ...frame,
-                caller,
-                returnAddress,
-                depthFromNewest,
-                ageLabel: depthFromNewest === 0 ? "newest" : `↑+${depthFromNewest}d`,
-                cpsr,
-                cpsrHex: hex(cpsr),
-                modeValue: cpsr & 0x1f,
-                modeKey: mode.key,
-                modeName: mode.label,
-                modeClass: mode.className
-            };
-        }),
+        activeStackId,
+        stacks,
+        frames: normalizeFrames(frames),
         controlFlow: controlFlow.map((event) => {
             const cpsr = Number(event.cpsr) >>> 0;
             const mode = cpsrModeInfo(cpsr);
@@ -191,6 +205,17 @@ function normalizeCallStackData(data) {
             return { ...event, cpsr, cpsrHex: hex(cpsr), modeValue: cpsr & 0x1f, modeKey: mode.key, modeName: mode.label, modeClass: mode.className, kindName: controlFlowKinds[kind] || `kind-${kind}` };
         })
     };
+}
+
+function callStackLimit(params = {}) {
+    const raw = Number(params.limit ?? 128);
+    return Math.max(1, Math.min(1024, Number.isFinite(raw) ? Math.trunc(raw) : 128));
+}
+
+function readCallStackData(params = {}) {
+    const limit = callStackLimit(params);
+    const json = state.fns.dbgCallStackJsonLimit ? state.fns.dbgCallStackJsonLimit(limit) : state.fns.dbgCallStackJson();
+    return normalizeCallStackData(JSON.parse(json));
 }
 
 async function copyText(text, label) {
@@ -385,7 +410,7 @@ async function initWasm() {
         ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgSetSpecialBreakpoint", "number", ["number", "number"]],
         ["dbgClearBreakStatus", "number", []], ["dbgStep", "number", ["number", "number"]],
         ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
-        ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["emuSetOpt", "number", ["number", "number"]]
+        ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["dbgCallStackJsonLimit", "string", ["number"]], ["emuSetOpt", "number", ["number", "number"]]
     ].forEach(([name, ret, args]) => wrap(name, ret, args));
     state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
     state.ready = true;
@@ -1001,9 +1026,15 @@ function renderDisassembly(text) {
     }).join("");
 }
 
-function renderCallStack(data) {
+function renderCallStack(data, options = {}) {
     data = normalizeCallStackData(data);
-    const frames = data && Array.isArray(data.frames) ? data.frames : [];
+    const stacks = data && Array.isArray(data.stacks) ? data.stacks : [];
+    const fallbackLaneId = Number(data?.activeStackId ?? stacks[0]?.id ?? 1);
+    const selectedExists = stacks.some((stack) => stack.id === state.selectedCallstackLaneId);
+    if (options.autoSelectActive || !selectedExists) state.selectedCallstackLaneId = fallbackLaneId;
+    const selectedStack = stacks.find((stack) => stack.id === state.selectedCallstackLaneId) || stacks[0] || null;
+    renderCallStackLanes(stacks, selectedStack ? selectedStack.id : null);
+    const frames = selectedStack ? selectedStack.frames : (data && Array.isArray(data.frames) ? data.frames : []);
     if (!frames.length) {
         ui.callstackBody.innerHTML = `<tr><td colspan="8">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
         return;
@@ -1018,6 +1049,23 @@ function renderCallStack(data) {
     }).join("");
 }
 
+function renderCallStackLanes(stacks, selectedId) {
+    if (!ui.callstackLaneTabs || !ui.callstackLaneTabTemplate) return;
+    const fragment = document.createDocumentFragment();
+    for (const stack of stacks) {
+        const button = ui.callstackLaneTabTemplate.content.firstElementChild.cloneNode(true);
+        button.dataset.laneId = String(stack.id);
+        button.dataset.active = String(stack.id === selectedId);
+        button.dataset.now = String(!!stack.active);
+        button.querySelector("[data-lane-label]").textContent = `SP ${stack.spHex}`;
+        button.querySelector("[data-lane-depth]").textContent = `${stack.depth}`;
+        button.querySelector("[data-lane-now]").hidden = !stack.active;
+        button.title = `lane ${stack.id}, depth ${stack.depth}`;
+        fragment.append(button);
+    }
+    ui.callstackLaneTabs.replaceChildren(fragment);
+}
+
 async function refreshDebuggerViews(disasmParams = {}) {
     if (!disasmParams.keepHighlight) {
         state.highlightedDisasmAddress = null;
@@ -1025,7 +1073,7 @@ async function refreshDebuggerViews(disasmParams = {}) {
         state.highlightedCallstackCpsr = null;
     }
     renderRegisters();
-    renderCallStack(JSON.parse(state.fns.dbgCallStackJson()));
+    renderCallStack(readCallStackData(), { autoSelectActive: true });
     const disasm = await commands.disassemble(disasmRefreshParams(disasmParams));
     renderDisassembly(disasm.text);
     if (ui.memoryAuto.value === "1") renderMemoryDump(await commands.dumpMemory({ cpu: disasmParams.cpu }));
@@ -1093,7 +1141,7 @@ async function runTraceStepper(label, params = {}, shouldStop) {
         });
         steps++;
         const native = syncNativeBreakStatus();
-        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
+        const callStack = readCallStackData();
         const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
         if (native && native.lastBreak && native.lastBreak.hit) {
             await refreshDebuggerViews({ cpu });
@@ -1763,13 +1811,13 @@ const commands = {
         return runDebuggerInstruction("stepOver", params);
     },
     async continue() { return commands.resume(); },
-    async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; renderCallStack(JSON.parse(state.fns.dbgCallStackJson())); return { enabled: !!params.enabled }; },
+    async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; if (!params.enabled) state.selectedCallstackLaneId = null; renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled }); return { enabled: !!params.enabled }; },
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson())); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-    async callStack() { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson())); renderCallStack(callStack); return callStack; },
+    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+    async callStack(params = {}) { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return callStack; },
     async copyCallStackMarkdown() {
         ensureRomLoaded("call stack copy requires a loaded ROM");
-        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
+        const callStack = readCallStackData({ limit: 512 });
         const rows = callStack.frames.map((frame) => `| ${frame.ageLabel} | ${hex(frame.caller)} | ${hex(frame.returnAddress)} | ${hex(frame.callee)} | ${hex(frame.sp)} | ${frame.cpsrHex} | ${frame.modeName} | ${frame.thumb ? "thumb" : "arm"} | ${frame.id} |`);
         const text = ["| age | caller | return | callee | sp | cpsr | mode | isa | id |", "|---|---|---|---|---|---|---|---|---:|", ...rows].join("\n");
         renderCallStack(callStack);
@@ -1777,7 +1825,7 @@ const commands = {
     },
     async copyCallStackCsv() {
         ensureRomLoaded("call stack copy requires a loaded ROM");
-        const callStack = normalizeCallStackData(JSON.parse(state.fns.dbgCallStackJson()));
+        const callStack = readCallStackData({ limit: 512 });
         const escape = (value) => `"${String(value).replace(/"/g, '""')}"`;
         const rows = callStack.frames.map((frame) => [frame.ageLabel, hex(frame.caller), hex(frame.returnAddress), hex(frame.callee), hex(frame.sp), frame.cpsrHex, frame.modeName, frame.thumb ? "thumb" : "arm", frame.id].map(escape).join(","));
         const text = ["age,caller,return,callee,sp,cpsr,mode,isa,id", ...rows].join("\n");
@@ -2037,6 +2085,12 @@ ui.stackReturnDebugBtn.addEventListener("click", () => runCommand("returnToPop",
 ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
 ui.stackCopyMdBtn.addEventListener("click", () => runCommand("copyCallStackMarkdown").catch((e) => log(e.message)));
 ui.stackCopyCsvBtn.addEventListener("click", () => runCommand("copyCallStackCsv").catch((e) => log(e.message)));
+ui.callstackLaneTabs.addEventListener("click", (e) => {
+    const button = e.target.closest("[data-lane-id]");
+    if (!button) return;
+    state.selectedCallstackLaneId = Number(button.dataset.laneId);
+    renderCallStack(readCallStackData());
+});
 ui.callstackBody.addEventListener("click", (e) => {
     const button = e.target.closest("button[data-jump-address]");
     if (!button) return;
@@ -2045,7 +2099,7 @@ ui.callstackBody.addEventListener("click", (e) => {
     state.highlightedDisasmAddress = parseAddress(button.dataset.jumpAddress, 0, state.selectedCpu);
     state.highlightedCallstackAddress = state.highlightedDisasmAddress;
     state.highlightedCallstackCpsr = parseNumber(button.dataset.jumpCpsr, null);
-    runCommand("disassemble", disasmRefreshParams({ address: button.dataset.jumpAddress, keepHighlight: true })).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(JSON.parse(state.fns.dbgCallStackJson()))).catch((error) => log(error.message));
+    runCommand("disassemble", disasmRefreshParams({ address: button.dataset.jumpAddress, keepHighlight: true })).then((r) => renderDisassembly(r.text)).then(() => renderCallStack(readCallStackData())).catch((error) => log(error.message));
 });
 ui.disasmAddress.addEventListener("change", () => {
     const followsPc = String(ui.disasmAddress.value).trim().toLowerCase() === "pc";

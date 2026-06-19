@@ -12,7 +12,7 @@
       --panel: #111417;
       --panel-2: #15191d;
       --panel-3: #1a2025;
-      --trace: #7cff9b;
+      --trace: #5aa87a;
       --amber: #f0b35a;
       --amber-soft: rgba(240, 179, 90, 0.18);
       --orange-mark: rgba(246, 156, 76, 0.22);
@@ -243,6 +243,11 @@
     .callstack-row.highlight.mode-svc { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(180, 124, 255, 0.12)); }
     .callstack-row.highlight.mode-abt,
     .callstack-row.highlight.mode-und { background: linear-gradient(90deg, rgba(246, 156, 76, 0.12), rgba(255, 107, 107, 0.14)); }
+    .callstack-lanes { min-height: 31px; display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .callstack-lane-tab { min-width: 104px; height: 31px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .callstack-lane-tab[data-active="true"] { color: #07140d; background: var(--trace); border-color: var(--trace); }
+    .callstack-lane-tab small { color: inherit; opacity: 0.72; }
+    .callstack-lane-tab strong { margin-right: 5px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .toolbar-block { display: grid; gap: 8px; }
     .toolbar-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .toolbar-strip.break-actions { align-items: stretch; }
@@ -448,6 +453,7 @@
             <button id="stack-copy-md-btn" type="button">Copy Markdown</button>
             <button id="stack-copy-csv-btn" type="button">Copy CSV</button>
           </div>
+          <div id="callstack-lane-tabs" class="callstack-lanes" aria-label="Call stack lanes"></div>
           <div class="table-wrap" aria-live="polite">
             <table class="callstack-table">
               <thead>
@@ -458,6 +464,9 @@
               </tbody>
             </table>
           </div>
+          <template id="callstack-lane-tab-template">
+            <button class="callstack-lane-tab" type="button"><strong data-lane-now hidden>Now</strong><span data-lane-label></span> <small data-lane-depth></small></button>
+          </template>
         </div>
         <div class="section">
           <h2>Memory Search</h2>
