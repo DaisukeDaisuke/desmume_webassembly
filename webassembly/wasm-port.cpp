@@ -50,8 +50,6 @@ static std::vector<u32> execBreakpoints[2];
 static std::vector<u32> readBreakpoints[2];
 static std::vector<u32> writeBreakpoints[2];
 static std::string textScratch;
-extern int wasmLastStateChunk;
-extern int wasmLastStatePhase;
 
 struct BreakStatus {
   bool hit;
@@ -368,10 +366,6 @@ int loadStateFromFile() {
   EMUFILE_MEMORY file(&bytes);
   return savestate_load(file) ? 0 : -1;
 }
-
-int dbgGetLastStateChunk() { return wasmLastStateChunk; }
-
-int dbgGetLastStatePhase() { return wasmLastStatePhase; }
 
 int zlibCompress(u8 *srcBuffer, size_t srcLen, u8 *dstBuffer, size_t dstLen,
                  int level) {

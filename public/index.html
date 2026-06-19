@@ -811,7 +811,7 @@
         ["loadROM", "number", ["number"]], ["reset", "number", []], ["isRomLoaded", "number", []], ["runFrame", "number", ["number", "number", "number", "number", "number"]],
         ["runFrames", "number", ["number", "number", "number"]], ["fillAudioBuffer", "number", ["number"]], ["getSymbol", "number", ["number"]], ["savGetSize", "number", []],
         ["savGetPointer", "number", ["number"]], ["savImportFromFile", "number", ["number"]], ["savExportToFile", "number", []], ["savUpdateChangeFlag", "number", []], ["stateGetSize", "number", []], ["stateGetPointer", "number", ["number"]],
-        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["captureFrameBuffer", "number", []], ["dbgGetLastStateChunk", "number", []], ["dbgGetLastStatePhase", "number", []], ["pauseEmu", "number", ["number"]],
+        ["saveStateToBuffer", "number", []], ["loadStateFromBuffer", "number", ["number"]], ["loadStateFromFile", "number", []], ["captureFrameBuffer", "number", []], ["pauseEmu", "number", ["number"]],
         ["isPaused", "number", []], ["debuggerSetEnabled", "number", ["number"]], ["traceSetEnabled", "number", ["number"]],
         ["traceSetPrivilegeCheck", "number", ["number"]], ["traceGetDepth", "number", []],
         ["dbgGetReg", "number", ["number", "number"]], ["dbgSetReg", "number", ["number", "number", "number"]],
@@ -1619,7 +1619,6 @@
         if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
         const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
         if (native) syncNativeBreakStatus(native);
-        if (native && state.fns.dbgGetLastStateChunk) native.lastStateLoad = { chunk: state.fns.dbgGetLastStateChunk(), phase: state.fns.dbgGetLastStatePhase() };
         return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, autoUpdate: { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz }, native };
       },
       async loadRomFile() {
