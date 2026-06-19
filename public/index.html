@@ -185,19 +185,19 @@
     .disasm-line.current { color: #ecfff0; background: rgba(124, 255, 155, 0.12); border-left-color: var(--trace); }
     .disasm-line.highlight-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
     .disasm-line.entry-line { background: var(--yellow-mark); border-left-color: var(--yellow-edge); }
-    .disasm-line.call-line { color: #e8ffef; background: rgba(92, 200, 120, 0.14); border-left-color: #5cc878; }
+    .disasm-line.return-line { color: #fff2d6; background: var(--orange-mark); border-left-color: #f69c4c; }
     .disasm-line.branch-line { color: #efe4ff; background: var(--branch-mark); border-left-color: var(--branch-edge); }
     .disasm-line.breakpoint-line { color: var(--fault); border-left-color: var(--fault); }
     .disasm-line.breakpoint-line.highlight-line { color: #ffd6c9; background: rgba(255, 107, 107, 0.18); }
     .disasm-line.current.entry-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(233, 196, 106, 0.24)); }
-    .disasm-line.current.call-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(92, 200, 120, 0.28)); }
+    .disasm-line.current.return-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(246, 156, 76, 0.26)); }
     .disasm-line.current.branch-line { background: linear-gradient(90deg, rgba(124, 255, 155, 0.14), rgba(173, 127, 255, 0.18)); }
     .disasm-line.highlight-line.entry-line,
-    .disasm-line.highlight-line.call-line,
+    .disasm-line.highlight-line.return-line,
     .disasm-line.highlight-line.branch-line,
     .disasm-line.highlight-line.current,
     .disasm-line.highlight-line.current.entry-line,
-    .disasm-line.highlight-line.current.call-line,
+    .disasm-line.highlight-line.current.return-line,
     .disasm-line.highlight-line.current.branch-line {
       color: #fff2d6;
       background: var(--orange-mark);
@@ -595,7 +595,8 @@
       followPc: true,
       autoUpdate: { enabled: false, hz: 1, timer: 0 },
       breakRefreshPending: false,
-      breakRefreshTimer: 0
+      breakRefreshTimer: 0,
+      breakRefreshKey: ""
     };
 
     const apiDescriptions = {
@@ -944,6 +945,7 @@
         state.frame = 0;
         state.previousRegisters = null;
         state.lastBreakKey = "";
+        state.breakRefreshKey = "";
         state.breakLabel = "";
         state.fns.dbgClearBreakStatus();
         state.running = options.resume === true;
@@ -1132,6 +1134,7 @@
       state.frameBudget = 0;
       if (runState.running && !runState.paused) {
         state.breakLabel = "";
+        state.breakRefreshKey = "";
         state.paused = false;
         state.running = true;
         state.fns.dbgClearBreakStatus();
@@ -1211,7 +1214,10 @@
         state.fns.pauseEmu(1);
         state.breakLabel = `break ${breakpointKindName(bp.kind)}`;
         const key = `${bp.cpu}:${bp.kind}:${bp.address}:${bp.pc}:${bp.value}`;
-        queueBreakpointRefresh(String(bp.cpu || state.selectedCpu));
+        if (state.breakRefreshKey !== key) {
+          state.breakRefreshKey = key;
+          queueBreakpointRefresh(String(bp.cpu || state.selectedCpu));
+        }
         if (state.lastBreakKey !== key) {
           state.lastBreakKey = key;
           log(`break ${breakpointKindName(bp.kind)} ${bp.cpu} at ${hex(bp.address)} pc ${hex(bp.pc)}`);
@@ -1355,6 +1361,7 @@
       ensureRomLoaded("debugger step requires a loaded ROM");
       const cpu = String(params.cpu ?? state.selectedCpu);
       let result = { kind, count: 0 };
+      state.breakRefreshKey = "";
       if (kind === "step") {
         result.count = state.fns.dbgStep(cpuIndex(cpu), Number(params.count ?? 1));
       } else if (kind === "stepOver") {
@@ -1389,11 +1396,12 @@
         const opcode = instructionOpcode(line);
         const body = instructionBody(line);
         const info = classifyInstruction(line);
-        const isCallLike = /\bblx?[a-z]{0,2}\b/i.test(body);
-        const isReturnLike = /\bbx(?:[a-z]{0,2})\b/i.test(body) || /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode) || /\bpush\b/i.test(opcode);
-        const isBranchLike = (/\bb(?:[a-z]{0,2})\b/i.test(body) && !/\bblx?[a-z]{0,2}\b/i.test(body) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
+        const isCallLike = /\bbl(?!x)[a-z]{0,2}\b/i.test(body) || /\bpush\b/i.test(opcode);
+        const isReturnLike = /\bbx(?:[a-z]{0,2})\b/i.test(body);
+        const isMemoryReturnLike = /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode);
+        const isBranchLike = (/\bb(?:[a-z]{0,2})\b/i.test(body) && !/\bbl(?!x)[a-z]{0,2}\b/i.test(body) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
           || ((info.mnemonic.startsWith("sub") || info.mnemonic.startsWith("add")) && /\bpc\b/i.test(info.body));
-        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "call-line" : "", isReturnLike ? "entry-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
+        const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "entry-line" : "", isReturnLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;
       }).join("");
     }
@@ -1846,6 +1854,7 @@
           return { ok: false, romLoaded: false, reason: "ROM is not loaded" };
         }
         state.breakLabel = "";
+        state.breakRefreshKey = "";
         state.paused = false;
         state.running = true;
         state.fns.dbgClearBreakStatus();
@@ -2143,7 +2152,7 @@
         refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message));
         return { ok: true, removed: bp, breakpoints: state.breakpoints };
       },
-      async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
+      async clearBreakStatus() { ensureReady(); state.lastBreakKey = ""; state.breakRefreshKey = ""; state.breakLabel = ""; updateStatus(); return { ok: state.fns.dbgClearBreakStatus() === 0 }; },
       async step(params = {}) { return runDebuggerInstruction("step", params); },
       async smartStep(params = {}) { return runDebuggerInstruction("smartStep", params); },
       async stepOver(params = {}) {
