@@ -1331,12 +1331,26 @@
       return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{4})\s*/i, "").trim();
     }
 
+    function armConditionSuffix(text) {
+      return /^(eq|ne|cs|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)$/i.test(String(text || ""));
+    }
+
+    function isBranchLinkMnemonic(mnemonic) {
+      const op = String(mnemonic || "").toLowerCase();
+      return op === "bl" || (op.startsWith("bl") && armConditionSuffix(op.slice(2)));
+    }
+
+    function isBranchLinkExchangeMnemonic(mnemonic) {
+      const op = String(mnemonic || "").toLowerCase();
+      return op === "blx" || (op.startsWith("blx") && armConditionSuffix(op.slice(3)));
+    }
+
     function classifyInstruction(line) {
       const body = instructionBody(line);
       const match = body.match(/^([a-z][a-z0-9]*)(?:\s+(.*))?$/i);
       const mnemonic = String(match?.[1] || "").toLowerCase();
       const operands = String(match?.[2] || "").toLowerCase();
-      const isCall = mnemonic.startsWith("bl");
+      const isCall = isBranchLinkMnemonic(mnemonic) || isBranchLinkExchangeMnemonic(mnemonic);
       const isBx = mnemonic.startsWith("bx");
       const isPurpleBranch = mnemonic.startsWith("b") && !isCall && !isBx;
       const writesPcViaAlu = (mnemonic.startsWith("sub") || mnemonic.startsWith("add")) && /\bpc\b/.test(operands);
@@ -1396,10 +1410,10 @@
         const opcode = instructionOpcode(line);
         const body = instructionBody(line);
         const info = classifyInstruction(line);
-        const isCallLike = /\bbl(?!x)[a-z]{0,2}\b/i.test(body) || /\bpush\b/i.test(opcode);
+        const isCallLike = isBranchLinkMnemonic(info.mnemonic) || /\bpush\b/i.test(opcode);
         const isReturnLike = /\bbx(?:[a-z]{0,2})\b/i.test(body);
         const isMemoryReturnLike = /\b(?:ldmia|stmia)\b.*\b(?:pc|lr)\b/i.test(opcode);
-        const isBranchLike = (/\bb(?:[a-z]{0,2})\b/i.test(body) && !/\bbl(?!x)[a-z]{0,2}\b/i.test(body) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
+        const isBranchLike = (info.mnemonic.startsWith("b") && !isBranchLinkMnemonic(info.mnemonic) && !/\bbx(?:[a-z]{0,2})\b/i.test(body))
           || ((info.mnemonic.startsWith("sub") || info.mnemonic.startsWith("add")) && /\bpc\b/i.test(info.body));
         const cls = ["disasm-line", current ? "current" : "", highlighted ? "highlight-line" : "", isCallLike ? "entry-line" : "", isReturnLike ? "entry-line" : "", isMemoryReturnLike ? "return-line" : "", isBranchLike ? "branch-line" : "", hasBp ? "breakpoint-line" : ""].filter(Boolean).join(" ");
         return `<span class="${cls}">${line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</span>`;

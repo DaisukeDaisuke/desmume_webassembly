@@ -52,7 +52,8 @@ In a UI description, you need to explain what it is, what happens as a result, a
 **Codespace** は究極のサンドボックスである。`ssh -c <name> "<command>"` 経由で `sudo apt install`・ファイル削除・クリーンアップ等、何でも自由に行って構わない。
 
 **セッション管理ルール:**
-- **セッション開始時**: `gh codespace ssh -c <name> "echo hi"` を実行すれば停止中でも自動起動される。毎回タスク開始時に実行すること
+- **セッション開始時**: `gh codespace ssh -c <name> "echo hi"` を実行すれば停止中でも自動起動される。必要なときになったら起動すること。
+- chrome mcpで、テストするなら、codespaceでbuildして、public/desmume.jsをローカルに転送してからテストすること。
 - **セッション終了時（タスク完了後）**: Codespaceはセッションごとにクリーンアップされるため、**必ず `gh codespace stop -c <name>` で停止**すること。停止しないと無料枠（月120時間/コア）を消費し続ける
 
 **`sudo apt` 使用ルール:**
