@@ -83,9 +83,14 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
 
+### Chrome MCPでのファイルアップロード
 
-ステップ	実行内容	使ったツール / コード
-️1 画面へ移動	https://daisukedaisuke.github.io/desmume_webassembly/ を開く	navigate_page（URL）
-2 ROM ボタンを探す	「Files」→「ROM」のボタン（UID 1_42）が表示されていることを確認	—
-3 ファイルをアップロード	ユーザー側のローカルファイル D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds を選択して読み込み	upload_file（uid: "1_42", filePath: "D:\\software\\desmume-win-x64_2025_8_11\\nds\\dq9_new2.nds"）
-4 ROM がロードされたことを確認	コンソールに ROM game code: YDQJ 等のメッセージが表示される	list_console_messages（上位 10 件）
+- AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。
+- file inputのIDは毎回変わる可能性がある。固定IDを仮定しない。
+- アップロード用ツールはデフォルトで見えていないことがある。必要なら `tool_search` で `take_snapshot` と `upload_file` を探して使う。
+- 手順:
+    1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
+    2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
+    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。
+    4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
+- DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
