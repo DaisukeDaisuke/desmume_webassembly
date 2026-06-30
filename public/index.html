@@ -256,15 +256,16 @@
     .topbar-actions { justify-content: flex-end; }
     .callstack-table { table-layout: fixed; }
     .callstack-wrap { overflow-x: auto; }
-    .callstack-wrap .callstack-table { min-width: 720px; }
+    .callstack-wrap .callstack-table { min-width: 1060px; }
     .callstack-table th:nth-child(1), .callstack-table td:nth-child(1) { width: 58px; }
     .callstack-table th:nth-child(2), .callstack-table td:nth-child(2),
-    .callstack-table th:nth-child(3), .callstack-table td:nth-child(3),
     .callstack-table th:nth-child(4), .callstack-table td:nth-child(4) { width: 98px; }
+    .callstack-table th:nth-child(3), .callstack-table td:nth-child(3) { width: 128px; }
     .callstack-table th:nth-child(5), .callstack-table td:nth-child(5) { width: 92px; }
-    .callstack-table th:nth-child(6), .callstack-table td:nth-child(6) { width: 64px; }
-    .callstack-table th:nth-child(7), .callstack-table td:nth-child(7),
-    .callstack-table th:nth-child(8), .callstack-table td:nth-child(8) { width: 86px; }
+    .callstack-table th:nth-child(6), .callstack-table td:nth-child(6) { width: 128px; }
+    .callstack-table th:nth-child(7), .callstack-table td:nth-child(7) { width: 64px; }
+    .callstack-table th:nth-child(8), .callstack-table td:nth-child(8),
+    .callstack-table th:nth-child(9), .callstack-table td:nth-child(9) { width: 86px; }
     .callstack-table td { overflow: hidden; text-overflow: ellipsis; }
     .callstack-table td button { width: 78px; }
     .breakpoint-line { color: var(--fault); }
@@ -459,10 +460,10 @@
           <div class="table-wrap callstack-wrap" aria-live="polite">
             <table class="callstack-table">
               <thead>
-                <tr><th>age</th><th>caller</th><th>callee</th><th>sp</th><th>cpsr</th><th>mode</th><th>caller</th><th>callee</th></tr>
+                <tr><th>age</th><th>caller</th><th>callee</th><th>sp</th><th>cpsr</th><th>mode</th><th>cpu mode</th><th>caller</th><th>callee</th></tr>
               </thead>
               <tbody id="callstack-body">
-                <tr><td colspan="8">stack trace disabled</td></tr>
+                <tr><td colspan="9">stack trace disabled</td></tr>
               </tbody>
             </table>
           </div>

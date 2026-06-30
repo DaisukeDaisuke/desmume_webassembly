@@ -1079,7 +1079,7 @@ function renderCallStack(data, options = {}) {
     renderCallStackLanes(stacks, selectedStack ? selectedStack.id : null);
     const frames = selectedStack ? selectedStack.frames : (data && Array.isArray(data.frames) ? data.frames : []);
     if (!frames.length) {
-        ui.callstackBody.innerHTML = `<tr><td colspan="8">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
+        ui.callstackBody.innerHTML = `<tr><td colspan="9">${data && data.enabled ? "no frames recorded" : "stack trace disabled"}</td></tr>`;
         return;
     }
     ui.callstackBody.innerHTML = frames.map((frame) => {
@@ -1088,9 +1088,10 @@ function renderCallStack(data, options = {}) {
         const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
         const cls = ["callstack-row", highlighted ? "highlight" : "", frame.modeClass].filter(Boolean).join(" ");
         const execMode = frame.synthetic ? `pc-write ${frame.kindName}` : `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
+        const cpuMode = frame.modeName;
         const calleeText = frame.synthetic ? `${callee} ${frame.kindName}` : `${callee} (${frame.id})`;
         const returnTitle = frame.synthetic ? `expected ${hex(frame.expected)} target ${hex(frame.target)}` : `return ${hex(frame.returnAddress)}`;
-        return `<tr class="${cls}"><td title="newest frame is the top row">${frame.ageLabel}</td><td title="${returnTitle}">${caller}</td><td>${calleeText}</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
+        return `<tr class="${cls}"><td title="newest frame is the top row">${frame.ageLabel}</td><td title="${returnTitle}">${caller}</td><td>${calleeText}</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td>${cpuMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
     }).join("");
 }
 

@@ -167,12 +167,16 @@ static int topRealFrameIndex(const CallStackLane &lane) {
   return -1;
 }
 
-static int findReturnCallStackLane(u32 target) {
+static int findReturnCallStackLane(u32 target, int *frameIndex) {
   for (size_t i = 0; i < callStackLanes.size(); i++) {
     const CallStackLane &lane = callStackLanes[i];
-    const int realIndex = topRealFrameIndex(lane);
-    if (realIndex >= 0 && ((lane.frames[(size_t)realIndex].caller & ~1U) == (target & ~1U))) {
-      return (int)i;
+    for (size_t j = lane.frames.size(); j > 0; j--) {
+      const size_t index = j - 1;
+      if (lane.frames[index].synthetic) continue;
+      if ((lane.frames[index].caller & ~1U) == (target & ~1U)) {
+        if (frameIndex) *frameIndex = (int)index;
+        return (int)i;
+      }
     }
   }
   return -1;
@@ -262,19 +266,48 @@ extern "C" void wasmEnterFunctionHook(int proc) {
   lane.lastSp = sp;
   lane.nowPc = cpu->instruct_adr;
   const u32 callee = cpu->instruct_adr;
+  const int realIndex = topRealFrameIndex(lane);
+  if (realIndex >= 0) {
+    CallStackEntry &entry = lane.frames[(size_t)realIndex];
+    if ((entry.caller & ~1U) == (cpu->R[14] & ~1U) && (entry.callee & ~1U) == (callee & ~1U)) {
+      entry.sp = sp;
+      entry.cpsr = cpu->CPSR.val;
+      entry.thumb = cpu->CPSR.bits.T != 0;
+      return;
+    }
+  }
   const u32 id = callCountMap[callee]++;
   lane.frames.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id, false, 0, 0, 0});
+  if (lane.frames.size() > 1024) lane.frames.erase(lane.frames.begin(), lane.frames.begin() + (lane.frames.size() - 1024));
+}
+
+extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
+  if (!traceEnabled || proc != 0) return;
+  armcpu_t *cpu = cpuFor(proc);
+  if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
+  const u32 sp = cpu->R[13];
+  CallStackLane &lane = callStackLanes[selectCallStackLaneForSp(sp)];
+  lane.lastSp = sp;
+  lane.nowPc = target;
+  const int realIndex = topRealFrameIndex(lane);
+  if (realIndex >= 0) {
+    const CallStackEntry &entry = lane.frames[(size_t)realIndex];
+    if ((entry.caller & ~1U) == (returnAddress & ~1U) && (entry.callee & ~1U) == (target & ~1U)) return;
+  }
+  const u32 id = callCountMap[target]++;
+  lane.frames.push_back({returnAddress, target, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id, false, 0, 0, 0});
   if (lane.frames.size() > 1024) lane.frames.erase(lane.frames.begin(), lane.frames.begin() + (lane.frames.size() - 1024));
 }
 
 extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
   if (!traceEnabled || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
-  int laneIndex = findReturnCallStackLane(target);
+  int returnFrameIndex = -1;
+  int laneIndex = findReturnCallStackLane(target, &returnFrameIndex);
   if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(cpu->R[13]);
   CallStackLane &lane = callStackLanes[(size_t)laneIndex];
   activeCallStackLane = (size_t)laneIndex;
-  const int realIndex = topRealFrameIndex(lane);
+  const int realIndex = returnFrameIndex >= 0 ? returnFrameIndex : topRealFrameIndex(lane);
   const u32 expected = realIndex < 0 ? 0 : lane.frames[(size_t)realIndex].caller;
   const bool mismatch = expected != 0 && ((target & ~1U) != (expected & ~1U));
   const bool alwaysRecord = kind >= 3 || reg != 14 || expected == 0;
