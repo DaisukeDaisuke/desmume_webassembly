@@ -76,6 +76,7 @@ struct CallStackEntry {
 struct CallStackLane {
   u32 id;
   u32 lastSp;
+  u32 nowPc;
   std::vector<CallStackEntry> frames;
 };
 
@@ -121,7 +122,7 @@ static u32 absDiffU32(u32 a, u32 b) {
 
 static size_t ensureCallStackLane() {
   if (callStackLanes.empty()) {
-    callStackLanes.push_back({nextCallStackLaneId++, 0, std::vector<CallStackEntry>()});
+    callStackLanes.push_back({nextCallStackLaneId++, 0, 0, std::vector<CallStackEntry>()});
     activeCallStackLane = 0;
   }
   if (activeCallStackLane >= callStackLanes.size()) activeCallStackLane = 0;
@@ -147,7 +148,7 @@ static size_t selectCallStackLaneForSp(u32 sp) {
     }
   }
   if (best == callStackLanes.size()) {
-    callStackLanes.push_back({nextCallStackLaneId++, sp, std::vector<CallStackEntry>()});
+    callStackLanes.push_back({nextCallStackLaneId++, sp, 0, std::vector<CallStackEntry>()});
     best = callStackLanes.size() - 1;
   }
   activeCallStackLane = best;
@@ -180,6 +181,32 @@ static size_t totalCallStackDepth() {
   size_t depth = 0;
   for (size_t i = 0; i < callStackLanes.size(); i++) depth += callStackLanes[i].frames.size();
   return depth;
+}
+
+static void compactCallStackLanes() {
+  for (size_t i = callStackLanes.size(); i > 0; i--) {
+    const size_t index = i - 1;
+    if (index != activeCallStackLane && callStackLanes[index].frames.empty()) removeCallStackLane(index);
+  }
+  while (callStackLanes.size() > 128) {
+    size_t drop = callStackLanes.size();
+    for (size_t i = 0; i < callStackLanes.size(); i++) {
+      if (i != activeCallStackLane && callStackLanes[i].frames.empty()) {
+        drop = i;
+        break;
+      }
+    }
+    if (drop == callStackLanes.size()) {
+      for (size_t i = 0; i < callStackLanes.size(); i++) {
+        if (i != activeCallStackLane) {
+          drop = i;
+          break;
+        }
+      }
+    }
+    if (drop == callStackLanes.size()) break;
+    removeCallStackLane(drop);
+  }
 }
 
 static int normalizeFrameLimit(int limit) {
@@ -220,6 +247,7 @@ extern "C" void wasmEnterFunctionHook(int proc) {
   CallStackLane &lane = callStackLanes[selectCallStackLaneForSp(sp)];
   while (!lane.frames.empty() && lane.frames.back().sp <= sp) lane.frames.pop_back();
   lane.lastSp = sp;
+  lane.nowPc = cpu->instruct_adr;
   const u32 callee = cpu->instruct_adr;
   const u32 id = callCountMap[callee]++;
   lane.frames.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id});
@@ -230,15 +258,18 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
   if (!traceEnabled || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   int laneIndex = findReturnCallStackLane(target);
-  if (laneIndex < 0) laneIndex = (int)ensureCallStackLane();
+  if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(cpu->R[13]);
   CallStackLane &lane = callStackLanes[(size_t)laneIndex];
   activeCallStackLane = (size_t)laneIndex;
   const u32 expected = lane.frames.empty() ? 0 : lane.frames.back().caller;
   const bool mismatch = expected != 0 && ((target & ~1U) != (expected & ~1U));
   const bool alwaysRecord = kind >= 3 || reg != 14 || expected == 0;
-  if (expected != 0 && !mismatch) lane.frames.pop_back();
+  const bool poppedFrame = expected != 0 && !mismatch;
+  if (poppedFrame) lane.frames.pop_back();
   lane.lastSp = cpu->R[13];
-  if (lane.frames.empty()) removeCallStackLane((size_t)laneIndex);
+  lane.nowPc = target;
+  if (poppedFrame && lane.frames.empty()) removeCallStackLane((size_t)laneIndex);
+  compactCallStackLanes();
   if (!alwaysRecord && !mismatch) return;
   traceControlEvents.push_back({cpu->instruct_adr, target, expected, cpu->R[13], cpu->CPSR.val, kind, reg, mismatch});
   if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
@@ -780,11 +811,12 @@ static void writeCallStackFramesJson(std::ostringstream &os, const std::vector<C
 
 const char *dbgCallStackJsonLimit(int limit) {
   limit = normalizeFrameLimit(limit);
+  compactCallStackLanes();
   if (callStackLanes.empty()) {
     std::ostringstream empty;
     empty << "{\"enabled\":" << (traceEnabled ? "true" : "false")
           << ",\"privilegeCheck\":" << (tracePrivilegeCheck ? "true" : "false")
-          << ",\"depth\":0,\"totalDepth\":0,\"activeStackId\":0,\"limit\":" << limit
+          << ",\"depth\":0,\"totalDepth\":0,\"activeStackId\":0,\"nowPc\":0,\"limit\":" << limit
           << ",\"frames\":[],\"stacks\":[],\"controlFlow\":[]}";
     textScratch = empty.str();
     return textScratch.c_str();
@@ -797,6 +829,7 @@ const char *dbgCallStackJsonLimit(int limit) {
      << ",\"depth\":" << activeLane.frames.size()
      << ",\"totalDepth\":" << totalCallStackDepth()
      << ",\"activeStackId\":" << activeLane.id
+     << ",\"nowPc\":" << activeLane.nowPc
      << ",\"limit\":" << limit
      << ",\"frames\":[";
   writeCallStackFramesJson(os, activeLane.frames, limit);
@@ -808,6 +841,7 @@ const char *dbgCallStackJsonLimit(int limit) {
        << ",\"active\":" << (i == active ? "true" : "false")
        << ",\"depth\":" << lane.frames.size()
        << ",\"sp\":" << lane.lastSp
+       << ",\"nowPc\":" << lane.nowPc
        << ",\"frames\":[";
     writeCallStackFramesJson(os, lane.frames, limit);
     os << "]}";

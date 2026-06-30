@@ -37,7 +37,7 @@ const state = {
     romName: "",
     romBytes: null,
     frameBudget: 0,
-    search: { snapshot: null, addresses: null, address: 0, length: 0, size: 1 },
+    search: { snapshot: null, ranges: null, addresses: null, address: 0, length: 0, size: 1, rangeKey: "" },
     highlightedDisasmAddress: null,
     highlightedCallstackAddress: null,
     highlightedCallstackCpsr: null,
@@ -92,7 +92,7 @@ const apiDescriptions = {
     takeScreenshot: "現在のキャンバスをPNGとして保存します。cooldownMs指定で連打間隔も制御できます。",
     setAutoUpdate: "GUIの自動更新を有効または無効にします。Hzで毎秒の更新回数を指定します。",
     injectMemoryFile: "指定アドレスから、選択したローカルファイルのバイト列でメモリを上書きします。",
-    searchMemory: "指定範囲のメモリを値または前回検索との差分条件で検索します。",
+    searchMemory: "addressにallを指定すると、ミラーを除く主要メモリ範囲を値または前回検索との差分条件で検索します。",
     resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
     writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
     setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
@@ -107,7 +107,7 @@ const apiDescriptions = {
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
     stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。limitで返すframe数を制限できます。",
-    callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。SP帯が大きく変わった経路は別laneとしてstacksに分かれます。limitの既定は128です。",
+    callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。SP帯やPC書き込み経路が切り替わった場合は別laneとしてstacksに分かれ、各laneにnowPcが付きます。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -161,7 +161,8 @@ function normalizeCallStackData(data) {
         3: "movs-pc",
         4: "subs-pc",
         5: "ldm-pc",
-        6: "ldm-pc-spsr"
+        6: "ldm-pc-spsr",
+        7: "blx-reg"
     };
     const normalizeFrames = (items) => items.map((frame, index) => {
         const cpsr = Number(frame.cpsr) >>> 0;
@@ -190,6 +191,8 @@ function normalizeCallStackData(data) {
         depth: Number(stack.depth) || 0,
         sp: Number(stack.sp) >>> 0,
         spHex: hex(Number(stack.sp) >>> 0),
+        nowPc: Number(stack.nowPc) >>> 0,
+        nowPcHex: hex(Number(stack.nowPc) >>> 0),
         frames: normalizeFrames(Array.isArray(stack.frames) ? stack.frames : [])
     })) : (frames.length ? [{ id: Number(data?.activeStackId ?? 1), active: true, depth: Number(data?.depth ?? frames.length) || 0, sp: 0, spHex: hex(0), frames: normalizeFrames(frames) }] : []);
     const activeStackId = Number(data?.activeStackId ?? stacks.find((stack) => stack.active)?.id ?? stacks[0]?.id ?? 1);
@@ -216,6 +219,33 @@ function readCallStackData(params = {}) {
     const limit = callStackLimit(params);
     const json = state.fns.dbgCallStackJsonLimit ? state.fns.dbgCallStackJsonLimit(limit) : state.fns.dbgCallStackJson();
     return normalizeCallStackData(JSON.parse(json));
+}
+
+function defaultMemorySearchRanges(cpuName) {
+    const common = [
+        { name: "main", address: 0x02000000, length: 0x00400000 },
+        { name: "shared-wram", address: 0x03000000, length: 0x00008000 },
+        { name: "palette", address: 0x05000000, length: 0x00000800 },
+        { name: "vram", address: 0x06000000, length: 0x000a4000 },
+        { name: "oam", address: 0x07000000, length: 0x00000800 }
+    ];
+    if (String(cpuName || state.selectedCpu).toLowerCase() === "arm7") {
+        return [...common, { name: "arm7-wram", address: 0x03800000, length: 0x00010000 }];
+    }
+    return common;
+}
+
+function memorySearchRanges(params = {}) {
+    const rawAddress = params.address ?? ui.searchAddress.value;
+    const full = params.all === true || params.full === true || String(rawAddress).trim().toLowerCase() === "all";
+    if (full) return defaultMemorySearchRanges(params.cpu);
+    const address = parseAddress(rawAddress, 0, params.cpu);
+    const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
+    return [{ name: "custom", address, length }];
+}
+
+function memorySearchRangeKey(ranges) {
+    return ranges.map((range) => `${range.name}:${range.address}:${range.length}`).join("|");
 }
 
 async function copyText(text, label) {
@@ -1068,10 +1098,10 @@ function renderCallStackLanes(stacks, selectedId) {
         button.dataset.laneId = String(stack.id);
         button.dataset.active = String(stack.id === selectedId);
         button.dataset.now = String(!!stack.active);
-        button.querySelector("[data-lane-label]").textContent = `SP ${stack.spHex}`;
+        button.querySelector("[data-lane-label]").textContent = `SP ${stack.spHex} PC ${stack.nowPcHex}`;
         button.querySelector("[data-lane-depth]").textContent = `${stack.depth}`;
         button.querySelector("[data-lane-now]").hidden = !stack.active;
-        button.title = `lane ${stack.id}, depth ${stack.depth}`;
+        button.title = `lane ${stack.id}, depth ${stack.depth}, now PC ${stack.nowPcHex}`;
         fragment.append(button);
     }
     ui.callstackLaneTabs.replaceChildren(fragment);
@@ -1713,44 +1743,59 @@ const commands = {
     },
     async searchMemory(params = {}) {
         ensureRomLoaded("memory search requires a loaded ROM");
-        const addr = parseAddress(params.address ?? ui.searchAddress.value, 0, params.cpu);
-        const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
+        const ranges = memorySearchRanges(params);
+        const rangeKey = memorySearchRangeKey(ranges);
         const size = Math.max(1, Math.min(4, Number(params.size ?? ui.searchSize.value)));
         const condition = String(params.condition ?? ui.searchCondition.value);
         const value = parseNumber(params.value ?? ui.searchValue.value);
         const limit = Math.max(1, Math.min(10000, Number(params.limit ?? ui.searchLimit.value)));
-        const refine = params.refine !== false && state.search.snapshot && state.search.address === addr && state.search.length === length && state.search.size === size;
-        const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
-        const current = state.module.HEAPU8.slice(ptr, ptr + length);
-        const previous = state.search.snapshot;
+        const refine = params.refine !== false && state.search.snapshot && state.search.rangeKey === rangeKey && state.search.size === size;
+        const snapshots = new Map();
+        const previousSnapshots = refine ? state.search.snapshot : null;
         const candidates = refine && state.search.addresses ? state.search.addresses : null;
         const matches = [];
-        const maxOffset = Math.max(0, length - size);
-        const testOffset = (offset) => {
+        const findRange = (address) => ranges.find((range) => address >= range.address && address + size <= range.address + range.length);
+        const scanRange = (range, offsets) => {
+            const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), range.address, range.length);
+            const current = state.module.HEAPU8.slice(ptr, ptr + range.length);
+            snapshots.set(range.name, current);
+            const previous = previousSnapshots && previousSnapshots.get ? previousSnapshots.get(range.name) : null;
+            const maxOffset = Math.max(0, range.length - size);
+            const testOffset = (offset) => {
+                if (offset < 0 || offset > maxOffset) return false;
             const nowValue = readSized(current, offset, size);
             const oldValue = previous && offset + size <= previous.length ? readSized(previous, offset, size) : 0;
             if (matchSearchCondition(condition, nowValue, oldValue, value, !!previous)) {
-                matches.push({ address: addr + offset, value: nowValue, previous: previous ? oldValue : null });
+                    matches.push({ address: range.address + offset, range: range.name, value: nowValue, previous: previous ? oldValue : null });
                 return matches.length >= limit;
             }
             return false;
         };
+            if (offsets) {
+                for (const offset of offsets) if (testOffset(offset)) return true;
+            } else {
+                for (let offset = 0; offset <= maxOffset; offset += size) if (testOffset(offset)) return true;
+            }
+            return false;
+        };
         if (candidates) {
+            const byRange = new Map();
             for (const address of candidates) {
-                const offset = address - addr;
-                if (offset >= 0 && offset <= maxOffset && testOffset(offset)) break;
+                const range = findRange(address);
+                if (!range) continue;
+                if (!byRange.has(range.name)) byRange.set(range.name, []);
+                byRange.get(range.name).push(address - range.address);
             }
+            for (const range of ranges) if (scanRange(range, byRange.get(range.name) || [])) break;
         } else {
-            for (let offset = 0; offset <= maxOffset; offset += size) {
-                if (testOffset(offset)) break;
-            }
+            for (const range of ranges) if (scanRange(range, null)) break;
         }
-        state.search = { snapshot: current, addresses: matches.map((item) => item.address), address: addr, length, size };
-        const text = matches.map((item) => `${hex(item.address)}  ${hex(item.value, size * 2)}${item.previous === null ? "" : `  prev ${hex(item.previous, size * 2)}`}`).join("\n") || "no matches";
-        return { address: addr, length, size, condition, totalShown: matches.length, truncated: matches.length >= limit, matches, text };
+        state.search = { snapshot: snapshots, ranges, addresses: matches.map((item) => item.address), address: ranges[0]?.address ?? 0, length: ranges.reduce((sum, range) => sum + range.length, 0), size, rangeKey };
+        const text = matches.map((item) => `${item.range} ${hex(item.address)}  ${hex(item.value, size * 2)}${item.previous === null ? "" : `  prev ${hex(item.previous, size * 2)}`}`).join("\n") || "no matches";
+        return { ranges, size, condition, totalShown: matches.length, truncated: matches.length >= limit, matches, text };
     },
     async resetMemorySearch() {
-        state.search = { snapshot: null, addresses: null, address: 0, length: 0, size: 1 };
+        state.search = { snapshot: null, ranges: null, addresses: null, address: 0, length: 0, size: 1, rangeKey: "" };
         ui.searchOutput.textContent = "search reset";
         return { ok: true };
     },

@@ -92,3 +92,10 @@
 - Call stack frames are now emitted newest-first for UI/API/MCP. Return-like PC writes pop the top frame when the branch target matches the recorded LR, including ARM `BX LR` / `LDM ... {PC}` and Thumb `BX` / `POP {..., PC}`.
 - Call stack tracking is split into dynamic stack lanes when the ARM9 SP jumps beyond `0x2000`; UI/API expose lane tabs/`stacks`. Empty lanes are removed after their last frame returns. `callStack` / `stackTrace` default to `limit: 128` and cap at 1024 frames to avoid huge MCP responses.
 - Execute breakpoints are not hardcoded for DQ9/memcpy addresses. If a removed breakpoint appears to survive, suspect native `execBreakpoints[]` drift from the browser list; `dbgClearAllBreakpoints()` exists so JS can resync browser-side breakpoints before `step` / `stepOver`.
+
+## 2026-06-30 Addendum
+
+- Memory search default `Start` is `all`. This scans canonical non-mirrored ranges instead of only main RAM: ARM9 uses main RAM, shared WRAM, palette, VRAM, and OAM; ARM7 also includes ARM7 WRAM. Custom address/length searches still work.
+- Call stack lanes now expose `nowPc`. Non-matching return-like PC writes (`BX LR`, `MOV(S) PC`, `SUBS PC`, `LDM/POP ... PC`) select the existing lane nearest the current SP and set its `nowPc` to the target, so ROP-style jumps do not hide the real recorded frames. Old empty lanes are compacted; `controlFlow` remains the short history for those jumps.
+- ARM and Thumb `BLX reg` are now recorded in `controlFlow` as `blx-reg`, without changing the existing prologue-based function entry push behavior.
+- Verified with `C:\Users\owner\Downloads\desmume-state (2).dst`: after setting ARM9 exec breakpoint `0x020f9110`, break hit reports active call stack `nowPc=0x020f9110`, depth `0`, and recent `controlFlow` ends with `ldm-pc` from `0x0215c954` to `0x020f9110`.
