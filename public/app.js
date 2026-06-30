@@ -171,6 +171,7 @@ function normalizeCallStackData(data) {
         const returnAddress = Number(hasReturnAddress ? frame.returnAddress : frame.caller) >>> 0;
         const caller = hasReturnAddress ? (Number(frame.caller) >>> 0) : (((returnAddress & ~1) - 4) >>> 0);
         const depthFromNewest = index;
+        const kind = Number(frame.kind);
         return {
             ...frame,
             caller,
@@ -182,7 +183,8 @@ function normalizeCallStackData(data) {
             modeValue: cpsr & 0x1f,
             modeKey: mode.key,
             modeName: mode.label,
-            modeClass: mode.className
+            modeClass: mode.className,
+            kindName: controlFlowKinds[kind] || (Number.isFinite(kind) ? `kind-${kind}` : "")
         };
     });
     const stacks = rawStacks.length ? rawStacks.map((stack) => ({
@@ -1085,8 +1087,10 @@ function renderCallStack(data, options = {}) {
         const callee = hex(frame.callee);
         const highlighted = state.highlightedCallstackAddress === frame.caller || state.highlightedCallstackAddress === frame.callee;
         const cls = ["callstack-row", highlighted ? "highlight" : "", frame.modeClass].filter(Boolean).join(" ");
-        const execMode = `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
-        return `<tr class="${cls}"><td title="newest frame is the top row">${frame.ageLabel}</td><td title="return ${hex(frame.returnAddress)}">${caller}</td><td>${callee} (${frame.id})</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
+        const execMode = frame.synthetic ? `pc-write ${frame.kindName}` : `${frame.thumb ? "thumb" : "arm"} ${frame.modeName}`;
+        const calleeText = frame.synthetic ? `${callee} ${frame.kindName}` : `${callee} (${frame.id})`;
+        const returnTitle = frame.synthetic ? `expected ${hex(frame.expected)} target ${hex(frame.target)}` : `return ${hex(frame.returnAddress)}`;
+        return `<tr class="${cls}"><td title="newest frame is the top row">${frame.ageLabel}</td><td title="${returnTitle}">${caller}</td><td>${calleeText}</td><td>${hex(frame.sp)}</td><td title="CPSR ${frame.cpsrHex}">${frame.cpsrHex}</td><td>${execMode}</td><td><button type="button" data-jump-address="${caller}" data-jump-cpsr="${frame.cpsr}" data-jump-label="caller">Caller</button></td><td><button type="button" data-jump-address="${callee}" data-jump-cpsr="${frame.cpsr}" data-jump-label="callee">Callee</button></td></tr>`;
     }).join("");
 }
 

@@ -71,6 +71,10 @@ struct CallStackEntry {
   u32 cpsr;
   bool thumb;
   u32 id;
+  bool synthetic;
+  int kind;
+  u32 target;
+  u32 expected;
 };
 
 struct CallStackLane {
@@ -155,10 +159,19 @@ static size_t selectCallStackLaneForSp(u32 sp) {
   return best;
 }
 
+static int topRealFrameIndex(const CallStackLane &lane) {
+  for (size_t i = lane.frames.size(); i > 0; i--) {
+    const size_t index = i - 1;
+    if (!lane.frames[index].synthetic) return (int)index;
+  }
+  return -1;
+}
+
 static int findReturnCallStackLane(u32 target) {
   for (size_t i = 0; i < callStackLanes.size(); i++) {
     const CallStackLane &lane = callStackLanes[i];
-    if (!lane.frames.empty() && ((lane.frames.back().caller & ~1U) == (target & ~1U))) {
+    const int realIndex = topRealFrameIndex(lane);
+    if (realIndex >= 0 && ((lane.frames[(size_t)realIndex].caller & ~1U) == (target & ~1U))) {
       return (int)i;
     }
   }
@@ -250,7 +263,7 @@ extern "C" void wasmEnterFunctionHook(int proc) {
   lane.nowPc = cpu->instruct_adr;
   const u32 callee = cpu->instruct_adr;
   const u32 id = callCountMap[callee]++;
-  lane.frames.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id});
+  lane.frames.push_back({cpu->R[14], callee, sp, cpu->CPSR.val, cpu->CPSR.bits.T != 0, id, false, 0, 0, 0});
   if (lane.frames.size() > 1024) lane.frames.erase(lane.frames.begin(), lane.frames.begin() + (lane.frames.size() - 1024));
 }
 
@@ -261,13 +274,18 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
   if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(cpu->R[13]);
   CallStackLane &lane = callStackLanes[(size_t)laneIndex];
   activeCallStackLane = (size_t)laneIndex;
-  const u32 expected = lane.frames.empty() ? 0 : lane.frames.back().caller;
+  const int realIndex = topRealFrameIndex(lane);
+  const u32 expected = realIndex < 0 ? 0 : lane.frames[(size_t)realIndex].caller;
   const bool mismatch = expected != 0 && ((target & ~1U) != (expected & ~1U));
   const bool alwaysRecord = kind >= 3 || reg != 14 || expected == 0;
   const bool poppedFrame = expected != 0 && !mismatch;
-  if (poppedFrame) lane.frames.pop_back();
+  if (poppedFrame) lane.frames.erase(lane.frames.begin() + realIndex, lane.frames.end());
   lane.lastSp = cpu->R[13];
   lane.nowPc = target;
+  if (mismatch) {
+    lane.frames.push_back({cpu->instruct_adr, target, cpu->R[13], cpu->CPSR.val, cpu->CPSR.bits.T != 0, 0, true, kind, target, expected});
+    if (lane.frames.size() > 1024) lane.frames.erase(lane.frames.begin(), lane.frames.begin() + (lane.frames.size() - 1024));
+  }
   if (poppedFrame && lane.frames.empty()) removeCallStackLane((size_t)laneIndex);
   compactCallStackLanes();
   if (!alwaysRecord && !mismatch) return;
@@ -586,20 +604,20 @@ int dbgSetReg(int proc, int reg, u32 value) {
   return -1;
 }
 
-u32 dbgRead8(int proc, u32 addr) { return MMU_read8(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr); }
-u32 dbgRead16(int proc, u32 addr) { return MMU_read16(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr); }
-u32 dbgRead32(int proc, u32 addr) { return MMU_read32(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr); }
+u32 dbgRead8(int proc, u32 addr) { return _MMU_read08(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr); }
+u32 dbgRead16(int proc, u32 addr) { return _MMU_read16(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr); }
+u32 dbgRead32(int proc, u32 addr) { return _MMU_read32(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr); }
 
 int dbgWrite8(int proc, u32 addr, u32 value) {
-  MMU_write8(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr, value & 0xff);
+  _MMU_write08(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr, value & 0xff);
   return 0;
 }
 int dbgWrite16(int proc, u32 addr, u32 value) {
-  MMU_write16(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr, value & 0xffff);
+  _MMU_write16(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr, value & 0xffff);
   return 0;
 }
 int dbgWrite32(int proc, u32 addr, u32 value) {
-  MMU_write32(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, addr, value);
+  _MMU_write32(proc == 0 ? ARMCPU_ARM9 : ARMCPU_ARM7, MMU_AT_DEBUG, addr, value);
   return 0;
 }
 
@@ -790,14 +808,21 @@ const char *dbgStackTrace(int proc, int words) {
 }
 
 static void writeCallStackFrameJson(std::ostringstream &os, const CallStackEntry &entry) {
-  const u32 caller = ((entry.caller & ~1U) - 4) & 0xffffffffU;
+  const u32 caller = entry.synthetic ? entry.caller : (((entry.caller & ~1U) - 4) & 0xffffffffU);
   os << "{\"caller\":" << caller
      << ",\"returnAddress\":" << entry.caller
      << ",\"callee\":" << entry.callee
      << ",\"sp\":" << entry.sp
      << ",\"cpsr\":" << entry.cpsr
      << ",\"thumb\":" << (entry.thumb ? "true" : "false")
-     << ",\"id\":" << entry.id << "}";
+     << ",\"id\":" << entry.id;
+  if (entry.synthetic) {
+    os << ",\"synthetic\":true"
+       << ",\"kind\":" << entry.kind
+       << ",\"target\":" << entry.target
+       << ",\"expected\":" << entry.expected;
+  }
+  os << "}";
 }
 
 static void writeCallStackFramesJson(std::ostringstream &os, const std::vector<CallStackEntry> &frames, int limit) {
