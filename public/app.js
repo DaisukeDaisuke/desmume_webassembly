@@ -953,7 +953,7 @@ function instructionOpcode(line) {
 }
 
 function instructionBody(line) {
-    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{4})\s*/i, "").trim();
+    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{1,8})\s*/i, "").trim();
 }
 
 function armConditionSuffix(text) {
