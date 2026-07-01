@@ -230,6 +230,63 @@ function readCallStackData(params = {}) {
     return normalizeCallStackData(JSON.parse(json));
 }
 
+function disassemblyRows(cpu, address, options = {}) {
+    const addr = Number(address) >>> 0;
+    const mode = options.mode || (((Number(options.cpsr) >>> 0) & 0x20) ? "thumb" : "arm");
+    const count = Math.max(1, Math.min(3, Number(options.count ?? 3)));
+    return String(state.fns.dbgDisassemble(cpuIndex(cpu), addr, count, modeNumber(mode)) || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+}
+
+function publicCallStackFrame(frame, cpu = state.selectedCpu) {
+    return {
+        ageLabel: frame.ageLabel,
+        caller: hex(frame.caller),
+        returnAddress: hex(frame.returnAddress),
+        callee: hex(frame.callee),
+        sp: hex(frame.sp),
+        cpsr: frame.cpsrHex,
+        cpuMode: frame.modeName,
+        isa: frame.thumb ? "thumb" : "arm",
+        id: frame.id,
+        callerDisassembly: disassemblyRows(cpu, frame.caller, { cpsr: frame.cpsr }),
+        calleeDisassembly: disassemblyRows(cpu, frame.callee, { cpsr: frame.cpsr })
+    };
+}
+
+function publicCallStackData(data, params = {}) {
+    if (params.raw) return data;
+    const cpu = String(params.cpu ?? state.selectedCpu);
+    const activeStackId = Number(data.activeStackId);
+    const stacks = Array.isArray(data.stacks) ? data.stacks : [];
+    const activeStack = stacks.find((stack) => stack.id === activeStackId) || stacks.find((stack) => stack.active) || stacks[0] || null;
+    const activeFrames = (activeStack ? activeStack.frames : data.frames || []).filter((frame) => !frame.synthetic);
+    return {
+        enabled: !!data.enabled,
+        depth: activeFrames.length,
+        activeStackId,
+        frames: activeFrames.map((frame) => publicCallStackFrame(frame, cpu)),
+        stacks: stacks.map((stack) => {
+            const active = stack.id === activeStackId || !!stack.active;
+            if (active) {
+                const frames = stack.frames.filter((frame) => !frame.synthetic).map((frame) => publicCallStackFrame(frame, cpu));
+                return { id: stack.id, active: true, sp: stack.spHex, nowPc: stack.nowPcHex, depth: frames.length, frames };
+            }
+            return {
+                id: stack.id,
+                active: false,
+                sp: stack.spHex,
+                nowPc: stack.nowPcHex,
+                depth: Number(stack.frames?.filter((frame) => !frame.synthetic).length ?? stack.depth ?? 0),
+                message: "これは現在のコルーチンではありません。",
+                howToShow: "そのコルーチンが現在実行中になってから callStack を呼んでください。内部調査が必要な場合だけ callStack({ raw: true }) を使います。"
+            };
+        })
+    };
+}
+
 function defaultMemorySearchRanges(cpuName) {
     const common = [
         { name: "main", address: 0x02000000, length: 0x00400000 },
@@ -1173,6 +1230,35 @@ async function getCurrentInstructionInfo(cpu = state.selectedCpu) {
     return { line, address: Number.isFinite(address) ? (address >>> 0) : null, ...classifyInstruction(line) };
 }
 
+function registerHexSnapshot(cpu = state.selectedCpu) {
+    const values = getRegisters(cpu);
+    return Object.fromEntries(Object.entries(values).map(([name, value]) => [name, hex(value)]));
+}
+
+function stepStatusSummary(cpu, native = null) {
+    const status = native || syncNativeBreakStatus() || {};
+    const lastBreak = status.lastBreak && status.lastBreak.hit ? status.lastBreak : null;
+    return {
+        cpu: String(cpu),
+        breakReason: lastBreak ? breakpointKindName(lastBreak.kind) : (state.breakLabel || ""),
+        paused: !!state.paused
+    };
+}
+
+async function attachDebuggerContext(result, cpu, pcBefore, native = null) {
+    const pcAfter = getPc(cpu);
+    const disassembly = await commands.disassemble({ cpu, address: pcAfter, before: 1, count: 2, mode: "auto" });
+    return {
+        ...result,
+        pcBefore: hex(pcBefore),
+        pcAfter: hex(pcAfter),
+        pc: hex(pcAfter),
+        status: stepStatusSummary(cpu, native),
+        registers: registerHexSnapshot(cpu),
+        disassembly: String(disassembly.text || "").split("\n").map((line) => line.trim()).filter(Boolean)
+    };
+}
+
 function syncBreakpointsToNative() {
     if (!state.fns.dbgClearAllBreakpoints) return;
     state.fns.dbgClearAllBreakpoints();
@@ -1186,6 +1272,7 @@ function syncBreakpointsToNative() {
 async function runDebuggerInstruction(kind, params = {}) {
     ensureRomLoaded("debugger step requires a loaded ROM");
     const cpu = String(params.cpu ?? state.selectedCpu);
+    const pcBefore = getPc(cpu);
     let result = { kind, count: 0 };
     state.breakRefreshKey = "";
     syncBreakpointsToNative();
@@ -1206,11 +1293,10 @@ async function runDebuggerInstruction(kind, params = {}) {
         throw new Error(`unsupported debugger step: ${kind}`);
     }
     applyFreezes();
-    syncNativeBreakStatus();
+    const native = syncNativeBreakStatus();
     updateStatus();
-    result.pc = getPc(cpu);
     result.paused = state.paused;
-    return result;
+    return attachDebuggerContext(result, cpu, pcBefore, native);
 }
 
 function renderDisassembly(text) {
@@ -1336,6 +1422,7 @@ function queueAutoUpdateLoop() {
 async function runTraceStepper(label, params = {}, shouldStop) {
     ensureRomLoaded(`${label} requires a loaded ROM`);
     const cpu = String(params.cpu ?? state.selectedCpu);
+    const pcBefore = getPc(cpu);
     if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
     if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
         await commands.setStackTracePrivilegeCheck({ enabled: true });
@@ -1354,11 +1441,11 @@ async function runTraceStepper(label, params = {}, shouldStop) {
         const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
         if (native && native.lastBreak && native.lastBreak.hit) {
             await refreshDebuggerViews({ cpu });
-            return { ok: false, stoppedByBreakpoint: true, steps, depth, pc: getPc(cpu), callStack, native };
+            return attachDebuggerContext({ kind: label, ok: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, native);
         }
         if (shouldStop({ startDepth, depth, callStack })) {
             await refreshDebuggerViews({ cpu });
-            return { ok: true, steps, depth, pc: getPc(cpu), callStack };
+            return attachDebuggerContext({ kind: label, ok: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore);
         }
     }
     await refreshDebuggerViews({ cpu });
@@ -2086,8 +2173,8 @@ const commands = {
     async continue() { return commands.resume(); },
     async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; if (!params.enabled) state.selectedCallstackLaneId = null; renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled }); return { enabled: !!params.enabled }; },
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack, text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
-    async callStack(params = {}) { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return callStack; },
+    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack: publicCallStackData(callStack, params), text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+    async callStack(params = {}) { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return publicCallStackData(callStack, params); },
     async copyCallStackMarkdown() {
         ensureRomLoaded("call stack copy requires a loaded ROM");
         const callStack = readCallStackData({ limit: 512 });
