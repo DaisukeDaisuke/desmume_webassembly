@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <iomanip>
 #include <map>
 #include <vector>
 
@@ -860,6 +861,64 @@ const char *dbgDisassemble(int proc, u32 addr, int count, int mode) {
       des_arm_instructions_set[INSTRUCTION_INDEX(op)](at, op, txt);
       os << (at == pc ? "=> " : "   ") << std::hex << at << ": " << op << "  " << txt << "\n";
     }
+  }
+  textScratch = os.str();
+  return textScratch.c_str();
+}
+
+const char *dbgDisassembleOpcode(u32 addr, u32 opcode, int mode) {
+  char txt[128] = {0};
+  if (mode == 1) {
+    des_thumb_instructions_set[(opcode & 0xffff) >> 6](addr, opcode & 0xffff, txt);
+  } else {
+    des_arm_instructions_set[INSTRUCTION_INDEX(opcode)](addr, opcode, txt);
+  }
+  textScratch = txt;
+  return textScratch.c_str();
+}
+
+const char *utilBinaryFloat(int bits, u32 low, u32 high, double value, int encode) {
+  std::ostringstream os;
+  os << std::setprecision(17);
+  if (bits == 32) {
+    u32 raw = low;
+    float f = 0.0f;
+    if (encode) {
+      f = (float)value;
+      memcpy(&raw, &f, sizeof(raw));
+    } else {
+      memcpy(&f, &raw, sizeof(f));
+    }
+    os << "{\"ok\":true,\"bits\":32,\"hex\":\"0x" << std::hex << std::setw(8) << std::setfill('0') << raw
+       << std::dec << "\",\"value\":" << (double)f
+       << ",\"bytesLE\":[" << (raw & 0xff) << "," << ((raw >> 8) & 0xff) << "," << ((raw >> 16) & 0xff) << "," << ((raw >> 24) & 0xff) << "]"
+       << ",\"bytesBE\":[" << ((raw >> 24) & 0xff) << "," << ((raw >> 16) & 0xff) << "," << ((raw >> 8) & 0xff) << "," << (raw & 0xff) << "]}";
+  } else if (bits == 64) {
+    u64 raw = ((u64)high << 32) | low;
+    double d = 0.0;
+    if (encode) {
+      d = value;
+      memcpy(&raw, &d, sizeof(raw));
+    } else {
+      memcpy(&d, &raw, sizeof(d));
+    }
+    u32 outLow = (u32)(raw & 0xffffffffULL);
+    u32 outHigh = (u32)(raw >> 32);
+    os << "{\"ok\":true,\"bits\":64,\"hex\":\"0x" << std::hex << std::setw(8) << std::setfill('0') << outHigh
+       << std::setw(8) << outLow << std::dec << "\",\"low\":\"0x" << std::hex << std::setw(8) << outLow
+       << "\",\"high\":\"0x" << std::setw(8) << outHigh << std::dec << "\",\"value\":" << d << ",\"bytesLE\":[";
+    for (int i = 0; i < 8; i++) {
+      if (i) os << ",";
+      os << ((raw >> (i * 8)) & 0xff);
+    }
+    os << "],\"bytesBE\":[";
+    for (int i = 7; i >= 0; i--) {
+      if (i != 7) os << ",";
+      os << ((raw >> (i * 8)) & 0xff);
+    }
+    os << "]}";
+  } else {
+    os << "{\"ok\":false,\"error\":\"bits must be 32 or 64\"}";
   }
   textScratch = os.str();
   return textScratch.c_str();

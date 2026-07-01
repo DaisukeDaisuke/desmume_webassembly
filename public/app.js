@@ -85,6 +85,8 @@ const apiDescriptions = {
     getRegisters: "ARM9/ARM7のレジスタを取得します。",
     setRegister: "指定レジスタを書き換えます。",
     disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
+    disassembleBytes: "任意のARM/Thumbバイト列または32-bit opcode列をROMなしで逆アセンブルします。未定義命令が含まれるとerror=trueになります。",
+    binaryFloat: "binary32/binary64の浮動小数点ビット列をC++側でdecode/encodeします。",
     dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
     runInputHold: "指定ボタンを押したまま一定時間維持し、前後の待機も含めて制御します。",
     runInputTap: "指定ボタンをms単位で一定回数連打します。GUIの入力表示も連動します。",
@@ -92,6 +94,7 @@ const apiDescriptions = {
     takeScreenshot: "現在のキャンバスをPNGとして保存します。cooldownMs指定で連打間隔も制御できます。",
     setAutoUpdate: "GUIの自動更新を有効または無効にします。Hzで毎秒の更新回数を指定します。",
     injectMemoryFile: "指定アドレスから、選択したローカルファイルのバイト列でメモリを上書きします。",
+    injectBytes: "bytes/base64/hexで渡したバイト列を指定アドレスからメモリへ注入します。",
     searchMemory: "addressにallを指定すると、ミラーを除く主要メモリ範囲を値または前回検索との差分条件で検索します。",
     resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
     writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
@@ -444,7 +447,8 @@ async function initWasm() {
         ["dbgSetWriteBreakpoint", "number", ["number", "number", "number"]], ["dbgSetSpecialBreakpoint", "number", ["number", "number"]],
         ["dbgClearBreakStatus", "number", []], ["dbgClearAllBreakpoints", "number", []], ["dbgStep", "number", ["number", "number"]],
         ["dbgStepOver", "number", ["number"]], ["dbgGetStatusJson", "string", []], ["dbgDisassemble", "string", ["number", "number", "number", "number"]],
-        ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["dbgCallStackJsonLimit", "string", ["number"]], ["emuSetOpt", "number", ["number", "number"]]
+        ["dbgDisassembleOpcode", "string", ["number", "number", "number"]],
+        ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["dbgCallStackJsonLimit", "string", ["number"]], ["utilBinaryFloat", "string", ["number", "number", "number", "number", "number"]], ["emuSetOpt", "number", ["number", "number"]]
     ].forEach(([name, ret, args]) => wrap(name, ret, args));
     state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
     state.ready = true;
@@ -543,6 +547,69 @@ function bytesFromParams(params = {}) {
         return bytes;
     }
     throw new Error("bytes or base64 is required");
+}
+
+function parseHexToken(token) {
+    const text = String(token ?? "").trim().replace(/^0x/i, "");
+    if (!/^[0-9a-f]+$/i.test(text)) throw new Error(`invalid hex token: ${token}`);
+    return parseInt(text, 16);
+}
+
+function bytesFromFlexibleParams(params = {}) {
+    if (params.bytes) return new Uint8Array(params.bytes.map((value) => typeof value === "number" ? value & 0xff : parseHexToken(value) & 0xff));
+    if (params.base64) return bytesFromParams(params);
+    const text = String(params.hex ?? params.input ?? params.text ?? "").trim();
+    if (!text) throw new Error("bytes, base64, hex, input, or text is required");
+    const clean = text.replace(/[,;\n\r\t]+/g, " ").trim();
+    const tokens = clean ? clean.split(/\s+/) : [];
+    if (tokens.length > 1) return new Uint8Array(tokens.map((token) => parseHexToken(token) & 0xff));
+    const one = tokens[0].replace(/^0x/i, "");
+    if (!/^[0-9a-f]+$/i.test(one) || one.length % 2) throw new Error("hex byte text must contain complete bytes");
+    const bytes = new Uint8Array(one.length / 2);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(one.slice(i * 2, i * 2 + 2), 16);
+    return bytes;
+}
+
+function opcodeWordsFromInput(params = {}) {
+    if (params.words) return params.words.map((value) => typeof value === "number" ? value >>> 0 : parseHexToken(value) >>> 0);
+    const text = String(params.input ?? params.text ?? params.opcodes ?? "").trim();
+    if (!text) return null;
+    const tokens = text.replace(/[,;\n\r\t]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return null;
+    const explicitWords = params.inputMode === "words" || params.format === "words" || tokens.some((token) => {
+        const parsed = /^[0-9a-f]+$/i.test(token.replace(/^0x/i, "")) ? parseHexToken(token) : parseNumber(token);
+        return /^0x/i.test(token) && parsed > 0xff;
+    });
+    return explicitWords ? tokens.map((token) => parseHexToken(token) >>> 0) : null;
+}
+
+function u32FromBytes(bytes, offset, endian) {
+    if (endian === "big" || endian === "be") {
+        return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+    }
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+}
+
+function u16FromBytes(bytes, offset, endian) {
+    if (endian === "big" || endian === "be") return ((bytes[offset] << 8) | bytes[offset + 1]) >>> 0;
+    return (bytes[offset] | (bytes[offset + 1] << 8)) >>> 0;
+}
+
+function splitBinaryBits(params = {}, bits = 32) {
+    if (params.bytes || params.base64 || params.hexBytes) {
+        const bytes = params.hexBytes ? bytesFromFlexibleParams({ hex: params.hexBytes }) : bytesFromFlexibleParams(params);
+        const needed = bits / 8;
+        if (bytes.length < needed) throw new Error(`binary${bits} decode requires ${needed} bytes`);
+        if (bits === 32) return { low: u32FromBytes(bytes, 0, String(params.endian ?? "big")), high: 0 };
+        const endian = String(params.endian ?? "big");
+        const ordered = endian === "little" || endian === "le" ? [...bytes.slice(0, 8)].reverse() : [...bytes.slice(0, 8)];
+        const raw = BigInt("0x" + ordered.map((b) => b.toString(16).padStart(2, "0")).join(""));
+        return { low: Number(raw & 0xffffffffn), high: Number((raw >> 32n) & 0xffffffffn) };
+    }
+    const text = String(params.value ?? params.bits ?? params.raw ?? params.hex ?? "").trim();
+    if (!text) throw new Error("value, bits, raw, hex, bytes, or base64 is required");
+    const raw = BigInt(text.startsWith("0x") || text.startsWith("0X") ? text : `0x${text}`);
+    return { low: Number(raw & 0xffffffffn), high: Number((raw >> 32n) & 0xffffffffn) };
 }
 
 async function reloadCurrentRom(options = {}) {
@@ -1710,6 +1777,51 @@ const commands = {
         const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count + before, modeNumber(mode));
         return { address: addr, before, text };
     },
+    async disassembleBytes(params = {}) {
+        await ensureWasmReady();
+        const mode = String(params.mode ?? "arm").toLowerCase();
+        if (mode !== "arm" && mode !== "thumb") throw new Error("mode must be arm or thumb");
+        const modeId = mode === "thumb" ? 1 : 2;
+        const width = mode === "thumb" ? 2 : 4;
+        const endian = String(params.endian ?? params.byteOrder ?? "little").toLowerCase();
+        const start = parseAddress(params.address ?? params.base ?? 0, 0, params.cpu);
+        const rows = [];
+        let incompleteBytes = 0;
+        const words = opcodeWordsFromInput(params);
+        if (words) {
+            words.forEach((word, index) => {
+                const opcode = mode === "thumb" ? word & 0xffff : word >>> 0;
+                const address = (start + index * width) >>> 0;
+                const mnemonic = state.fns.dbgDisassembleOpcode(address, opcode, modeId);
+                rows.push({ offset: index * width, address, opcode, mnemonic, undefined: mnemonic.includes("UNDEFINED") });
+            });
+        } else {
+            const bytes = bytesFromFlexibleParams(params);
+            const usable = bytes.length - (bytes.length % width);
+            incompleteBytes = bytes.length - usable;
+            for (let offset = 0; offset < usable; offset += width) {
+                const opcode = mode === "thumb" ? u16FromBytes(bytes, offset, endian) : u32FromBytes(bytes, offset, endian);
+                const address = (start + offset) >>> 0;
+                const mnemonic = state.fns.dbgDisassembleOpcode(address, opcode, modeId);
+                rows.push({ offset, address, opcode, mnemonic, undefined: mnemonic.includes("UNDEFINED") });
+            }
+        }
+        const hasUndefined = rows.some((row) => row.undefined);
+        const text = rows.map((row) => `${row.offset}: ${row.mnemonic}`).join("\n");
+        return { ok: !hasUndefined && incompleteBytes === 0, error: hasUndefined || incompleteBytes > 0, hasUndefined, incompleteBytes, mode, endian, count: rows.length, rows, text };
+    },
+    async binaryFloat(params = {}) {
+        await ensureWasmReady();
+        const bits = Number(params.bits ?? params.size ?? 32);
+        if (bits !== 32 && bits !== 64) throw new Error("bits must be 32 or 64");
+        const op = String(params.op ?? params.action ?? "decode").toLowerCase();
+        const encode = op === "encode";
+        const parts = encode ? { low: 0, high: 0 } : splitBinaryBits(params, bits);
+        const numeric = encode ? Number(params.value) : 0;
+        const result = JSON.parse(state.fns.utilBinaryFloat(bits, parts.low >>> 0, parts.high >>> 0, numeric, encode ? 1 : 0));
+        result.op = encode ? "encode" : "decode";
+        return result;
+    },
     async dumpMemory(params = {}) {
         ensureRomLoaded("memory dump requires a loaded ROM");
         const addr = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
@@ -1747,6 +1859,10 @@ const commands = {
         const visibleLength = Number(ui.memoryLength.value);
         if (addr >= visibleStart && addr < visibleStart + visibleLength) renderMemoryDump(await commands.dumpMemory({ cpu: params.cpu }));
         return { ok: true, address: addr, size: bytes.length, name: file.name };
+    },
+    async injectBytes(params = {}) {
+        const bytes = bytesFromFlexibleParams(params);
+        return commands.injectMemoryFile({ ...params, bytes: [...bytes], name: params.name || "api-bytes" });
     },
     async searchMemory(params = {}) {
         ensureRomLoaded("memory search requires a loaded ROM");
@@ -2063,7 +2179,7 @@ async function registerBrowserModelContextTools() {
         title: `DeSmuME ${name}`,
         description: apiDescriptions[name] || `Run DeSmuME command ${name}.`,
         inputSchema: baseSchema,
-        annotations: { readOnlyHint: ["status", "getRegisters", "disassemble", "dumpMemory", "listBreakpoints", "listMemoryFreezes", "callStack", "stackTrace", "listRecentFiles"].includes(name) },
+        annotations: { readOnlyHint: ["status", "getRegisters", "disassemble", "disassembleBytes", "binaryFloat", "dumpMemory", "listBreakpoints", "listMemoryFreezes", "callStack", "stackTrace", "listRecentFiles"].includes(name) },
         execute: async (input = {}) => runCommand(name, input || {})
     }));
     registrations.push({

@@ -104,3 +104,9 @@
 - BL/BLX instructions now register call frames immediately using their architectural return address (`BL+4`, Thumb return address with bit0 set). The later prologue hook updates the same frame instead of duplicating it. Return-like PC writes search all real frames in the active lanes and pop through the matched frame, so ordinary stale returns such as `LDMIAEQ SP!, {...,PC}` are less likely to appear as synthetic ROP frames.
 - Call Stack UI keeps the existing `mode` display for synthetic rows and restores CPU mode as a separate `cpu mode` column. `callee`, `mode`, and `cpu mode` columns are intentionally wider.
 - ARM9 hardware IRQ entry now records a separate synthetic `irq-entry` stack lane when `skip IRQ` is off. The pending IRQ resume PC is tracked so matching `SUBS PC` / `LDM ... {PC}^` exception returns remove that lane instead of leaving stale IRQ frames and add `irq-return` to control-flow history; when `skip IRQ` is on, both the IRQ entry and its matching return are suppressed from call-stack/control-flow output.
+
+## 2026-07-01 Addendum
+
+- `disassembleBytes` is a ROM-independent MCP command for low-capability local AI. It accepts opcode words such as `0xe12fff1e` as architectural values, or raw bytes with explicit `endian`. ARM consumes 4 bytes and Thumb consumes 2; trailing short bytes are reported as `incompleteBytes` instead of being passed to native disassembly.
+- Native `dbgDisassembleOpcode()` disassembles a supplied opcode without reading emulated memory. Browser code marks `error:true` / `hasUndefined:true` when DeSmuME returns the `UNDEFINED` marker.
+- `binaryFloat` calls native `utilBinaryFloat()` for IEEE-754 binary32/binary64 encode/decode. Decode is the default; encode requires `op:"encode"`.
