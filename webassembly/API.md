@@ -96,7 +96,7 @@ Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the
 - 手順:
     1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
     2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
-    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。
+    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。(idは`uid: rom-file`**ではない。**`uid: 1_16`のはず)
     4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
 - DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
 
