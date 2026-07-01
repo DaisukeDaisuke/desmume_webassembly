@@ -2222,9 +2222,7 @@ window.DesmumeMCP = {
 };
 
 function webMcpContent(result) {
-    return {
-        content: [{ type: "text", text: rawOutputText(result) }]
-    };
+    return rawOutputText(result);
 }
 
 function parseWebMcpInput(input) {
