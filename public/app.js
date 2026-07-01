@@ -270,7 +270,53 @@ async function copyText(text, label) {
 function rawOutputText(result) {
     if (typeof result === "string") return result;
     if (result && typeof result.text === "string") return result.text;
-    return plainOutputText(result);
+    return flattenObject(result);
+}
+
+function flattenObject(value) {
+    const lines = [];
+    let blockId = 1;
+
+    function append(path, value) {
+        if (value === null) {
+            lines.push(`${path}=null`);
+            return;
+        }
+
+        switch (typeof value) {
+            case "string":
+                if (value.includes("\n")) {
+                    const tag = `plaintext+${blockId++}`;
+                    lines.push(`${path}=<<<${tag}>>>`);
+                    lines.push(value);
+                    lines.push(`<<<${tag}>>>`);
+                } else {
+                    lines.push(`${path}=${value}`);
+                }
+                return;
+
+            case "number":
+            case "boolean":
+                lines.push(`${path}=${value}`);
+                return;
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach((item, index) => {
+                append(path ? `${path}.${index}` : String(index), item);
+            });
+            return;
+        }
+
+        if (value && typeof value === "object") {
+            for (const [key, item] of Object.entries(value)) {
+                append(path ? `${path}.${key}` : key, item);
+            }
+        }
+    }
+
+    append("", value);
+    return lines.join("\n");
 }
 
 function plainScalarText(value) {
