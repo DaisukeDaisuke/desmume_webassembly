@@ -67,3 +67,15 @@ return { decoded, encoded };
 - 「推測」には根拠を添える。
 - 「未確認」には次に確認すべき具体的なMCP操作を書く。
 - MCP出力の丸写しではなく、調査結果として読める形に整理する。
+
+### Chrome MCPでのファイルアップロード
+
+- AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。
+- file inputのIDは毎回変わる可能性がある。固定IDを仮定しない。
+- アップロード用ツールはデフォルトで見えていないことがある。必要なら `tool_search` で `take_snapshot` と `upload_file` を探して使う。
+- 手順:
+    1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
+    2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
+    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。
+    4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
+- DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
