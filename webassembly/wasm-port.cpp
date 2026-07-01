@@ -102,6 +102,7 @@ struct TraceControlEvent {
 };
 
 static std::vector<TraceControlEvent> traceControlEvents;
+static u32 tracePendingIrqResume[2] = {0, 0};
 
 u32 dstFrameBuffer[2][256 * 192];
 
@@ -226,6 +227,22 @@ static void compactCallStackLanes() {
   }
 }
 
+static int findSyntheticCallStackLane(int kind, u32 expected, int *frameIndex) {
+  for (size_t i = 0; i < callStackLanes.size(); i++) {
+    const CallStackLane &lane = callStackLanes[i];
+    for (size_t j = lane.frames.size(); j > 0; j--) {
+      const size_t index = j - 1;
+      const CallStackEntry &entry = lane.frames[index];
+      if (!entry.synthetic || entry.kind != kind) continue;
+      if ((entry.expected & ~1U) == (expected & ~1U)) {
+        if (frameIndex) *frameIndex = (int)index;
+        return (int)i;
+      }
+    }
+  }
+  return -1;
+}
+
 static int normalizeFrameLimit(int limit) {
   if (limit < 1) limit = 128;
   if (limit > 1024) limit = 1024;
@@ -302,6 +319,26 @@ extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
 extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
   if (!traceEnabled || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
+  if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
+  if (tracePendingIrqResume[proc] != 0 && ((tracePendingIrqResume[proc] & ~1U) == (target & ~1U)) && (kind == 4 || kind == 6)) {
+    int irqFrameIndex = -1;
+    const int irqLaneIndex = findSyntheticCallStackLane(8, target, &irqFrameIndex);
+    if (irqLaneIndex >= 0 && irqFrameIndex >= 0) {
+      CallStackLane &irqLane = callStackLanes[(size_t)irqLaneIndex];
+      irqLane.frames.erase(irqLane.frames.begin() + irqFrameIndex, irqLane.frames.end());
+      if (irqLane.frames.empty()) removeCallStackLane((size_t)irqLaneIndex);
+    }
+    tracePendingIrqResume[proc] = 0;
+    CallStackLane &lane = callStackLanes[selectCallStackLaneForSp(cpu->R[13])];
+    lane.lastSp = cpu->R[13];
+    lane.nowPc = target;
+    compactCallStackLanes();
+    if (!tracePrivilegeCheck) {
+      traceControlEvents.push_back({cpu->instruct_adr, target, target, cpu->R[13], cpu->CPSR.val, 9, 15, false});
+      if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
+    }
+    return;
+  }
   int returnFrameIndex = -1;
   int laneIndex = findReturnCallStackLane(target, &returnFrameIndex);
   if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(cpu->R[13]);
@@ -324,6 +361,34 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
   if (!alwaysRecord && !mismatch) return;
   traceControlEvents.push_back({cpu->instruct_adr, target, expected, cpu->R[13], cpu->CPSR.val, kind, reg, mismatch});
   if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
+}
+
+extern "C" void wasmTraceIrqEnterHook(int proc, u32 sourcePc, u32 vectorPc, u32 resumePc, u32 irqSp, u32 irqCpsr) {
+  if (!traceEnabled || proc != 0) return;
+  tracePendingIrqResume[proc] = resumePc;
+  if (tracePrivilegeCheck) return;
+  int frameIndex = -1;
+  int laneIndex = findSyntheticCallStackLane(8, resumePc, &frameIndex);
+  if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(irqSp);
+  CallStackLane &lane = callStackLanes[(size_t)laneIndex];
+  activeCallStackLane = (size_t)laneIndex;
+  lane.lastSp = irqSp;
+  lane.nowPc = vectorPc;
+  if (frameIndex >= 0) {
+    CallStackEntry &entry = lane.frames[(size_t)frameIndex];
+    entry.caller = sourcePc;
+    entry.callee = vectorPc;
+    entry.sp = irqSp;
+    entry.cpsr = irqCpsr;
+    entry.target = vectorPc;
+    entry.expected = resumePc;
+  } else {
+    lane.frames.push_back({sourcePc, vectorPc, irqSp, irqCpsr, false, 0, true, 8, vectorPc, resumePc});
+    if (lane.frames.size() > 1024) lane.frames.erase(lane.frames.begin(), lane.frames.begin() + (lane.frames.size() - 1024));
+  }
+  traceControlEvents.push_back({sourcePc, vectorPc, resumePc, irqSp, irqCpsr, 8, 15, true});
+  if (traceControlEvents.size() > 128) traceControlEvents.erase(traceControlEvents.begin(), traceControlEvents.begin() + (traceControlEvents.size() - 128));
+  compactCallStackLanes();
 }
 
 static void gpu_screen_to_rgb(u32 *dst) {
@@ -599,6 +664,8 @@ int traceSetEnabled(int value) {
     nextCallStackLaneId = 1;
     callCountMap.clear();
     traceControlEvents.clear();
+    tracePendingIrqResume[0] = 0;
+    tracePendingIrqResume[1] = 0;
   }
   return traceEnabled ? 1 : 0;
 }

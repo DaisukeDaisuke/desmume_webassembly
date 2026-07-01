@@ -162,7 +162,9 @@ function normalizeCallStackData(data) {
         4: "subs-pc",
         5: "ldm-pc",
         6: "ldm-pc-spsr",
-        7: "blx-reg"
+        7: "blx-reg",
+        8: "irq-entry",
+        9: "irq-return"
     };
     const normalizeFrames = (items) => items.map((frame, index) => {
         const cpsr = Number(frame.cpsr) >>> 0;

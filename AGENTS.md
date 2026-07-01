@@ -342,6 +342,10 @@ kill <PID>
 - [GitHub Docs: Using Codespaces with GitHub CLI](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli)
 - [AGENTS.md Open Standard](https://agents.md/)
 
+# codespace
+
+`gh codespace list`でずっとShuttingDownになっていても、おそらくghコマンドのバグなので、無視し、提出していい(停止には1分ぐらいかかる)。止まってなかったら人間があとで止めればいいため。
+
 # 動作確認
 - あなたは、chrome mcpで動作確認をするべきです。この場合ユーザーが再現方法を述べているため、これを使用し、コードが期待通りに修正されているか確かめる必要があります。
 - ユーザーに丸なげする場合でも、提出前にpublic/desmume.jsをローカルにコピーするべきです。
