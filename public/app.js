@@ -270,7 +270,40 @@ async function copyText(text, label) {
 function rawOutputText(result) {
     if (typeof result === "string") return result;
     if (result && typeof result.text === "string") return result.text;
-    return JSON.stringify(result, null, 2);
+    return plainOutputText(result);
+}
+
+function plainScalarText(value) {
+    if (value === null) return "null";
+    if (value === undefined) return "";
+    if (typeof value === "number") return Number.isInteger(value) && value >= 0x1000 ? hex(value) : String(value);
+    if (typeof value === "boolean") return value ? "true" : "false";
+    return String(value);
+}
+
+function isPlainScalar(value) {
+    return value === null || value === undefined || ["string", "number", "boolean"].includes(typeof value);
+}
+
+function plainRowText(row) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return plainOutputText(row);
+    return Object.entries(row).map(([key, value]) => `${key}=${plainOutputText(value, true)}`).join("  ");
+}
+
+function plainOutputText(value, inline = false) {
+    if (isPlainScalar(value)) return plainScalarText(value);
+    if (Array.isArray(value)) {
+        if (!value.length) return inline ? "[]" : "(empty)";
+        if (value.every((item) => isPlainScalar(item))) return value.map(plainScalarText).join(inline ? ", " : "\n");
+        return value.map(plainRowText).join(inline ? " | " : "\n");
+    }
+    if (value && typeof value === "object") {
+        const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+        if (!entries.length) return inline ? "{}" : "(empty)";
+        if (inline) return entries.map(([key, item]) => `${key}=${plainOutputText(item, true)}`).join(", ");
+        return entries.map(([key, item]) => `${key}: ${plainOutputText(item, true)}`).join("\n");
+    }
+    return String(value);
 }
 
 function setScriptOutput(result) {
