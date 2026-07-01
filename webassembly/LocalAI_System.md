@@ -75,6 +75,24 @@ async () => {
 
 Chrome DevTools MCP で直接実行する最小形:
 
+## evaluate_script回避
+- Chrome DevTools MCP の `evaluate_script` 結果はツール側でJSON包装される。長いテキストやエスケープ無しで読みたい結果は、Script Injection UI の `Raw output` textareaへ出して、GUI上で読むか `Copy Raw` / `Select Raw` を使う。
+
+```js
+async () => {
+  const code = 'return "line1\\nline2";';
+  document.getElementById('script-code').value = code;
+  document.getElementById('script-run-btn').click();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  return {
+    raw: document.getElementById('script-raw-output').value,
+    pre: document.getElementById('script-output').textContent,
+    hasCopy: !!document.getElementById('script-copy-raw-btn'),
+    hasSelect: !!document.getElementById('script-select-raw-btn')
+  };
+}
+```
+
 ```js
 async () => {
   const dis = await window.DesmumeMCP.call("disassemble", {
@@ -89,6 +107,21 @@ async () => {
 ```
 
 `injectScript` に渡す場合は、ワーカー内で `mcp.call()` を使う本文だけを書く。Chrome DevTools MCP の `evaluate_script` では `window.DesmumeMCP.call()` を使う。
+
+GUI経由でRaw Outputへ出す場合は、Script Injection欄に本文だけを書く。戻り値が文字列、または `{ text: "..." }` ならRaw outputにそのまま入る。
+
+```js
+const dis = await mcp.call("disassemble", {
+  cpu: "arm9",
+  address: "pc",
+  count: 20,
+  before: 10,
+  mode: "auto"
+});
+return dis.text;
+```
+
+Chrome MCPでtextareaの中身を読み取る場合もツール返却はJSON包装されるが、`Raw output` 画面上ではエスケープ無しの生テキストとして見える。長い出力はまずRaw outputに出し、必要な範囲だけを報告に使う。
 
 ## よく使う調査テンプレート
 

@@ -265,6 +265,19 @@ async function copyText(text, label) {
     return text;
 }
 
+function rawOutputText(result) {
+    if (typeof result === "string") return result;
+    if (result && typeof result.text === "string") return result.text;
+    return JSON.stringify(result, null, 2);
+}
+
+function setScriptOutput(result) {
+    const raw = rawOutputText(result);
+    ui.scriptRawOutput.value = raw;
+    ui.scriptOutput.textContent = raw;
+    return raw;
+}
+
 function createRecentId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
     return `recent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -2123,13 +2136,15 @@ function runIsolatedScript(code, timeoutMs = 3000) {
         const workerCode = `
           const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
           onmessage = async (event) => {
+            if (!event.data || event.data.type !== "run") return;
             const { code } = event.data;
-            const mcp = { call: (command, params) => new Promise((resolve) => {
+            const mcp = { call: (command, params) => new Promise((resolve, reject) => {
               const id = Math.random().toString(36).slice(2);
               const handler = (reply) => {
                 if (reply.data && reply.data.id === id) {
                   removeEventListener("message", handler);
-                  resolve(reply.data.result);
+                  if (reply.data.error) reject(new Error(reply.data.error));
+                  else resolve(reply.data.result);
                 }
               };
               addEventListener("message", handler);
@@ -2148,15 +2163,19 @@ function runIsolatedScript(code, timeoutMs = 3000) {
         worker.onmessage = async (event) => {
             const msg = event.data;
             if (msg.type === "call") {
-                const result = await runCommand(msg.command, msg.params || {});
-                worker.postMessage({ id: msg.id, result });
+                try {
+                    const result = await runCommand(msg.command, msg.params || {});
+                    worker.postMessage({ id: msg.id, result });
+                } catch (error) {
+                    worker.postMessage({ id: msg.id, error: String(error && error.message || error) });
+                }
             } else if (msg.type === "done") {
                 clearTimeout(timeout); worker.terminate(); resolve(msg.result);
             } else if (msg.type === "error") {
                 clearTimeout(timeout); worker.terminate(); reject(new Error(msg.error));
             }
         };
-        worker.postMessage({ code });
+        worker.postMessage({ type: "run", code });
     });
 }
 
@@ -2413,7 +2432,15 @@ ui.mcpBatchRunBtn.addEventListener("click", () => {
     try { items = JSON.parse(ui.mcpBatch.value || "[]"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
     runCommand("batch", Array.isArray(items) ? items : { commands: items.commands || [] }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
 });
-ui.scriptRunBtn.addEventListener("click", () => runCommand("injectScript", { code: ui.scriptCode.value }).then((r) => ui.scriptOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.scriptOutput.textContent = e.message));
+ui.scriptRunBtn.addEventListener("click", () => runCommand("injectScript", { code: ui.scriptCode.value }).then(setScriptOutput).catch((e) => {
+    ui.scriptRawOutput.value = e.message;
+    ui.scriptOutput.textContent = e.message;
+}));
+ui.scriptCopyRawBtn.addEventListener("click", () => copyText(ui.scriptRawOutput.value, "script raw output").catch((e) => log(e.message)));
+ui.scriptSelectRawBtn.addEventListener("click", () => {
+    ui.scriptRawOutput.focus();
+    ui.scriptRawOutput.select();
+});
 
 ui.pad.addEventListener("pointerdown", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, true); });
 ui.pad.addEventListener("pointerup", (e) => { if (e.target.dataset.button) setKey(e.target.dataset.button, false); });
