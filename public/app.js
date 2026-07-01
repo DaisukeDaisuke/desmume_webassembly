@@ -122,6 +122,8 @@ const apiDescriptions = {
     wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
     waitMs: "指定ミリ秒だけ待機して status を返します。短い sleep 用の別名です。",
     setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
+    eval: "WebMCPから短いJavaScriptを隔離ワーカーで実行し、mcp.call()経由で複数コマンドをまとめて調査します。",
+    runScript: "evalの別名です。WebMCPから隔離ワーカー内のJavaScriptを実行します。",
     injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
     batch: "複数のMCPコマンドを順番に実行し、各結果を配列で返します。",
     setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
@@ -2048,6 +2050,8 @@ const commands = {
         state.fns.dbgWrite32(cpuIndex(params.cpu), address + 4, parseNumber(params.high ?? 0));
         return { ok: true, address, value, high: parseNumber(params.high ?? 0) };
     },
+    async eval(params = {}) { return runIsolatedScript(String(params.code ?? ""), Number(params.timeoutMs ?? 3000)); },
+    async runScript(params = {}) { return commands.eval(params); },
     async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value), Number(params.timeoutMs ?? 3000)); },
     async batch(params = {}) {
         const items = Array.isArray(params) ? params : Array.isArray(params.commands) ? params.commands : [];
@@ -2184,24 +2188,30 @@ window.DesmumeMCP = {
     list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""]))
 };
 
+function webMcpContent(result) {
+    return {
+        content: [{ type: "text", text: rawOutputText(result) }]
+    };
+}
+
+function parseWebMcpInput(input) {
+    if (typeof input !== "string") return input || {};
+    if (!input.trim()) return {};
+    return JSON.parse(input);
+}
+
 async function registerBrowserModelContextTools() {
     const modelContext = ("modelContext" in navigator && navigator.modelContext)
         || ("modelContext" in document && document.modelContext);
     if (!modelContext || typeof modelContext.registerTool !== "function") return false;
-    const baseSchema = {
-        type: "object",
-        additionalProperties: true,
-        description: "Parameters passed to the matching DeSmuME Web Debugger MCP command."
-    };
-    const registrations = Object.keys(commands).map((name) => ({
-        name: `desmume.${name}`,
-        title: `DeSmuME ${name}`,
-        description: apiDescriptions[name] || `Run DeSmuME command ${name}.`,
-        inputSchema: baseSchema,
-        annotations: { readOnlyHint: ["status", "getRegisters", "disassemble", "disassembleBytes", "binaryFloat", "dumpMemory", "listBreakpoints", "listMemoryFreezes", "callStack", "stackTrace", "listRecentFiles"].includes(name) },
-        execute: async (input = {}) => runCommand(name, input || {})
-    }));
-    registrations.push({
+    const registrations = [{
+        name: "desmume.list",
+        title: "DeSmuME command list",
+        description: "Lists available DeSmuME Web Debugger commands and their short descriptions.",
+        inputSchema: { type: "object", additionalProperties: false },
+        annotations: { readOnlyHint: true },
+        execute: async () => webMcpContent(window.DesmumeMCP.list())
+    }, {
         name: "desmume.call",
         title: "DeSmuME command",
         description: "Runs one DeSmuME Web Debugger command by name. Use this when an agent wants to choose a command dynamically.",
@@ -2214,20 +2224,54 @@ async function registerBrowserModelContextTools() {
             },
             additionalProperties: false
         },
-        execute: async (input = {}) => runCommand(String(input.command || ""), input.params || {})
-    });
+        execute: async (input = {}) => {
+            const parsed = parseWebMcpInput(input);
+            return webMcpContent(await runCommand(String(parsed.command || ""), parsed.params || {}));
+        }
+    }, {
+        name: "desmume.eval",
+        title: "DeSmuME eval",
+        description: "Runs a short isolated JavaScript snippet with mcp.call(command, params). Return strings for raw text output.",
+        inputSchema: {
+            type: "object",
+            required: ["code"],
+            properties: {
+                code: { type: "string", description: "Script body. Use await mcp.call(name, params); return a concise string or object." },
+                timeoutMs: { type: "number", description: "Maximum runtime in milliseconds. Default is 3000." }
+            },
+            additionalProperties: false
+        },
+        execute: async (input = {}) => webMcpContent(await commands.eval(parseWebMcpInput(input)))
+    }, {
+        name: "desmume.runScript",
+        title: "DeSmuME run script",
+        description: "Alias for desmume.eval for clients that avoid eval-named tools.",
+        inputSchema: {
+            type: "object",
+            required: ["code"],
+            properties: {
+                code: { type: "string" },
+                timeoutMs: { type: "number" }
+            },
+            additionalProperties: false
+        },
+        execute: async (input = {}) => webMcpContent(await commands.runScript(parseWebMcpInput(input)))
+    }];
     let ok = 0;
     for (const tool of registrations) {
         try {
             await modelContext.registerTool(tool);
             ok++;
         } catch (error) {
-            if (!String(error && error.message || error).includes("already")) console.warn("WebMCP register failed", tool.name, error);
+            if (String(error && error.message || error).includes("already")) ok++;
+            else console.warn("WebMCP register failed", tool.name, error);
         }
     }
     log(`WebMCP registered ${ok} tools`);
     return ok > 0;
 }
+
+registerBrowserModelContextTools().catch((error) => log(error.message || String(error)));
 
 window.addEventListener("message", async (event) => {
     const msg = event.data || {};

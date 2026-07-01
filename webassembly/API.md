@@ -8,7 +8,7 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `window.DesmumeMCP.call(name, params)`: Runs one command and returns a result object.
 - `window.DesmumeMCP.list()`: Returns command names, parameter notes, and descriptions.
 - `window.postMessage({ type: "desmume-mcp", id, command, params }, "*")`: Message-based command transport. The page replies with `{ type: "desmume-mcp-result", id, result }`.
-- Browser WebMCP: when `navigator.modelContext` or `document.modelContext` is available, the page registers each command as `desmume.<command>` plus a generic `desmume.call` tool.
+- Browser WebMCP: when `navigator.modelContext` is available, the page registers `desmume.list`, `desmume.call`, `desmume.eval`, and `desmume.runScript`. Use `desmume.eval` for multi-command investigation scripts with `mcp.call(command, params)`.
 
 ## Commands
 
@@ -80,6 +80,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `waitMs`: Alias for `wait`.
 - `runTouchHold`: Holds the lower touch screen at a DS coordinate using `{ "x": 128, "y": 96, "durationMs": 300, "waitBeforeMs": 0, "waitAfterMs": 0, "timeoutMs": 2000 }`.
 - `setCTableSeed`: Implements the `setCTable_jp.lua` write pattern in JavaScript/API form. By default it writes `0x4b539adb` to `0x02385f0c` and zero to the following word; override with `{ "address": string|number, "value": string|number, "high": string|number }`.
+- `eval`: Runs isolated JavaScript against a capability object from WebMCP. The script body uses `await mcp.call(command, params)` and should return a concise string or object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "code": string, "timeoutMs": number }`.
+- `runScript`: Alias for `eval` for clients that avoid eval-named tools.
 - `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "timeoutMs": number }` to change the script timeout.
 - `batch`: Runs multiple WebMCP commands sequentially. Pass either an array or `{ "commands": [{ "command": "status", "params": {} }] }`; the result contains one entry per command.
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
