@@ -76,13 +76,33 @@ Chrome DevTools MCP で直接実行する最小手順:
 
 1. `list_webmcp_tools` を実行し、`desmume.eval` があることを確認する。
 2. `execute_webmcp_tool` で `toolName: "desmume.eval"` を指定する。
-3. `input` はJSON文字列で渡す。中の `code` は関数本文だけを書く。
-4. 返却の外側は `status` / `output` のJSONで包まれる。読むべき本文は `output.content[0].text` だけ。
+3. LM Studio の `run_javascript` や Codex GPT-5.5 など Node.js を使える環境では、必ず Node.js 側で `JSON.stringify({ code, timeoutMs })` してから渡す。手で多重エスケープしない。
+4. `code` は関数本文だけを書く。evalに渡る最終本文では `mcp.call("status", {})` のように通常の引用符になっている必要がある。`mcp.call(\"status\", {})` が本文に残っていたらエスケープしすぎ。
+5. 返却の外側は `status` / `output` のJSONで包まれる。読むべき本文は `output`。
 
 ```js
+// Node.js / run_javascript で組み立てる。出力された object を execute_webmcp_tool に渡す。
+const code = String.raw`const status = await mcp.call("status", {});
+return [
+  "ready: " + status.ready,
+  "romLoaded: " + status.romLoaded,
+  "paused: " + status.paused
+].join("\n");`;
+
+const toolInput = {
+  toolName: "desmume.eval",
+  input: JSON.stringify({ code, timeoutMs: 3000 })
+};
+
+return toolInput;
+```
+
+`input` を文字列としてしか渡せない環境でも、parse後の中身は次の形にする。`code` 内の `\"` はJSON表現上のエスケープであり、eval本文にバックスラッシュを残してはいけない。
+
+```json
 {
-  "toolName": "desmume.eval",
-  "input": "{\"code\":\"const status = await mcp.call(\\\"status\\\", {}); return `ready: ${status.ready}\\\\nromLoaded: ${status.romLoaded}\\\\npaused: ${status.paused}`;\",\"timeoutMs\":3000}"
+  "code": "const status = await mcp.call(\"status\", {});\nreturn [`ready: ${status.ready}`, `romLoaded: ${status.romLoaded}`, `paused: ${status.paused}`].join(\"\\n\");",
+  "timeoutMs": 3000
 }
 ```
 
