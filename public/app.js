@@ -2218,6 +2218,22 @@ function runIsolatedScript(code, timeoutMs = 3000) {
     return new Promise((resolve, reject) => {
         const workerCode = `
           const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
+          function describeError(error, code) {
+            const name = error && error.name ? String(error.name) : "Error";
+            const message = error && error.message ? String(error.message) : String(error || "");
+            const stack = error && error.stack ? String(error.stack) : "";
+            const match = stack.match(/desmume-eval-user\\.js:(\\d+):(\\d+)/);
+            const parts = [message ? name + ": " + message : name];
+            if (match) {
+              const userLine = Math.max(1, Number(match[1]) - 1);
+              const column = Number(match[2]);
+              const source = String(code || "").split("\\n")[userLine - 1] || "";
+              parts.push("at eval line " + userLine + ", column " + column);
+              if (source) parts.push("> " + source);
+            }
+            if (stack) parts.push(stack);
+            return parts.join("\\n");
+          }
           onmessage = async (event) => {
             if (!event.data || event.data.type !== "run") return;
             const { code } = event.data;
@@ -2234,10 +2250,11 @@ function runIsolatedScript(code, timeoutMs = 3000) {
               postMessage({ type: "call", id, command, params });
             }) };
             try {
-              const result = await eval("(async (mcp) => { " + code + "\\n})(mcp)");
+              const script = "(async (mcp) => {\\n" + code + "\\n})\\n//# sourceURL=desmume-eval-user.js";
+              const result = await (0, eval)(script)(mcp);
               postMessage({ type: "done", result });
             } catch (error) {
-              postMessage({ type: "error", error: String(error && error.message || error) });
+              postMessage({ type: "error", error: describeError(error, code) });
             }
           };
         `;
