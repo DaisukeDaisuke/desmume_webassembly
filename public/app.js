@@ -111,6 +111,8 @@ const apiDescriptions = {
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
     stackTrace: "registerenterfunc相当フックで記録したコールスタックとSP付近のワードを取得します。limitで返すframe数を制限できます。",
     callStack: "記録済みコールスタックをnewest-firstのJSONで取得します。SP帯やPC書き込み経路が切り替わった場合は別laneとしてstacksに分かれ、各laneにnowPcが付きます。",
+    listOtherCoroutines: "現在ではないコルーチンlaneの一覧と、詳細取得用のgetOtherCoroutinesコピペコマンドを返します。",
+    getOtherCoroutines: "現在ではないコルーチンlaneの公開用コールスタック詳細を返します。stackIdで1件に絞れます。",
     copyCallStackMarkdown: "記録済みコールスタックをMarkdown表にして返し、可能ならクリップボードへコピーします。",
     copyCallStackCsv: "記録済みコールスタックをCSVにして返し、可能ならクリップボードへコピーします。",
     runUntilReturn: "コールスタック深度が現在より浅くなるまで実行します。",
@@ -256,6 +258,58 @@ function publicCallStackFrame(frame, cpu = state.selectedCpu) {
     };
 }
 
+function publicRealFrames(stack, cpu = state.selectedCpu) {
+    return (Array.isArray(stack?.frames) ? stack.frames : [])
+        .filter((frame) => !frame.synthetic)
+        .map((frame) => publicCallStackFrame(frame, cpu));
+}
+
+function otherCoroutineCommand(cpu, stackId, limit) {
+    const params = { cpu, stackId, limit };
+    return {
+        command: "getOtherCoroutines",
+        params,
+        webMcpCall: { command: "getOtherCoroutines", params },
+        injectionSnippet: `return await mcp.call("getOtherCoroutines", ${JSON.stringify(params)});`
+    };
+}
+
+function publicOtherCoroutineSummary(stack, data, params = {}) {
+    const cpu = String(params.cpu ?? state.selectedCpu);
+    const limit = callStackLimit(params);
+    const frames = publicRealFrames(stack, cpu);
+    return {
+        id: stack.id,
+        current: false,
+        activeStackId: Number(data.activeStackId),
+        sp: stack.spHex,
+        nowPc: stack.nowPcHex,
+        depth: frames.length,
+        newestFrame: frames[0] || null,
+        state: "これは現在のコルーチンではありません。",
+        getOtherCoroutines: otherCoroutineCommand(cpu, stack.id, limit)
+    };
+}
+
+function publicOtherCoroutines(data, params = {}) {
+    const stackId = params.stackId == null ? null : Number(params.stackId);
+    const stacks = Array.isArray(data.stacks) ? data.stacks : [];
+    const activeStackId = Number(data.activeStackId);
+    const others = stacks.filter((stack) => stack.id !== activeStackId && !stack.active);
+    const selected = stackId == null ? others : others.filter((stack) => stack.id === stackId);
+    const coroutines = selected.map((stack) => ({
+        ...publicOtherCoroutineSummary(stack, data, params),
+        frames: publicRealFrames(stack, String(params.cpu ?? state.selectedCpu))
+    }));
+    return {
+        enabled: !!data.enabled,
+        activeStackId,
+        count: coroutines.length,
+        coroutines,
+        message: coroutines.length ? "" : "現在ではないコルーチンは記録されていません。"
+    };
+}
+
 function publicCallStackData(data, params = {}) {
     if (params.raw) return data;
     const cpu = String(params.cpu ?? state.selectedCpu);
@@ -281,7 +335,7 @@ function publicCallStackData(data, params = {}) {
                 nowPc: stack.nowPcHex,
                 depth: Number(stack.frames?.filter((frame) => !frame.synthetic).length ?? stack.depth ?? 0),
                 message: "これは現在のコルーチンではありません。",
-                howToShow: "そのコルーチンが現在実行中になってから callStack を呼んでください。内部調査が必要な場合だけ callStack({ raw: true }) を使います。"
+                howToShow: `listOtherCoroutines({ cpu: ${JSON.stringify(cpu)} }) で一覧を確認し、getOtherCoroutines({ cpu: ${JSON.stringify(cpu)}, stackId: ${stack.id} }) で詳細を取得します。`
             };
         })
     };
@@ -2175,6 +2229,19 @@ const commands = {
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
     async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack: publicCallStackData(callStack, params), text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
     async callStack(params = {}) { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return publicCallStackData(callStack, params); },
+    async listOtherCoroutines(params = {}) {
+        ensureRomLoaded("other coroutine list requires a loaded ROM");
+        const callStack = readCallStackData(params);
+        renderCallStack(callStack);
+        const details = publicOtherCoroutines(callStack, params);
+        return { ...details, coroutines: details.coroutines.map(({ frames, ...summary }) => summary) };
+    },
+    async getOtherCoroutines(params = {}) {
+        ensureRomLoaded("other coroutine details require a loaded ROM");
+        const callStack = readCallStackData(params);
+        renderCallStack(callStack);
+        return publicOtherCoroutines(callStack, params);
+    },
     async copyCallStackMarkdown() {
         ensureRomLoaded("call stack copy requires a loaded ROM");
         const callStack = readCallStackData({ limit: 512 });
