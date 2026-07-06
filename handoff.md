@@ -116,3 +116,9 @@
 - MCP/API `callStack` now returns a UI-facing subset by default. Synthetic frames, `expected`, `kind`, `mode*`, and `controlFlow` stay internal unless `{ raw: true }` is requested; active real frames include 1-3 caller/callee disassembly lines. Non-active stack lanes only explain that they are not the current coroutine and how to inspect them.
 - `step`, `smartStep`, `stepOver`, `runUntilReturn`, and `runUntilNextCall` return self-contained debugger context with `pcBefore`, `pcAfter`, minimal `status`, hex `registers`, and near-PC `disassembly`, so MCP callers do not need an immediate follow-up `status`/`getRegisters`/`disassemble` call.
 - `listOtherCoroutines` / `getOtherCoroutines` are the explicit public path for non-current coroutine lanes. `listOtherCoroutines` returns summaries plus copy-pasteable `getOtherCoroutines` commands/snippets; `getOtherCoroutines` returns UI-facing real frames for the requested non-current lane(s), still without synthetic/control-flow internals.
+
+## 2026-07-06 Addendum
+
+- `disassemble` now omits opcode/raw byte columns by default to reduce local-AI confusion and token use. Pass `includeBytes:true`, use `window.A(...)`, or set the UI Disassembly Bytes selector to `show` when raw instruction constants are needed.
+- Global one-letter shortcut functions `window.a(...)` through `window.Z(...)` are hardcoded browser-side wrappers over existing commands and return the same JSON objects as `DesmumeMCP.call()`. `window.DesmumeMCP.shortcuts()` / `window.DesmumeShortcuts` lists their command mappings.
+- `stepNextBranchOrReturn` / `nextBranchOrReturn` smart-steps until the current instruction is branch-like or return-like, stopping before that instruction executes. It steps over call-like `bl`/`blx` instructions while searching.

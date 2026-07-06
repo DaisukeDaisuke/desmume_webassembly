@@ -84,7 +84,7 @@ const apiDescriptions = {
     setKeyBinding: "人間用ホットキー割り当てを変更します。",
     getRegisters: "ARM9/ARM7のレジスタを取得します。",
     setRegister: "指定レジスタを書き換えます。",
-    disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。",
+    disassemble: "PC付近または指定アドレスを逆アセンブル相当のアドレス付きダンプで返します。デフォルトではopcode列を省き、includeBytes:trueで表示します。",
     disassembleBytes: "任意のARM/Thumbバイト列または32-bit opcode列をROMなしで逆アセンブルします。未定義命令が含まれるとerror=trueになります。",
     binaryFloat: "binary32/binary64の浮動小数点ビット列をC++側でdecode/encodeします。",
     dumpMemory: "指定範囲のメモリをバイト列とhexテキストで返します。",
@@ -106,6 +106,7 @@ const apiDescriptions = {
     step: "CPUステップを指定回数実行します。",
     smartStep: "現在命令を見て、通常命令はStep、bx/bl/blxはStep Overで進めます。b系やpc書き換え系はそのまま1命令進めます。",
     stepOver: "ステップオーバーを1回実行します。",
+    stepNextBranchOrReturn: "分岐またはreturnらしいPC操作命令の直前まで進めます。途中の関数呼び出しはstep overします。",
     continue: "デバッグ停止から再開します。",
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
@@ -121,6 +122,7 @@ const apiDescriptions = {
     nextFunctionEnter: "runUntilNextCall の別名です。次の関数入口まで進めます。",
     nextCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
     nextFunctionCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
+    nextBranchOrReturn: "stepNextBranchOrReturn の別名です。",
     wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
     waitMs: "指定ミリ秒だけ待機して status を返します。短い sleep 用の別名です。",
     setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
@@ -1226,8 +1228,23 @@ function instructionOpcode(line) {
     return String(line || "").replace(/^=>/, "  ");
 }
 
+function stripDisassemblyBytesLine(line) {
+    return String(line || "").replace(/^(\s*(?:=>)?\s*[0-9a-fA-F]+:\s+)[0-9a-fA-F]{1,8}\s+(.*)$/i, "$1$2");
+}
+
+function formatDisassemblyText(text, includeBytes = false) {
+    if (includeBytes) return String(text || "");
+    return String(text || "").split("\n").map(stripDisassemblyBytesLine).join("\n");
+}
+
+function shouldIncludeDisassemblyBytes(params = {}) {
+    if (params.includeBytes != null) return !!params.includeBytes;
+    if (params.bytes != null) return !!params.bytes;
+    return ui.disasmBytes ? ui.disasmBytes.value === "show" : false;
+}
+
 function instructionBody(line) {
-    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{1,8})\s*/i, "").trim();
+    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{4}|[0-9a-fA-F]{8})\s*/i, "").trim();
 }
 
 function armConditionSuffix(text) {
@@ -1262,16 +1279,19 @@ function classifyInstruction(line) {
     const isMovPc = (mnemonicMatches(mnemonic, "mov") || mnemonicMatches(mnemonic, "movs")) && destPc;
     const isLdrPc = mnemonicMatches(mnemonic, "ldr") && destPc;
     const isLdmPc = /^ldm/i.test(mnemonic) && /\{[^}]*\bpc\b[^}]*\}\^?/i.test(operands);
+    const isPopPc = mnemonicMatches(mnemonic, "pop") && /\{[^}]*\bpc\b[^}]*\}/i.test(operands);
     const isSubsPc = mnemonicMatches(mnemonic, "subs") && destPc;
     const isAluPcBranch = (mnemonicMatches(mnemonic, "add") || mnemonicMatches(mnemonic, "sub")) && destPc;
     const isPurpleBranch = mnemonic.startsWith("b") && !isCall && !isBx;
-    const writesPc = isBx || isMovPc || isLdrPc || isLdmPc || isSubsPc || isAluPcBranch;
+    const isReturn = (isBx && /\blr\b/i.test(operands)) || isLdmPc || isPopPc || isSubsPc || (isMovPc && /\blr\b/i.test(operands));
+    const writesPc = isBx || isMovPc || isLdrPc || isLdmPc || isPopPc || isSubsPc || isAluPcBranch;
     return {
         mnemonic,
         body,
-        kind: isCall ? "call" : isBx ? "bx" : (isPurpleBranch || writesPc) ? "branch" : "normal",
+        kind: isCall ? "call" : isReturn ? "return" : isBx ? "bx" : (isPurpleBranch || writesPc) ? "branch" : "normal",
         isCall,
         isBx,
+        isReturn,
         isBranch: isPurpleBranch || writesPc,
         writesPc
     };
@@ -1351,6 +1371,39 @@ async function runDebuggerInstruction(kind, params = {}) {
     updateStatus();
     result.paused = state.paused;
     return attachDebuggerContext(result, cpu, pcBefore, native);
+}
+
+async function runUntilNextBranchOrReturn(params = {}) {
+    ensureRomLoaded("next branch/return requires a loaded ROM");
+    const cpu = String(params.cpu ?? state.selectedCpu);
+    const pcBefore = getPc(cpu);
+    const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
+    const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+    let steps = 0;
+    state.breakRefreshKey = "";
+    syncBreakpointsToNative();
+    while (performance.now() < deadline && steps < maxSteps) {
+        const info = await getCurrentInstructionInfo(cpu);
+        if (info.isReturn || info.isBranch) {
+            const result = { kind: "stepNextBranchOrReturn", ok: true, steps, stop: info.isReturn ? "return" : "branch", instruction: info };
+            await refreshDebuggerViews({ cpu, keepHighlight: true });
+            return attachDebuggerContext(result, cpu, pcBefore);
+        }
+        if (info.isCall) {
+            state.fns.dbgStepOver(cpuIndex(cpu));
+        } else {
+            state.fns.dbgStep(cpuIndex(cpu), 1);
+        }
+        steps++;
+        applyFreezes();
+        const native = syncNativeBreakStatus();
+        if (native && native.lastBreak && native.lastBreak.hit) {
+            await refreshDebuggerViews({ cpu, keepHighlight: true });
+            return attachDebuggerContext({ kind: "stepNextBranchOrReturn", ok: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, native);
+        }
+    }
+    await refreshDebuggerViews({ cpu, keepHighlight: true });
+    throw new Error(`stepNextBranchOrReturn timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
 }
 
 function renderDisassembly(text) {
@@ -2010,7 +2063,7 @@ const commands = {
         const addr = (base - before * width) >>> 0;
         const count = Number(params.count ?? ui.disasmCount.value);
         const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count + before, modeNumber(mode));
-        return { address: addr, before, text };
+        return { address: addr, before, includeBytes: shouldIncludeDisassemblyBytes(params), text: formatDisassemblyText(text, shouldIncludeDisassemblyBytes(params)) };
     },
     async disassembleBytes(params = {}) {
         await ensureWasmReady();
@@ -2224,6 +2277,7 @@ const commands = {
         log("step over can still collide with other breakpoints; plain step is safer.");
         return runDebuggerInstruction("stepOver", params);
     },
+    async stepNextBranchOrReturn(params = {}) { return runUntilNextBranchOrReturn(params); },
     async continue() { return commands.resume(); },
     async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; if (!params.enabled) state.selectedCallstackLaneId = null; renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled }); return { enabled: !!params.enabled }; },
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
@@ -2274,6 +2328,7 @@ const commands = {
     async nextFunctionEnter(params = {}) { return commands.runUntilNextCall(params); },
     async nextCall(params = {}) { return commands.runUntilNextCall(params); },
     async nextFunctionCall(params = {}) { return commands.runUntilNextCall(params); },
+    async nextBranchOrReturn(params = {}) { return commands.stepNextBranchOrReturn(params); },
     async returnToPop(params = {}) { return commands.runUntilReturn(params); },
     async setCTableSeed(params = {}) {
         ensureRomLoaded("CTable write requires a loaded ROM");
@@ -2435,7 +2490,8 @@ function runIsolatedScript(code, timeoutMs = 3000) {
 
 window.DesmumeMCP = {
     call: runCommand,
-    list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""]))
+    list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""])),
+    shortcuts: () => window.DesmumeShortcuts || {}
 };
 
 function webMcpContent(result) {
@@ -2447,6 +2503,87 @@ function parseWebMcpInput(input) {
     if (!input.trim()) return {};
     return JSON.parse(input);
 }
+
+const globalShortcutDefs = [
+    ["a", "disassemble", ["address", "count", "before", "mode"], { count: 16, before: 4 }],
+    ["A", "disassemble", ["address", "count", "before", "mode"], { count: 16, before: 4, includeBytes: true }],
+    ["b", "disassembleBytes", ["input", "mode", "endian"]],
+    ["B", "binaryFloat", ["value", "bits", "op"]],
+    ["c", "callStack", ["limit"], { limit: 32 }],
+    ["C", "getOtherCoroutines", ["stackId", "limit"], { limit: 32 }],
+    ["d", "status", []],
+    ["D", "dumpMemory", ["address", "length", "view"], { length: 64 }],
+    ["e", "getRegisters", ["cpu"]],
+    ["E", "eval", ["code", "timeoutMs"]],
+    ["f", "step", ["count"], { count: 1 }],
+    ["F", "stepFrames", ["frames"], { frames: 1 }],
+    ["g", "smartStep", []],
+    ["G", "setRegister", ["register", "value", "cpu"]],
+    ["h", "stepOver", []],
+    ["H", "setFeatureSet", ["debugger", "memory", "mcp"]],
+    ["i", "stepNextBranchOrReturn", ["timeoutMs", "maxSteps"]],
+    ["I", "injectBytes", ["address", "input"]],
+    ["j", "runUntilNextCall", ["timeoutMs", "maxSteps"]],
+    ["J", "nextFunctionCall", ["timeoutMs", "maxSteps"]],
+    ["k", "runUntilReturn", ["timeoutMs", "maxSteps"]],
+    ["K", "returnToPop", ["timeoutMs", "maxSteps"]],
+    ["l", "listBreakpoints", []],
+    ["L", "listOtherCoroutines", ["limit"], { limit: 32 }],
+    ["m", "batch", ["commands"]],
+    ["M", "setBreakpoint", ["address", "type", "enabled"]],
+    ["n", "nextBranchOrReturn", ["timeoutMs", "maxSteps"]],
+    ["N", "removeBreakpoint", ["id"]],
+    ["o", "searchMemory", ["address", "value", "condition", "size"], { limit: 64 }],
+    ["O", "resetMemorySearch", []],
+    ["p", "pause", []],
+    ["P", "resume", []],
+    ["q", "setInput", ["button", "pressed"]],
+    ["Q", "runInputTap", ["button", "repeat", "holdMs", "gapMs"]],
+    ["r", "runInputHold", ["button", "durationMs"]],
+    ["R", "runTouchHold", ["x", "y", "durationMs"]],
+    ["s", "setSpeed", ["speed"]],
+    ["S", "setCTableSeed", ["address", "value", "high"]],
+    ["t", "stackTrace", ["limit"], { limit: 32 }],
+    ["T", "setStackTraceMode", ["enabled"]],
+    ["u", "writeMemory", ["address", "value", "size"]],
+    ["U", "setStackTracePrivilegeCheck", ["enabled"]],
+    ["v", "setRenderEnabled", ["enabled"]],
+    ["V", "setAudio", ["enabled", "volume"]],
+    ["w", "wait", ["ms"]],
+    ["W", "waitMs", ["ms"]],
+    ["x", "clearBreakStatus", []],
+    ["X", "copyCallStackMarkdown", []],
+    ["y", "setScale", ["scale"]],
+    ["Y", "copyCallStackCsv", []],
+    ["z", "setRotation", ["rotation"]],
+    ["Z", "takeScreenshot", ["type", "includeDataUrl"]]
+];
+
+function shortcutParams(args, names, defaults = {}) {
+    if (args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) {
+        return { ...defaults, ...args[0] };
+    }
+    const params = { ...defaults };
+    names.forEach((name, index) => {
+        if (index < args.length && args[index] !== undefined) params[name] = args[index];
+    });
+    return params;
+}
+
+function registerGlobalShortcuts() {
+    const shortcuts = {};
+    for (const [name, command, params, defaults] of globalShortcutDefs) {
+        const fn = (...args) => runCommand(command, shortcutParams(args, params, defaults));
+        Object.defineProperty(fn, "name", { value: `desmume_${name}_${command}`, configurable: true });
+        fn.command = command;
+        fn.params = params;
+        fn.defaults = defaults || {};
+        window[name] = fn;
+        shortcuts[name] = { command, params, defaults: defaults || {} };
+    }
+    window.DesmumeShortcuts = shortcuts;
+}
+registerGlobalShortcuts();
 
 async function registerBrowserModelContextTools() {
     const modelContext = ("modelContext" in navigator && navigator.modelContext)
@@ -2563,9 +2700,11 @@ ui.nearPcBtn.addEventListener("click", () => {
 ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+ui.cpuNextBranchReturnBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
 ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
 ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
@@ -2601,6 +2740,7 @@ ui.disasmAddress.addEventListener("change", () => {
 ui.disasmCount.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
 ui.disasmBefore.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
 ui.disasmMode.addEventListener("change", () => { if (state.autoUpdate.enabled) queueAutoUpdateLoop(); });
+ui.disasmBytes.addEventListener("change", () => { if (hasLoadedRom()) refreshDebuggerViews({ keepHighlight: true }).catch((e) => log(e.message)); });
 ui.autoUpdateToggle.addEventListener("change", () => runCommand("setAutoUpdate", { enabled: ui.autoUpdateToggle.checked, hz: Number(ui.autoUpdateRate.value) }).catch((e) => log(e.message)));
 ui.autoUpdateRate.addEventListener("change", () => runCommand("setAutoUpdate", { enabled: ui.autoUpdateToggle.checked, hz: Number(ui.autoUpdateRate.value) }).catch((e) => log(e.message)));
 ui.memoryView.addEventListener("change", () => { if (state.ready && hasLoadedRom()) runCommand("dumpMemory", {}).then(renderMemoryDump).catch((e) => log(e.message)); });

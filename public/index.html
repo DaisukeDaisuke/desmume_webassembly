@@ -417,6 +417,7 @@
           </div>
           <div class="grid two">
             <label>Mode<select id="disasm-mode"><option>auto</option><option>arm</option><option>thumb</option></select></label>
+            <label>Bytes<select id="disasm-bytes"><option value="hide" selected>hide</option><option value="show">show</option></select></label>
             <div class="row auto-update-row">
               <label class="switch"><input id="auto-update-toggle" type="checkbox"> auto update</label>
               <label>Hz<input id="auto-update-rate" type="number" min="1" max="20" value="1"></label>
@@ -429,6 +430,7 @@
             <button id="cpu-step-debug-btn" type="button">Step</button>
             <button id="cpu-smart-step-debug-btn" type="button">Smart Step</button>
             <button id="cpu-step-over-debug-btn" type="button">Step Over</button>
+            <button id="cpu-next-branch-return-debug-btn" type="button">Next Branch/Return</button>
             <button id="stack-next-call-debug-btn" type="button">Next Call</button>
             <button id="stack-return-debug-btn" type="button">Return To Pop</button>
           </div>
@@ -525,6 +527,7 @@
               <button id="cpu-step-btn" type="button">Step</button>
               <button id="cpu-smart-step-btn" type="button">Smart Step</button>
               <button id="cpu-step-over-btn" type="button">Step Over</button>
+              <button id="cpu-next-branch-return-btn" type="button">Next Branch/Return</button>
               <button id="stack-next-call-toolbar-btn" type="button">Next Call</button>
               <button id="stack-return-toolbar-btn" type="button">Return To Pop</button>
             </div>
