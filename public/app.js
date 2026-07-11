@@ -48,7 +48,13 @@ const state = {
     autoUpdate: { enabled: false, hz: 1, timer: 0 },
     breakRefreshPending: false,
     breakRefreshTimer: 0,
-    breakRefreshKey: ""
+    breakRefreshKey: "",
+    scripts: new Map(),
+    nextScriptId: 1,
+    nextScriptTriggerId: 1,
+    activeScriptId: null,
+    scriptTriggers: [],
+    scriptStartGeneration: 0
 };
 
 const apiDescriptions = {
@@ -126,9 +132,24 @@ const apiDescriptions = {
     wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
     waitMs: "指定ミリ秒だけ待機して status を返します。短い sleep 用の別名です。",
     setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
+    memoryGetRegister: "スクリプト向けのレジスタ読み込みです。値はBig Endianの16進数文字列で返ります。",
+    memorySetRegister: "スクリプト向けのレジスタ書き込みです。Big Endianの16進数値を受け取ります。",
+    memoryReadByte: "指定アドレスの1バイトを読みます。",
+    memoryReadWord: "指定アドレスの2バイトをBig Endian値として読みます。",
+    memoryReadDword: "指定アドレスの4バイトをBig Endian値として読みます。",
+    memoryWriteByte: "指定アドレスへ1バイトを書きます。",
+    memoryWriteWord: "Big Endian値をLittle Endianメモリへ2バイトとして書きます。",
+    memoryWriteDword: "Big Endian値をLittle Endianメモリへ4バイトとして書きます。",
+    runPersistentScript: "隔離Workerで常駐JavaScriptを開始または更新します。onTick、reset、各ブレークポイントコールバックを登録できます。",
+    listScripts: "実行中・停止中の常駐スクリプト一覧とトリガー数を返します。",
+    stopScript: "指定スクリプトを停止し、そのスクリプトのトリガーを全解除します。",
+    restartScript: "指定スクリプトをログを消去して再起動します。",
+    getScript: "指定スクリプトのJavaScript本文または正規表現検索結果を返します。",
+    listScriptPrint: "常駐スクリプトのコンソール出力を最大max件返します。",
+    clearScriptPrint: "指定スクリプトまたは全スクリプトのコンソール出力を消去します。",
     eval: "WebMCPから短いJavaScriptを隔離ワーカーで実行し、mcp.call()経由で複数コマンドをまとめて調査します。",
     runScript: "evalの別名です。WebMCPから隔離ワーカー内のJavaScriptを実行します。",
-    injectScript: "隔離ワーカー内でMCP能力だけを渡してJavaScriptを実行します。",
+    injectScript: "短い隔離JavaScriptを1回実行します。常駐トリガーにはrunPersistentScriptを使います。",
     batch: "複数のMCPコマンドを順番に実行し、各結果を配列で返します。",
     setFeatureSet: "デバッガ、メモリビュー、MCPなど重い機能群をまとめて切り替えます。"
 };
@@ -1003,6 +1024,7 @@ function tick(now) {
                 state.running = false;
                 if (state.ready) state.fns.pauseEmu(1);
             }
+            for (let i = 0; i < ran; i++) dispatchScriptEvent("tick", { frame: state.frame - ran + i + 1, cpu: state.selectedCpu });
             applyFreezes();
             drawFrame();
             pumpAudio(ran);
@@ -1122,6 +1144,11 @@ function syncNativeBreakStatus(native = null) {
         if (state.lastBreakKey !== key) {
             state.lastBreakKey = key;
             log(`break ${breakpointKindName(bp.kind)} ${bp.cpu} at ${hex(bp.address)} pc ${hex(bp.pc)}`);
+            const type = breakpointKindName(bp.kind);
+            for (const trigger of state.scriptTriggers.filter((item) => item.type === type && (item.type === "dataAbort" || item.type === "prefetchAbort" || item.type === "undefinedInstruction" || (item.cpu === String(bp.cpu) && item.address === (Number(bp.address) >>> 0))))) {
+                const script = state.scripts.get(trigger.scriptId);
+                if (script?.running) script.worker.postMessage({ type: "event", callbackId: trigger.callbackId, event: type, payload: { ...bp, address: hex(bp.address), pc: hex(bp.pc), value: hex(bp.value) } });
+            }
         }
     }
     return status;
@@ -1226,6 +1253,178 @@ function renderHotkey() {
 
 function instructionOpcode(line) {
     return String(line || "").replace(/^=>/, "  ");
+}
+
+function swap16(value) {
+    const n = Number(value) & 0xffff;
+    return ((n & 0xff) << 8) | ((n >>> 8) & 0xff);
+}
+
+function swap32(value) {
+    const n = Number(value) >>> 0;
+    return (((n & 0xff) << 24) | ((n & 0xff00) << 8) | ((n >>> 8) & 0xff00) | ((n >>> 24) & 0xff)) >>> 0;
+}
+
+function bigEndianValue(value, size) {
+    const parsed = parseNumber(value) >>> 0;
+    return size === 4 ? swap32(parsed) : size === 2 ? swap16(parsed) : parsed & 0xff;
+}
+
+function scriptConsoleLine(script, values) {
+    const line = values.map((value) => typeof value === "string" ? value : rawOutputText(value)).join(" ");
+    script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`].slice(-400);
+    if (state.activeScriptId === script.id) renderScriptConsole(script);
+}
+
+function renderScriptConsole(script = state.scripts.get(state.activeScriptId)) {
+    const text = script ? script.output.join("\n") : "No script selected.";
+    ui.scriptRawOutput.value = text;
+    ui.scriptOutput.textContent = text || "No console output.";
+}
+
+function renderScripts() {
+    const selected = state.scripts.get(state.activeScriptId);
+    ui.scriptTabs.replaceChildren();
+    ui.scriptList.replaceChildren();
+    for (const script of state.scripts.values()) {
+        const tab = ui.scriptTabTemplate.content.firstElementChild.cloneNode(true);
+        tab.textContent = script.name;
+        tab.dataset.scriptTab = script.id;
+        tab.setAttribute("aria-selected", String(script.id === state.activeScriptId));
+        tab.addEventListener("click", () => selectScript(script.id));
+        ui.scriptTabs.append(tab);
+        const row = document.createElement("button");
+        row.type = "button";
+        row.dataset.running = String(script.running);
+        row.textContent = `${script.name} · ${script.running ? "running" : "stopped"} · ${script.triggers.length} triggers`;
+        row.addEventListener("click", () => selectScript(script.id));
+        ui.scriptList.append(row);
+    }
+    if (!selected && state.scripts.size) selectScript(state.scripts.values().next().value.id);
+}
+
+function selectScript(id) {
+    const script = state.scripts.get(Number(id));
+    if (!script) return;
+    state.activeScriptId = script.id;
+    ui.scriptName.value = script.name;
+    if (document.activeElement !== ui.scriptCode) ui.scriptCode.value = script.code;
+    renderScriptConsole(script);
+    renderScripts();
+}
+
+function dispatchScriptEvent(type, payload = {}) {
+    for (const script of state.scripts.values()) {
+        if (script.running) script.worker.postMessage({ type: "event", event: type, payload });
+    }
+}
+
+async function unregisterScriptTriggers(script) {
+    for (const trigger of [...script.triggers]) {
+        if (trigger.breakpointId) {
+            const bp = state.breakpoints.find((item) => item.id === trigger.breakpointId);
+            if (bp) await commands.removeBreakpoint({ id: bp.id });
+        }
+        if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(trigger.type) && !state.scriptTriggers.some((item) => item.id !== trigger.id && item.type === trigger.type)) {
+            await commands.setSpecialBreakpoint({ kind: trigger.type, enabled: false });
+        }
+        state.scriptTriggers = state.scriptTriggers.filter((item) => item.id !== trigger.id);
+    }
+    script.triggers = [];
+}
+
+async function registerScriptTrigger(script, trigger) {
+    ensureRomLoaded("script trigger registration requires a loaded ROM");
+    const type = String(trigger.kind || trigger.type || "tick");
+    const item = { id: state.nextScriptTriggerId++, scriptId: script.id, callbackId: Number(trigger.callbackId), type, cpu: String(trigger.cpu || state.selectedCpu), address: parseAddress(trigger.address, 0, trigger.cpu) };
+    if (["read", "write", "exec"].includes(type)) {
+        const result = await commands.setBreakpoint({ cpu: item.cpu, type, address: item.address, enabled: true });
+        item.breakpointId = result.id;
+    } else if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)) {
+        await commands.setSpecialBreakpoint({ kind: type, enabled: true });
+    } else if (type !== "tick" && type !== "start" && type !== "stateLoad" && type !== "stateSave") {
+        throw new Error(`unknown script trigger: ${type}`);
+    }
+    script.triggers.push(item);
+    state.scriptTriggers.push(item);
+    renderScripts();
+    return item;
+}
+
+function persistentScriptWorkerCode() {
+    return `
+      const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
+      const callbacks = new Map(); let callbackSerial = 1;
+      const ask = (type, data = {}) => new Promise((resolve, reject) => { const id = Math.random().toString(36).slice(2); const receive = (event) => { if (event.data && event.data.replyId === id) { removeEventListener("message", receive); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); } }; addEventListener("message", receive); postMessage({ type, id, ...data }); });
+      const mcp = { call: (command, params = {}) => ask("call", { command, params }) };
+      const print = (...values) => postMessage({ type: "print", values });
+      const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\\d*)x|%[sd]/g, (match, width) => { const value = values.shift(); if (match.endsWith("x")) return "0x" + (Number(value) >>> 0).toString(16).padStart(Number(width || 0), "0"); return match.endsWith("d") ? String(Number(value)) : String(value); }));
+      const printhex = (label, value) => print(label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0")));
+      const register = async (kind, address, callback, options = {}) => { if (typeof address === "function") { options = callback || {}; callback = address; address = 0; } if (typeof callback !== "function") throw new Error(kind + " callback is required"); const callbackId = callbackSerial++; callbacks.set(callbackId, { callback, kind }); return ask("register", { trigger: { kind, address, callbackId, ...options } }); };
+      const memory = {
+        getregister: (register, cpu) => ask("call", { command: "memoryGetRegister", params: { register, cpu } }),
+        setregister: (register, value, cpu) => ask("call", { command: "memorySetRegister", params: { register, value, cpu } }),
+        readbyte: (address, cpu) => ask("call", { command: "memoryReadByte", params: { address, cpu } }),
+        readword: (address, cpu) => ask("call", { command: "memoryReadWord", params: { address, cpu } }),
+        readdword: (address, cpu) => ask("call", { command: "memoryReadDword", params: { address, cpu } }),
+        writebyte: (address, value, cpu) => ask("call", { command: "memoryWriteByte", params: { address, value, cpu } }),
+        writeword: (address, value, cpu) => ask("call", { command: "memoryWriteWord", params: { address, value, cpu } }),
+        writedword: (address, value, cpu) => ask("call", { command: "memoryWriteDword", params: { address, value, cpu } }),
+        registerwrite: (address, callback, options) => register("write", address, callback, options),
+        registerread: (address, callback, options) => register("read", address, callback, options),
+        registerexec: (address, callback, options) => register("exec", address, callback, options),
+        registerexception: (kind, callback, options) => register(kind, 0, callback, options),
+        ontick: (callback, options) => register("tick", 0, callback, options)
+      };
+      memory.reg = memory.getregister; memory.regw = memory.setregister;
+      memory.read8 = memory.readbyte; memory.read16 = memory.readword; memory.read32 = memory.readdword;
+      memory.write8 = memory.writebyte; memory.write16 = memory.writeword; memory.write32 = memory.writedword;
+      const emu_registerstart = (callback, options) => register("start", 0, callback, options);
+      const emu_ontick = (callback, options) => register("tick", 0, callback, options);
+      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } };
+    `;
+}
+
+async function startPersistentScript(params = {}) {
+    const code = String(params.code ?? ui.scriptCode.value);
+    const name = String(params.name ?? ui.scriptName.value ?? "scratch").trim() || "scratch";
+    const duplicate = [...state.scripts.values()].find((script) => script.code === code && script.running);
+    if (duplicate) return scriptSummary(duplicate, true);
+    const existing = [...state.scripts.values()].find((script) => script.name === name);
+    if (existing) await stopPersistentScript({ id: existing.id });
+    const script = { id: existing?.id || state.nextScriptId++, name, code, worker: null, running: true, output: [], triggers: [] };
+    const worker = new Worker(URL.createObjectURL(new Blob([persistentScriptWorkerCode()], { type: "text/javascript" })));
+    script.worker = worker;
+    state.scripts.set(script.id, script);
+    state.activeScriptId = script.id;
+    worker.onmessage = async (event) => {
+        const msg = event.data || {};
+        try {
+            if (msg.type === "call") worker.postMessage({ replyId: msg.id, result: await runCommand(msg.command, msg.params || {}) });
+            else if (msg.type === "register") worker.postMessage({ replyId: msg.id, result: await registerScriptTrigger(script, msg.trigger || {}) });
+            else if (msg.type === "print") scriptConsoleLine(script, msg.values || []);
+            else if (msg.type === "failed") { script.running = false; scriptConsoleLine(script, [msg.error]); renderScripts(); }
+        } catch (error) { worker.postMessage({ replyId: msg.id, error: String(error.message || error) }); }
+    };
+    worker.postMessage({ type: "start", code });
+    renderScripts();
+    return scriptSummary(script, false);
+}
+
+async function stopPersistentScript(params = {}) {
+    const id = Number(params.id ?? state.activeScriptId);
+    const script = state.scripts.get(id);
+    if (!script) throw new Error(`script not found: ${id}`);
+    await unregisterScriptTriggers(script);
+    script.worker?.terminate();
+    script.running = false;
+    renderScripts();
+    renderScriptConsole(script);
+    return scriptSummary(script, false);
+}
+
+function scriptSummary(script, duplicate = false) {
+    return { id: script.id, name: script.name, running: script.running, triggers: script.triggers.map(({ id, type, address, cpu }) => ({ id, type, address: hex(address), cpu })), duplicate };
 }
 
 function stripDisassemblyBytesLine(line) {
@@ -1758,6 +1957,7 @@ const commands = {
             await recordRecentFile("state", String(params.slot), bytes, String(params.slot));
             ui.storageStatus.textContent = `state saved ${params.slot}`;
         }
+        dispatchScriptEvent("stateSave", { size, slot: params.slot || null });
         return { ok: true, size };
     },
     async loadState(params = {}) {
@@ -1780,6 +1980,7 @@ const commands = {
             state.frame = 0;
             blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
             drawLoadedStateFrame();
+            dispatchScriptEvent("stateLoad", { slot: params.slot || null });
             return { ok: true, paused: runState.paused, reset: false };
         } finally {
             restoreAfterFileLoad(runState);
@@ -1918,6 +2119,7 @@ const commands = {
         const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
         try {
             const ret = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: !hold && runState.running && !runState.paused });
+            if (ret === 0) dispatchScriptEvent("start", { generation: ++state.scriptStartGeneration, reason: "reset" });
             return { ok: ret === 0, ret, reloaded: ret === 0, held: !!hold, waitMs: bootWaitMs(params), romLoaded: state.fns.isRomLoaded() === 1 };
         } finally {
             if (hold) restoreAfterFileLoad({ running: false, paused: true });
@@ -1930,6 +2132,7 @@ const commands = {
         const resume = params.resume === true || (params.resume !== false && runState.running && !runState.paused && !ui.resetHoldToggle.checked);
         try {
             const ret = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+            if (ret === 0) dispatchScriptEvent("start", { generation: ++state.scriptStartGeneration, reason: "reloadRom" });
             return { ok: ret === 0, ret, reloaded: ret === 0, resumed: resume, waitMs: bootWaitMs(params), romLoaded: state.fns.isRomLoaded() === 1 };
         } finally {
             if (!resume) restoreAfterFileLoad({ running: false, paused: true });
@@ -1963,6 +2166,7 @@ const commands = {
         pumpAudio(ran);
         const native = syncNativeBreakStatus();
         const hitBreak = !!(native && native.lastBreak && native.lastBreak.hit);
+        for (let i = 0; i < ran; i++) dispatchScriptEvent("tick", { frame: state.frame - ran + i + 1, cpu: state.selectedCpu });
         if (wasPaused || ran < frames || hitBreak) state.fns.pauseEmu(1);
         state.paused = wasPaused || ran < frames || hitBreak;
         state.running = !state.paused;
@@ -2338,6 +2542,77 @@ const commands = {
         state.fns.dbgWrite32(cpuIndex(params.cpu), address + 4, parseNumber(params.high ?? 0));
         return { ok: true, address, value, high: parseNumber(params.high ?? 0) };
     },
+    async memoryGetRegister(params = {}) {
+        ensureRomLoaded("register read requires a loaded ROM");
+        const register = String(params.register ?? params.reg ?? "pc").toLowerCase();
+        const value = getRegisters(params.cpu)[register];
+        if (value === undefined) throw new Error(`unknown register: ${register}`);
+        return value >>> 0;
+    },
+    async memorySetRegister(params = {}) {
+        ensureRomLoaded("register write requires a loaded ROM");
+        return commands.setRegister({ cpu: params.cpu, register: params.register ?? params.reg, value: params.value });
+    },
+    async memoryReadByte(params = {}) {
+        ensureRomLoaded("memory read requires a loaded ROM");
+        return state.fns.dbgRead8(cpuIndex(params.cpu), parseAddress(params.address, 0, params.cpu)) & 0xff;
+    },
+    async memoryReadWord(params = {}) {
+        ensureRomLoaded("memory read requires a loaded ROM");
+        return swap16(state.fns.dbgRead16(cpuIndex(params.cpu), parseAddress(params.address, 0, params.cpu))) & 0xffff;
+    },
+    async memoryReadDword(params = {}) {
+        ensureRomLoaded("memory read requires a loaded ROM");
+        return swap32(state.fns.dbgRead32(cpuIndex(params.cpu), parseAddress(params.address, 0, params.cpu))) >>> 0;
+    },
+    async memoryWriteByte(params = {}) {
+        ensureRomLoaded("memory write requires a loaded ROM");
+        const address = parseAddress(params.address, 0, params.cpu);
+        state.fns.dbgWrite8(cpuIndex(params.cpu), address, bigEndianValue(params.value, 1));
+        return { ok: true, address: hex(address), value: hex(bigEndianValue(params.value, 1), 2), endian: "big" };
+    },
+    async memoryWriteWord(params = {}) {
+        ensureRomLoaded("memory write requires a loaded ROM");
+        const address = parseAddress(params.address, 0, params.cpu);
+        state.fns.dbgWrite16(cpuIndex(params.cpu), address, bigEndianValue(params.value, 2));
+        return { ok: true, address: hex(address), value: hex(parseNumber(params.value), 4), endian: "big" };
+    },
+    async memoryWriteDword(params = {}) {
+        ensureRomLoaded("memory write requires a loaded ROM");
+        const address = parseAddress(params.address, 0, params.cpu);
+        state.fns.dbgWrite32(cpuIndex(params.cpu), address, bigEndianValue(params.value, 4));
+        return { ok: true, address: hex(address), value: hex(parseNumber(params.value)), endian: "big" };
+    },
+    async runPersistentScript(params = {}) { return startPersistentScript(params); },
+    async listScripts() { return { scripts: [...state.scripts.values()].map((script) => scriptSummary(script)) }; },
+    async stopScript(params = {}) { return stopPersistentScript(params); },
+    async restartScript(params = {}) {
+        const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
+        if (!script) throw new Error("script not found");
+        const next = { name: script.name, code: script.code };
+        await stopPersistentScript({ id: script.id });
+        state.scripts.delete(script.id);
+        return startPersistentScript(next);
+    },
+    async getScript(params = {}) {
+        const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
+        if (!script) throw new Error("script not found");
+        const pattern = params.pattern ?? params.regex;
+        if (!pattern) return { id: script.id, name: script.name, code: script.code };
+        const regex = new RegExp(String(pattern), String(params.flags ?? "g"));
+        return { id: script.id, name: script.name, matches: [...script.code.matchAll(regex)].map((match) => ({ index: match.index, text: match[0] })) };
+    },
+    async listScriptPrint(params = {}) {
+        const max = Math.max(1, Math.min(1000, Number(params.max ?? 10)));
+        const scripts = params.id == null ? [...state.scripts.values()] : [state.scripts.get(Number(params.id))].filter(Boolean);
+        return { logs: scripts.flatMap((script) => script.output.slice(-max).map((text) => ({ id: script.id, name: script.name, text }))).slice(-max) };
+    },
+    async clearScriptPrint(params = {}) {
+        const scripts = params.id == null ? [...state.scripts.values()] : [state.scripts.get(Number(params.id))].filter(Boolean);
+        scripts.forEach((script) => { script.output = []; });
+        renderScriptConsole();
+        return { ok: true, cleared: scripts.map((script) => script.id) };
+    },
     async eval(params = {}) { return runIsolatedScript(String(params.code ?? ""), Number(params.timeoutMs ?? 3000)); },
     async runScript(params = {}) { return commands.eval(params); },
     async injectScript(params = {}) { return runIsolatedScript(String(params.code ?? ui.scriptCode.value), Number(params.timeoutMs ?? 3000)); },
@@ -2365,6 +2640,27 @@ const commands = {
         return { type };
     }
 };
+
+Object.assign(commands, {
+    reg: commands.memoryGetRegister,
+    regw: commands.memorySetRegister,
+    read8: commands.memoryReadByte,
+    read16: commands.memoryReadWord,
+    read32: commands.memoryReadDword,
+    write8: commands.memoryWriteByte,
+    write16: commands.memoryWriteWord,
+    write32: commands.memoryWriteDword
+});
+Object.assign(apiDescriptions, {
+    reg: "memoryGetRegisterの短縮名です。",
+    regw: "memorySetRegisterの短縮名です。",
+    read8: "memoryReadByteの短縮名です。",
+    read16: "memoryReadWordの短縮名です。",
+    read32: "memoryReadDwordの短縮名です。",
+    write8: "memoryWriteByteの短縮名です。",
+    write16: "memoryWriteWordの短縮名です。",
+    write32: "memoryWriteDwordの短縮名です。"
+});
 
 function applyScaleRotation() {
     const vertical = state.rotation % 180 === 0;
@@ -2493,6 +2789,25 @@ window.DesmumeMCP = {
     list: () => Object.fromEntries(Object.keys(commands).map((name) => [name, apiDescriptions[name] || ""])),
     shortcuts: () => window.DesmumeShortcuts || {}
 };
+
+window.memory = {
+    getregister: (register, cpu) => runCommand("memoryGetRegister", { register, cpu }),
+    setregister: (register, value, cpu) => runCommand("memorySetRegister", { register, value, cpu }),
+    readbyte: (address, cpu) => runCommand("memoryReadByte", { address, cpu }),
+    readword: (address, cpu) => runCommand("memoryReadWord", { address, cpu }),
+    readdword: (address, cpu) => runCommand("memoryReadDword", { address, cpu }),
+    writebyte: (address, value, cpu) => runCommand("memoryWriteByte", { address, value, cpu }),
+    writeword: (address, value, cpu) => runCommand("memoryWriteWord", { address, value, cpu }),
+    writedword: (address, value, cpu) => runCommand("memoryWriteDword", { address, value, cpu })
+};
+window.memory.reg = window.memory.getregister;
+window.memory.regw = window.memory.setregister;
+window.memory.read8 = window.memory.readbyte;
+window.memory.read16 = window.memory.readword;
+window.memory.read32 = window.memory.readdword;
+window.memory.write8 = window.memory.writebyte;
+window.memory.write16 = window.memory.writeword;
+window.memory.write32 = window.memory.writedword;
 
 function webMcpContent(result) {
     return rawOutputText(result);
@@ -2864,10 +3179,20 @@ ui.mcpBatchRunBtn.addEventListener("click", () => {
     try { items = JSON.parse(ui.mcpBatch.value || "[]"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
     runCommand("batch", Array.isArray(items) ? items : { commands: items.commands || [] }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
 });
-ui.scriptRunBtn.addEventListener("click", () => runCommand("injectScript", { code: ui.scriptCode.value }).then(setScriptOutput).catch((e) => {
-    ui.scriptRawOutput.value = e.message;
-    ui.scriptOutput.textContent = e.message;
-}));
+ui.scriptRunBtn.addEventListener("click", () => runCommand("runPersistentScript", { name: ui.scriptName.value, code: ui.scriptCode.value }).then((result) => {
+    try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}
+    selectScript(result.id);
+}).catch((e) => { ui.scriptRawOutput.value = e.message; ui.scriptOutput.textContent = e.message; }));
+ui.scriptStopBtn.addEventListener("click", () => runCommand("stopScript", {}).catch((e) => log(e.message)));
+ui.scriptRestartBtn.addEventListener("click", () => runCommand("restartScript", {}).then((result) => selectScript(result.id)).catch((e) => log(e.message)));
+ui.scriptClearOutputBtn.addEventListener("click", () => runCommand("clearScriptPrint", {}).catch((e) => log(e.message)));
+ui.scriptFile.addEventListener("change", () => readFileFromInput(ui.scriptFile).then(({ file, bytes }) => {
+    ui.scriptCode.value = new TextDecoder().decode(bytes);
+    ui.scriptName.value = file.name.replace(/\.[^.]+$/, "") || "script";
+    try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}
+}).catch((e) => log(e.message)));
+ui.scriptCode.addEventListener("input", () => { try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {} });
+ui.scriptName.addEventListener("input", () => { try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {} });
 ui.scriptCopyRawBtn.addEventListener("click", () => copyText(ui.scriptRawOutput.value, "script raw output").catch((e) => log(e.message)));
 ui.scriptSelectRawBtn.addEventListener("click", () => {
     ui.scriptRawOutput.focus();
@@ -2899,11 +3224,19 @@ try {
     const storedSlots = JSON.parse(localStorage.getItem("desmume-known-slots") || "[]");
     if (Array.isArray(storedSlots) && storedSlots.length) state.knownSlots = [...new Set([...storedSlots.map((slot) => String(slot)), ...state.knownSlots])].slice(0, 24);
 } catch {}
+try {
+    const draft = JSON.parse(localStorage.getItem("desmume-script-draft") || "null");
+    if (draft && typeof draft === "object") {
+        if (typeof draft.name === "string") ui.scriptName.value = draft.name;
+        if (typeof draft.code === "string") ui.scriptCode.value = draft.code;
+    }
+} catch {}
 loadKeymap();
 ui.readyText.textContent = "ROM待ち";
 renderBreakpoints();
 renderFreezes();
 renderRecentFiles();
+renderScripts();
 renderStateSlotOptions(ui.stateSlot.value);
 renderHotkey();
 updateStatus();

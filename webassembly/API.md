@@ -94,6 +94,53 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
 
+## Persistent injection scripts
+
+`runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. This is the trigger-oriented API for code injection: callbacks can await normal emulator commands while the AI or user continues other work. A loaded ROM is required for every register, memory, or breakpoint operation; the API fails clearly when no ROM is running.
+
+- `runPersistentScript`: `{ "name": "watch-hp", "code": "..." }` starts a script. Updating a name replaces its previous running copy, and identical running code is not registered twice.
+- `listScripts`, `stopScript: { id }`, `restartScript: { id }`, `getScript: { id, regex, flags }` manage saved worker code. `getScript` without a regular expression returns the full source.
+- `listScriptPrint: { max: 10, id? }` returns the latest console lines; `clearScriptPrint: { id? }` clears one or all consoles.
+- The editor persists its draft in local storage. The source-file button loads a local `.js`, text, or Lua source into the editor only; it never uploads it. Lua source is reference material—the runnable injection language is JavaScript.
+
+Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(label, value)` write to that script's own console. `printf` accepts `%s`, `%d`, and hexadecimal `%x` / `%.8x` forms. Each script gets these asynchronous APIs:
+
+```js
+// All values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
+const pc = await memory.getregister("pc", "arm9");
+await memory.setregister("r0", 0x12345678, "arm9");
+
+await memory.writebyte(0x02000000, 0xab);
+await memory.writeword(0x02000010, 0x1234);     // memory bytes: 12 34
+await memory.writedword(0x02000020, 0x12345678); // memory bytes: 12 34 56 78
+
+printhex("word", await memory.readword(0x02000010));
+printhex("dword", await memory.readdword(0x02000020));
+```
+
+`readword` / `readdword` and `writeword` / `writedword` use Big Endian values at the API boundary. The implementation converts those values to and from the emulator's Little Endian memory layout. `readbyte` / `writebyte` are aliases for one-byte access. WebMCP equivalents are `memoryGetRegister`, `memorySetRegister`, `memoryReadByte`, `memoryReadWord`, `memoryReadDword`, `memoryWriteByte`, `memoryWriteWord`, and `memoryWriteDword`.
+
+Register a callback once; its registration is tied to the script and is removed automatically on `stopScript`:
+
+```js
+memory.registerwrite(0x02000020, async (hit) => {
+  print("write", hit.address, "pc", hit.pc);
+  await mcp.call("pause");
+}, { cpu: "arm9" });
+
+memory.registerread(0x02000020, async (hit) => print("read", hit.value), { cpu: "arm9" });
+memory.registerexec(0x02000000, async (hit) => print("executing", hit.pc), { cpu: "arm9" });
+memory.registerexception("dataAbort", async (hit) => print("data abort", hit.pc));
+memory.registerexception("prefetchAbort", async (hit) => print("prefetch abort", hit.pc));
+memory.registerexception("undefinedInstruction", async (hit) => print("undefined", hit.pc));
+
+emu_registerstart(async ({ reason }) => print("ROM reset/reloaded:", reason));
+emu_ontick(async ({ frame }) => { if ((frame % 60) === 0) print("frame", frame); });
+// memory.ontick(callback) is the same frame callback.
+```
+
+The current version exposes `stateLoad` and `stateSave` events to the worker event bus for future scripts, and normal `mcp.call("loadState", ...)`, `mcp.call("saveState", ...)`, `mcp.call("reloadRecentFile", ...)`, and `mcp.call("setInput", ...)` remain available from callback code. The helper `setCTableSeed` provides the JavaScript equivalent of the common `setCTable_jp.lua` pattern: it writes `0x4b539adb` at `0x02385f0c` and zero at the following word unless overridden.
+
 ### Chrome MCPでのファイルアップロード
 
 - AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。

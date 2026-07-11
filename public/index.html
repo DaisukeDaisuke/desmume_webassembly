@@ -301,6 +301,13 @@
     .auto-update-row { align-items: end; }
     #disasm-output { min-height: 156px; max-height: 360px; }
     .mcp-command { grid-template-columns: minmax(0, 1fr) auto; }
+    .script-tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
+    .script-tab { min-height: 30px; padding: 0 8px; font: 12px var(--mono); }
+    .script-tab[aria-selected="true"] { border-color: var(--trace); background: rgba(90, 168, 122, 0.14); color: #eff7f0; }
+    .script-list { min-height: 72px; max-height: 150px; overflow: auto; }
+    .script-list button { width: 100%; justify-content: flex-start; margin-bottom: 4px; font: 12px var(--mono); }
+    .script-list button[data-running="true"]::before { content: "●"; color: var(--trace); }
+    .script-list button[data-running="false"]::before { content: "○"; color: var(--muted); }
     @media (max-width: 1100px) {
       body { overflow: auto; }
       .app { height: auto; min-height: 100vh; }
@@ -601,14 +608,26 @@
         </div>
         <div class="section">
           <h2>Script Injection</h2>
-          <label>Isolated script<textarea id="script-code" class="mono">return await mcp.call("status", {});</textarea></label>
+          <div id="script-tabs" class="script-tabs" role="tablist" aria-label="Script consoles"></div>
+          <template id="script-tab-template"><button class="script-tab" type="button" role="tab" aria-selected="false" data-script-tab></button></template>
+          <label>JavaScript script<textarea id="script-code" class="mono">printhex("ARM9 PC", await memory.getregister("pc"));
+memory.ontick(async () => {
+  // Called once for each emulated frame while this script is running.
+});</textarea></label>
           <div class="row">
-            <button id="script-run-btn" type="button">Run Script</button>
+            <label>Script name<input id="script-name" class="mono" value="scratch"></label>
+            <label class="file-button">Load source<input id="script-file" class="hidden-input" type="file" accept=".js,.mjs,.txt,.lua"></label>
+            <button id="script-run-btn" type="button">Run / Update</button>
+            <button id="script-stop-btn" type="button">Stop</button>
+            <button id="script-restart-btn" type="button">Restart + Clear</button>
             <button id="script-copy-raw-btn" type="button">Copy Raw</button>
             <button id="script-select-raw-btn" type="button">Select Raw</button>
+            <button id="script-clear-output-btn" type="button">Clear Console</button>
           </div>
-          <label>Raw output<textarea id="script-raw-output" class="mono" readonly></textarea></label>
-          <pre id="script-output"></pre>
+          <div id="script-list" class="script-list" aria-live="polite"></div>
+          <label>Console output<textarea id="script-raw-output" class="mono" readonly></textarea></label>
+          <pre id="script-output">Use Run / Update to keep a script alive. The active script can register onTick, reset, read/write, exec, and exception callbacks.</pre>
+          <p class="tiny">スクリプトはこのブラウザ内だけで動きます。停止すると、そのスクリプトが登録した全トリガーは解除されます。Luaファイルは内容をエディタへ読み込めますが、実行コードは JavaScript です。</p>
         </div>
         <div class="section">
           <h2>Log</h2>

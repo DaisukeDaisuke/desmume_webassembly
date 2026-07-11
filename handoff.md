@@ -122,3 +122,11 @@
 - `disassemble` now omits opcode/raw byte columns by default to reduce local-AI confusion and token use. Pass `includeBytes:true`, use `window.A(...)`, or set the UI Disassembly Bytes selector to `show` when raw instruction constants are needed.
 - Global one-letter shortcut functions `window.a(...)` through `window.Z(...)` are hardcoded browser-side wrappers over existing commands and return the same JSON objects as `DesmumeMCP.call()`. `window.DesmumeMCP.shortcuts()` / `window.DesmumeShortcuts` lists their command mappings.
 - `stepNextBranchOrReturn` / `nextBranchOrReturn` smart-steps until the current instruction is branch-like or return-like, stopping before that instruction executes. It steps over call-like `bl`/`blx` instructions while searching.
+
+## 2026-07-11 Addendum
+
+- Persistent injection scripts use one isolated Worker per script. Their source and editor name are stored only in `localStorage` (`desmume-script-draft`); worker console output is per-script and intentionally not persisted.
+- `memory.readword` / `memory.readdword` and their write counterparts use Big Endian values at the API boundary. The browser swaps 16/32-bit values before native debug memory operations so `memory.writedword(addr, 0x12345678)` lays down bytes `12 34 56 78` at `addr`.
+- A script can register `memory.registerread`, `memory.registerwrite`, `memory.registerexec`, `memory.registerexception`, `emu_registerstart`, or `emu_ontick`. Registered normal breakpoints use the existing browser id registry and are removed when that script is stopped; special exception stops are disabled after the last script registration of that kind is removed.
+- WebMCP exposes this through the existing dynamic `desmume.call` command with `runPersistentScript`, `listScripts`, `stopScript`, `restartScript`, `getScript`, `listScriptPrint`, and `clearScriptPrint`. `webassembly/API.md` has copy-pasteable examples.
+- `scripts/dq9/` contains JavaScript ports of `Ctable_jp.lua`, `overlay_jp.lua`, `nigeru.lua`, and `setCTable_jp.lua`. These are log-oriented persistent scripts for the browser Worker; the trace scripts resume after each registered exec breakpoint, and AI can read them via `listScriptPrint({max:10})`.
