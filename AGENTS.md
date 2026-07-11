@@ -258,7 +258,7 @@ gh codespace stop -c <name>
 ### ローカルPHPテストサーバー
 
 ```powershell
-(Start-Process -FilePath "D:\software\php-8.5.7-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id
+(Start-Process -FilePath "D:\software\php-8.5.8-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id
 ```
 
 URL:

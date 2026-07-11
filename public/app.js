@@ -54,6 +54,9 @@ const state = {
     nextScriptTriggerId: 1,
     activeScriptId: null,
     scriptTriggers: [],
+    pendingScriptEvents: new Map(),
+    nextScriptEventId: 1,
+    explicitPauseSerial: 0,
     scriptStartGeneration: 0
 };
 
@@ -1145,9 +1148,16 @@ function syncNativeBreakStatus(native = null) {
             state.lastBreakKey = key;
             log(`break ${breakpointKindName(bp.kind)} ${bp.cpu} at ${hex(bp.address)} pc ${hex(bp.pc)}`);
             const type = breakpointKindName(bp.kind);
-            for (const trigger of state.scriptTriggers.filter((item) => item.type === type && (item.type === "dataAbort" || item.type === "prefetchAbort" || item.type === "undefinedInstruction" || (item.cpu === String(bp.cpu) && item.address === (Number(bp.address) >>> 0))))) {
+            const matchingTriggers = state.scriptTriggers.filter((item) => item.type === type && (item.type === "dataAbort" || item.type === "prefetchAbort" || item.type === "undefinedInstruction" || (item.cpu === String(bp.cpu) && item.address === (Number(bp.address) >>> 0))));
+            const scriptBreakpointIds = new Set(matchingTriggers.map((item) => item.breakpointId).filter(Boolean));
+            const matchingBreakpoints = state.breakpoints.filter((item) => item.type === type && item.cpu === String(bp.cpu) && item.address === (Number(bp.address) >>> 0));
+            const autoResume = type === "exec" && matchingTriggers.length > 0 && matchingBreakpoints.every((item) => scriptBreakpointIds.has(item.id));
+            const eventId = autoResume ? state.nextScriptEventId++ : 0;
+            if (autoResume) state.pendingScriptEvents.set(eventId, { remaining: matchingTriggers.length, pauseSerial: state.explicitPauseSerial, cpu: String(bp.cpu), address: Number(bp.address) >>> 0 });
+            for (const trigger of matchingTriggers) {
                 const script = state.scripts.get(trigger.scriptId);
-                if (script?.running) script.worker.postMessage({ type: "event", callbackId: trigger.callbackId, event: type, payload: { ...bp, address: hex(bp.address), pc: hex(bp.pc), value: hex(bp.value) } });
+                if (script?.running) script.worker.postMessage({ type: "event", eventId, callbackId: trigger.callbackId, event: type, payload: { ...bp, address: hex(bp.address), pc: hex(bp.pc), value: hex(bp.value) } });
+                else if (autoResume) finishPersistentScriptEvent(eventId);
             }
         }
     }
@@ -1160,7 +1170,34 @@ function getRegisters(cpu = state.selectedCpu) {
     const names = ["r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12","sp","lr","pc","cpsr","spsr"];
     const values = {};
     for (let i = 0; i < names.length; i++) values[names[i]] = state.fns.dbgGetReg(idx, i) >>> 0;
+    values.r13 = values.sp;
+    values.r14 = values.lr;
+    values.r15 = values.pc;
     return values;
+}
+
+function finishPersistentScriptEvent(eventId) {
+    const pending = state.pendingScriptEvents.get(Number(eventId));
+    if (!pending || --pending.remaining > 0) return;
+    state.pendingScriptEvents.delete(Number(eventId));
+    if (pending.pauseSerial !== state.explicitPauseSerial || !hasLoadedRom()) return;
+    if (currentInstructionAddress(pending.cpu) === pending.address) {
+        state.fns.dbgStep(cpuIndex(pending.cpu), 1);
+        const afterStep = getNativeStatus();
+        if (afterStep?.lastBreak?.hit) {
+            syncNativeBreakStatus(afterStep);
+            updateStatus();
+            return;
+        }
+    }
+    state.breakLabel = "";
+    state.breakRefreshKey = "";
+    state.lastBreakKey = "";
+    state.fns.dbgClearBreakStatus();
+    state.paused = false;
+    state.running = true;
+    state.fns.pauseEmu(0);
+    updateStatus();
 }
 
 function renderRegisters() {
@@ -1357,6 +1394,7 @@ function persistentScriptWorkerCode() {
       const callbacks = new Map(); let callbackSerial = 1;
       const ask = (type, data = {}) => new Promise((resolve, reject) => { const id = Math.random().toString(36).slice(2); const receive = (event) => { if (event.data && event.data.replyId === id) { removeEventListener("message", receive); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); } }; addEventListener("message", receive); postMessage({ type, id, ...data }); });
       const mcp = { call: (command, params = {}) => ask("call", { command, params }) };
+      const webmcp = mcp;
       const print = (...values) => postMessage({ type: "print", values });
       const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\\d*)x|%[sd]/g, (match, width) => { const value = values.shift(); if (match.endsWith("x")) return "0x" + (Number(value) >>> 0).toString(16).padStart(Number(width || 0), "0"); return match.endsWith("d") ? String(Number(value)) : String(value); }));
       const printhex = (label, value) => print(label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0")));
@@ -1381,7 +1419,8 @@ function persistentScriptWorkerCode() {
       memory.write8 = memory.writebyte; memory.write16 = memory.writeword; memory.write32 = memory.writedword;
       const emu_registerstart = (callback, options) => register("start", 0, callback, options);
       const emu_ontick = (callback, options) => register("tick", 0, callback, options);
-      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } };
+      const emu = Object.fromEntries(["pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput", "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState", "reloadRecentFile"].map((command) => [command, (params = {}) => mcp.call(command, params)]));
+      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { try { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } finally { if (msg.eventId) postMessage({ type: "eventDone", eventId: msg.eventId }); } } };
     `;
 }
 
@@ -1402,6 +1441,7 @@ async function startPersistentScript(params = {}) {
         try {
             if (msg.type === "call") worker.postMessage({ replyId: msg.id, result: await runCommand(msg.command, msg.params || {}) });
             else if (msg.type === "register") worker.postMessage({ replyId: msg.id, result: await registerScriptTrigger(script, msg.trigger || {}) });
+            else if (msg.type === "eventDone") finishPersistentScriptEvent(msg.eventId);
             else if (msg.type === "print") scriptConsoleLine(script, msg.values || []);
             else if (msg.type === "failed") { script.running = false; scriptConsoleLine(script, [msg.error]); renderScripts(); }
         } catch (error) { worker.postMessage({ replyId: msg.id, error: String(error.message || error) }); }
@@ -2093,7 +2133,7 @@ const commands = {
         else stopAutoUpdateLoop();
         return { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz };
     },
-    async pause() { ensureReady(); state.paused = true; state.running = false; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
+    async pause() { ensureReady(); state.explicitPauseSerial++; state.paused = true; state.running = false; state.fns.pauseEmu(1); updateStatus(); return { ok: true }; },
     async resume() {
         ensureReady();
         if (!hasLoadedRom()) {
@@ -2252,8 +2292,10 @@ const commands = {
     async getRegisters(params = {}) { return getRegisters(params.cpu); },
     async setRegister(params) {
         ensureRomLoaded("register write requires a loaded ROM");
-        const names = { pc: 15, cpsr: 16, spsr: 17 };
-        const reg = names[params.register] ?? Number(String(params.register).replace("r", ""));
+        const register = String(params.register).toLowerCase();
+        const names = { sp: 13, lr: 14, pc: 15, cpsr: 16, spsr: 17 };
+        const reg = names[register] ?? Number(register.replace("r", ""));
+        if (!Number.isInteger(reg) || reg < 0 || reg > 17) throw new Error(`unknown register: ${register}`);
         const ret = state.fns.dbgSetReg(cpuIndex(params.cpu), reg, parseNumber(params.value));
         renderRegisters();
         return { ok: ret === 0, ret };

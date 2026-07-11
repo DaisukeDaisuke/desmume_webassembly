@@ -108,6 +108,7 @@ Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(l
 ```js
 // All values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
 const pc = await memory.getregister("pc", "arm9");
+const lr = await memory.getregister("r14", "arm9"); // r13=sp, r14=lr, r15=pc
 await memory.setregister("r0", 0x12345678, "arm9");
 
 await memory.writebyte(0x02000000, 0xab);
@@ -138,6 +139,10 @@ emu_registerstart(async ({ reason }) => print("ROM reset/reloaded:", reason));
 emu_ontick(async ({ frame }) => { if ((frame % 60) === 0) print("frame", frame); });
 // memory.ontick(callback) is the same frame callback.
 ```
+
+`registerexec` is a non-stopping trace hook. Native execution pauses briefly before the matched ARM9 instruction so the callback sees the exact event state. After the callback, if PC is still on that execute breakpoint, the API skips that breakpoint for one instruction and then resumes normally. A trace callback therefore does not repeatedly dispatch at an unchanged PC or leave the emulator paused. A different breakpoint encountered by that one-instruction step is still honored. To intentionally stop at the original event, call `await emu.pause()` or `await mcp.call("pause")` inside the callback; that explicit pause takes effect immediately in the event state and cancels the automatic step and resume.
+
+Persistent scripts can call every normal WebMCP command through `mcp.call(command, params)` or its `webmcp.call` alias. Common emulator and debugger operations also have shortcuts such as `emu.pause()`, `emu.resume()`, `emu.status()`, `emu.step()`, `emu.smartStep()`, `emu.stepOver()`, `emu.stepNextBranchOrReturn()`, `emu.runUntilReturn()`, `emu.runUntilNextCall()`, `emu.stepFrames(params)`, and `emu.setInput(params)`. These bypass keyboard/window shortcuts and invoke the API directly.
 
 The current version exposes `stateLoad` and `stateSave` events to the worker event bus for future scripts, and normal `mcp.call("loadState", ...)`, `mcp.call("saveState", ...)`, `mcp.call("reloadRecentFile", ...)`, and `mcp.call("setInput", ...)` remain available from callback code. The helper `setCTableSeed` provides the JavaScript equivalent of the common `setCTable_jp.lua` pattern: it writes `0x4b539adb` at `0x02385f0c` and zero at the following word unless overridden.
 
