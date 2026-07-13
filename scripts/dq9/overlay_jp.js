@@ -56,15 +56,16 @@ await memory.registerexec(0x020a36b8, () => trace(async () => {
   const id = await reg("r0");
   const slot = await overlaySlot(id);
   const start = await overlayStart(id);
-  loaded.set(slot, { id, start, lr: await reg("r14") });
-  print(`overlay loaded: slot ${slot}, id ${id}, start 0x${start.toString(16).padStart(8, "0")}`);
+  const lr = await reg("r14");
+  loaded.set(slot, { id, start, lr});
+  print(`overlay loaded: slot ${slot}, id ${id}, start 0x${start.toString(16).padStart(8, "0")}, caller: 0x${lr.toString(16).padStart(8, "0")}`);
 }), { cpu: CPU });
 
 await memory.registerexec(0x020a392c, () => trace(async () => {
   const id = await reg("r0");
   const slot = await overlaySlot(id);
   loaded.delete(slot);
-  print(`overlay unloaded: slot ${slot}, id ${id}`);
+  print(`overlay unloaded: slot 0x${slot.toString(16).padStart(8, "0")}, id ${id}`);
 }), { cpu: CPU });
 
 await refreshSlots(true);
