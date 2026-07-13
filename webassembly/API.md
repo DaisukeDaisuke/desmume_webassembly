@@ -102,8 +102,11 @@ Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the
 - `listScripts`, `stopScript: { id }`, `restartScript: { id }`, `getScript: { id, regex, flags }` manage saved worker code. `getScript` without a regular expression returns the full source.
 - `listScriptPrint: { max: 10, id? }` returns the latest console lines; `clearScriptPrint: { id? }` clears one or all consoles.
 - The editor persists its draft in local storage. The source-file button loads a local `.js`, text, or Lua source into the editor only; it never uploads it. Lua source is reference material—the runnable injection language is JavaScript.
+- The breakpoints set by these persistent scripts significantly slow down the ROM. Defining a large number of breakpoints can cause them to take 30 seconds or more to complete.
+- Persistent scripts can pause the emulator. When paused, the PC is expected to stop at that point.
 
 Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(label, value)` write to that script's own console. `printf` accepts `%s`, `%d`, and hexadecimal `%x` / `%.8x` forms. Each script gets these asynchronous APIs:
+
 
 ```js
 // All values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
@@ -162,3 +165,6 @@ The current version exposes `stateLoad` and `stateSave` events to the worker eve
 ### コードについて
 - スクリプトは1vs1で処理するのではなく、複数行のコードとして賢いスクリプトを書くこと
 - おかしいと思ったらすぐステータスコマンドを実行すること。
+- js実行での情報は、必要な情報のみに絞ること、mcpの全出力をコンテキストにダンプするのは初回だけにすること。
+- 人間との共同作業も有効活用すること。例えば、ステータスでしてほしいことを言い、mcpで60秒スリープして、人間のフィードバックを得るなど。
+- 10進数、16進数相互変換など、論理的タスクは、必ずローカルのランタイムか、js実行で計算すること。
