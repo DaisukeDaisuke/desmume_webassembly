@@ -9,7 +9,7 @@ const reg = (name) => memory.reg(name, CPU);
 const loaded = new Map();
 let enabled = true;
 let previousButton = 0;
-let nextReportFrame = 0;
+let nextCheckFrame = 0;
 
 function swap32(value) {
   const n = Number(value) >>> 0;
@@ -28,20 +28,23 @@ async function overlaySlot(overlayId) {
   return native32(WHERE_TO_LOAD_TABLE + overlayId * 8);
 }
 
-async function refreshSlots(logRows = false) {
+async function refreshSlots(forceLog = false) {
+  const next = new Map();
   const rows = [];
   for (let slot = 0; slot <= 5; slot++) {
     const id = await memory.read8(LOADED_OVERLAY_TABLE + slot, CPU);
     if (id !== 0xff && (id & 0x40) !== 0x40) {
       const start = await overlayStart(id);
-      loaded.set(slot, { id, start });
-      rows.push(`slot ${slot}: id ${id} start 0x${start.toString(16).padStart(8, "0")}`);
+      next.set(slot, { id, start });
+      const previous = loaded.get(slot);
+      if (forceLog || !previous || previous.id !== id || previous.start !== start) rows.push(`slot ${slot}: id ${id} start 0x${start.toString(16).padStart(8, "0")}`);
     } else {
-      loaded.delete(slot);
-      rows.push(`slot ${slot}: nil`);
+      if (forceLog || loaded.has(slot)) rows.push(`slot ${slot}: nil`);
     }
   }
-  if (logRows && enabled) rows.forEach((row) => print(row));
+  loaded.clear();
+  next.forEach((value, slot) => loaded.set(slot, value));
+  if (enabled) rows.forEach((row) => print(row));
 }
 
 async function trace(callback) {
@@ -76,9 +79,9 @@ emu_ontick(async ({ frame }) => {
     print(`overlay log ${enabled ? "enabled" : "disabled"}`);
   }
   previousButton = button;
-  if (enabled && frame >= nextReportFrame) {
-    nextReportFrame = frame + 60;
-    await refreshSlots(true);
+  if (enabled && frame >= nextCheckFrame) {
+    nextCheckFrame = frame + 60;
+    await refreshSlots(false);
   }
 });
 

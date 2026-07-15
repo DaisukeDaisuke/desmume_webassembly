@@ -68,6 +68,8 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `stepOver`: Runs until the next sequential instruction address is reached, capped to avoid infinite stepping. Like `step`, it temporarily removes only the current PC execution breakpoint for the first instruction, but other breakpoints can still interrupt the run, so plain `step` is safer when you are parked on a breakpoint.
 - `stepNextBranchOrReturn`: Steps until the current instruction is a branch-like or return-like PC-writing instruction, then stops before executing it. Calls such as `bl`/`blx` are stepped over on the way. Pass `{ "timeoutMs": number, "maxSteps": number }`.
 - `nextBranchOrReturn`: Alias for `stepNextBranchOrReturn`.
+- `trueNextBranch`: Executes instructions until a branch, call, or return actually changes PC away from the sequential next address, then stops immediately after that taken branch. Untaken conditional `b*` instructions are ignored. Pass `{ "timeoutMs": number, "maxSteps": number }`. The injection shortcut is `emu.trueNextBranch()` and the global one-letter shortcut is `n()`.
+- `nextTrueBranch`: Alias for `trueNextBranch`.
 - `continue`: Resumes from a debugger stop.
 - `setAutoUpdate`: Enables or disables GUI auto refresh with `{ "enabled": boolean, "hz": number }`. This is intended for UI/script automation and is callable through WebMCP and script injection.
 - `setStackTraceMode`: Enables or disables registerenterfunc-equivalent call stack collection with `{ "enabled": boolean }`.
@@ -96,14 +98,14 @@ Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the
 
 ## Persistent injection scripts
 
-`runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. This is the trigger-oriented API for code injection: callbacks can await normal emulator commands while the AI or user continues other work. A loaded ROM is required for every register, memory, or breakpoint operation; the API fails clearly when no ROM is running.
+`runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is non-blocking `{ "asyncMode": true }`; use `{ "asyncMode": false }` only for a script that must observe or mutate immediate emulator state.
 
-- `runPersistentScript`: `{ "name": "watch-hp", "code": "..." }` starts a script. Updating a name replaces its previous running copy, and identical running code is not registered twice.
+- `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": true }` starts a script. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
 - `listScripts`, `stopScript: { id }`, `restartScript: { id }`, `getScript: { id, regex, flags }` manage saved worker code. `getScript` without a regular expression returns the full source.
 - `listScriptPrint: { max: 10, id? }` returns the latest console lines; `clearScriptPrint: { id? }` clears one or all consoles.
 - The editor persists its draft in local storage. The source-file button loads a local `.js`, text, or Lua source into the editor only; it never uploads it. Lua source is reference material—the runnable injection language is JavaScript.
 - The breakpoints set by these persistent scripts significantly slow down the ROM. Defining a large number of breakpoints can cause them to take 30 seconds or more to complete.
-- Persistent scripts can pause the emulator. When paused, the PC is expected to stop at that point.
+- Async mode unconditionally rejects register reads/writes, memory reads/writes/dumps/injection/freezes, and pause/resume. The returned error names the rejected command and tells the caller to restart with `asyncMode:false`; this prevents a queued operation from using stale immediate state or delaying emulation. Blocking mode retains those APIs and can pause the emulator.
 
 Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(label, value)` write to that script's own console. `printf` accepts `%s`, `%d`, and hexadecimal `%x` / `%.8x` forms. Each script gets these asynchronous APIs:
 
@@ -145,7 +147,7 @@ emu_ontick(async ({ frame }) => { if ((frame % 60) === 0) print("frame", frame);
 
 `registerexec` is a non-stopping trace hook. Native execution pauses briefly before the matched ARM9 instruction so the callback sees the exact event state. After the callback, if PC is still on that execute breakpoint, the API skips that breakpoint for one instruction and then resumes normally. A trace callback therefore does not repeatedly dispatch at an unchanged PC or leave the emulator paused. A different breakpoint encountered by that one-instruction step is still honored. To intentionally stop at the original event, call `await emu.pause()` or `await mcp.call("pause")` inside the callback; that explicit pause takes effect immediately in the event state and cancels the automatic step and resume.
 
-Persistent scripts can call every normal WebMCP command through `mcp.call(command, params)` or its `webmcp.call` alias. Common emulator and debugger operations also have shortcuts such as `emu.pause()`, `emu.resume()`, `emu.status()`, `emu.step()`, `emu.smartStep()`, `emu.stepOver()`, `emu.stepNextBranchOrReturn()`, `emu.runUntilReturn()`, `emu.runUntilNextCall()`, `emu.stepFrames(params)`, and `emu.setInput(params)`. These bypass keyboard/window shortcuts and invoke the API directly.
+Persistent scripts can call WebMCP commands through `mcp.call(command, params)` or its `webmcp.call` alias, subject to the async-mode restrictions above. Common emulator and debugger operations also have shortcuts such as `emu.status()`, `emu.step()`, `emu.smartStep()`, `emu.stepOver()`, `emu.stepNextBranchOrReturn()`, `emu.trueNextBranch()`, `emu.runUntilReturn()`, `emu.runUntilNextCall()`, `emu.stepFrames(params)`, and `emu.setInput(params)`. Blocking mode also permits `emu.pause()` and `emu.resume()`.
 
 The current version exposes `stateLoad` and `stateSave` events to the worker event bus for future scripts, and normal `mcp.call("loadState", ...)`, `mcp.call("saveState", ...)`, `mcp.call("reloadRecentFile", ...)`, and `mcp.call("setInput", ...)` remain available from callback code. The helper `setCTableSeed` provides the JavaScript equivalent of the common `setCTable_jp.lua` pattern: it writes `0x4b539adb` at `0x02385f0c` and zero at the following word unless overridden.
 

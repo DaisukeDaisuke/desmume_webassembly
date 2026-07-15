@@ -161,6 +161,12 @@ static size_t selectCallStackLaneForSp(u32 sp) {
   return best;
 }
 
+static size_t createCallStackLane(u32 sp, u32 nowPc) {
+  callStackLanes.push_back({nextCallStackLaneId++, sp, nowPc, std::vector<CallStackEntry>()});
+  activeCallStackLane = callStackLanes.size() - 1;
+  return activeCallStackLane;
+}
+
 static int topRealFrameIndex(const CallStackLane &lane) {
   for (size_t i = lane.frames.size(); i > 0; i--) {
     const size_t index = i - 1;
@@ -320,7 +326,6 @@ extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
 extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
   if (!traceEnabled || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
-  if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   if (tracePendingIrqResume[proc] != 0 && ((tracePendingIrqResume[proc] & ~1U) == (target & ~1U)) && (kind == 4 || kind == 6)) {
     int irqFrameIndex = -1;
     const int irqLaneIndex = findSyntheticCallStackLane(8, target, &irqFrameIndex);
@@ -340,6 +345,7 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
     }
     return;
   }
+  if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   int returnFrameIndex = -1;
   int laneIndex = findReturnCallStackLane(target, &returnFrameIndex);
   if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(cpu->R[13]);
@@ -370,7 +376,7 @@ extern "C" void wasmTraceIrqEnterHook(int proc, u32 sourcePc, u32 vectorPc, u32 
   if (tracePrivilegeCheck) return;
   int frameIndex = -1;
   int laneIndex = findSyntheticCallStackLane(8, resumePc, &frameIndex);
-  if (laneIndex < 0) laneIndex = (int)selectCallStackLaneForSp(irqSp);
+  if (laneIndex < 0) laneIndex = (int)createCallStackLane(irqSp, vectorPc);
   CallStackLane &lane = callStackLanes[(size_t)laneIndex];
   activeCallStackLane = (size_t)laneIndex;
   lane.lastSp = irqSp;

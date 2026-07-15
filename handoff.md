@@ -132,3 +132,10 @@
 - `scripts/dq9/` contains JavaScript ports of `Ctable_jp.lua`, `overlay_jp.lua`, `nigeru.lua`, and `setCTable_jp.lua`. These are log-oriented persistent scripts for the browser Worker; the trace scripts resume after each registered exec breakpoint, and AI can read them via `listScriptPrint({max:10})`.
 - Persistent `registerexec` hooks stop natively only while their Worker callback observes the exact pre-instruction event state. If PC is unchanged when the callback completes, `dbgStep(..., 1)` skips the current exec breakpoint for one instruction before auto-resume; another breakpoint hit by that instruction remains honored. An explicit `pause()`/`mcp.call("pause")` during the callback cancels the automatic step and resume. Worker scripts expose the full command surface as `mcp.call`/`webmcp.call` plus common direct `emu.*` shortcuts.
 - Script register access accepts both architectural names and aliases: `sp`/`r13`, `lr`/`r14`, `pc`/`r15`, plus `cpsr` and `spsr`.
+
+## 2026-07-15 Addendum
+
+- `stepNextBranchOrReturn` clears the previous native breakpoint-hit record before its loop, preventing the breakpoint used to enter a function from being mistaken for a new hit after the first step. `trueNextBranch` is separate: it executes through untaken conditional branches and stops after a branch/call/return actually changes PC.
+- ARM9 IRQ entries always receive a dedicated call-stack lane, even when IRQ SP is close to a normal lane. Toggling `skip IRQ` does not clear existing normal history, and a pending IRQ return is finalized even if filtering is enabled while the handler is active.
+- Persistent scripts default to a per-script async queue. Immediate register/memory access and pause/resume fail with an explanatory error in async mode; use `asyncMode:false` for scripts that require those blocking operations.
+- MCP mutations schedule a debugger-view refresh so externally driven work becomes visible in the UI. `scripts/dq9/overlay_jp.js` checks periodically but prints slot rows only at startup or when slot state changes.

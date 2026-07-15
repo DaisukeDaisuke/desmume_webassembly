@@ -448,6 +448,7 @@
             <button id="cpu-smart-step-debug-btn" type="button">Smart Step</button>
             <button id="cpu-step-over-debug-btn" type="button">Step Over</button>
             <button id="cpu-next-branch-return-debug-btn" type="button">Next Branch/Return</button>
+            <button id="cpu-true-next-branch-debug-btn" type="button" title="Continue through untaken conditional branches and stop after the next branch that changes PC">True Next Branch</button>
             <button id="stack-next-call-debug-btn" type="button">Next Call</button>
             <button id="stack-return-debug-btn" type="button">Return To Pop</button>
           </div>
@@ -545,6 +546,7 @@
               <button id="cpu-smart-step-btn" type="button">Smart Step</button>
               <button id="cpu-step-over-btn" type="button">Step Over</button>
               <button id="cpu-next-branch-return-btn" type="button">Next Branch/Return</button>
+              <button id="cpu-true-next-branch-btn" type="button" title="Continue through untaken conditional branches and stop after the next branch that changes PC">True Next Branch</button>
               <button id="stack-next-call-toolbar-btn" type="button">Next Call</button>
               <button id="stack-return-toolbar-btn" type="button">Return To Pop</button>
             </div>
@@ -620,12 +622,13 @@
           <h2>Script Injection</h2>
           <div id="script-tabs" class="script-tabs" role="tablist" aria-label="Script consoles"></div>
           <template id="script-tab-template"><button class="script-tab" type="button" role="tab" aria-selected="false" data-script-tab></button></template>
-          <label>JavaScript script<textarea id="script-code" class="mono">printhex("ARM9 PC", await memory.getregister("pc"));
-memory.ontick(async () => {
-  // Called once for each emulated frame while this script is running.
+          <label>JavaScript script<textarea id="script-code" class="mono">print("async script queued");
+memory.ontick(async ({ frame }) => {
+  if ((frame % 60) === 0) print("frame", frame);
 });</textarea></label>
           <div class="row">
             <label>Script name<input id="script-name" class="mono" value="scratch"></label>
+            <label class="switch" title="Queues each script context's calls without blocking emulation. Memory reads/writes and pause/resume require blocking mode."><input id="script-async-mode" type="checkbox" checked> async queue</label>
             <label class="file-button">Load source<input id="script-file" class="hidden-input" type="file" accept=".js,.mjs,.txt,.lua"></label>
             <button id="script-run-btn" type="button">Run / Update</button>
             <button id="script-stop-btn" type="button">Stop</button>

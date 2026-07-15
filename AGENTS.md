@@ -257,6 +257,60 @@ gh codespace stop -c <name>
 
 ### ローカルPHPテストサーバー
 
+- 起動スクリプトは次の場所に作成済み。
+
+```text
+C:\Users\owner\CLionProjects\deweb\start-test-server.ps1
+```
+
+- このチャットでは、以下のCodexルールで許可されたコマンドだけをサンドボックス外で実行してよい。
+- `gh codespace` は列挙したサブコマンドだけを許可する。
+- PowerShellは、指定PHP実行ファイルを使うテストサーバー起動だけを許可する。別の `powershell.exe -Command`、別の実行ファイル、任意のPowerShellコードへ許可を拡張しない。
+
+```python
+# 読み取り系
+prefix_rule(
+    pattern = ["gh", "codespace", "list"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["gh", "codespace", "view"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["gh", "codespace", "logs"],
+    decision = "allow",
+)
+
+# ファイル転送
+prefix_rule(
+    pattern = ["gh", "codespace", "cp"],
+    decision = "allow",
+)
+
+# ポート操作
+prefix_rule(
+    pattern = ["gh", "codespace", "ports"],
+    decision = "allow",
+)
+
+# Codespace停止
+prefix_rule(
+    pattern = ["gh", "codespace", "stop"],
+    decision = "allow",
+)
+
+# Codespace内で任意コマンドを実行できるため、必要な用途に限る
+prefix_rule(
+    pattern = ["gh", "codespace", "ssh"],
+    decision = "allow",
+)
+```
+
+- 直接起動する場合のコマンドは次のとおり(サンドボックス外からアクセスできない場合あり。)
+
 ```powershell
 (Start-Process -FilePath "D:\software\php-8.5.8-nts-Win32-vs17-x64\php.exe" -ArgumentList "-S localhost:8766" -WindowStyle Hidden -WorkingDirectory "C:\Users\owner\CLionProjects\deweb\public" -PassThru).Id
 ```
@@ -326,16 +380,10 @@ kill <PID>
 
 ## DQ9検証用ローカルパス
 
-- ROM: `D:\software\desmume-win-x64_2025_8_11\nds\dq9_new2.nds`
-- Save: `D:\software\desmume-win-x64_2025_8_11\dq9_save-main\dq9_save\re一人旅_v2\28_ends.sav`
-- State: `D:\software\state.dst`
-- 重要Lua:
-  - `D:\lua_new\lua\Ctable_jp.lua`
-  - `D:\lua_new\lua\AChange.lua`
-  - `D:\lua_new\lua\callstack_test.lua`
-  - `D:\lua_new\lua\nigeru.lua`
-  - `D:\lua_new\lua\setCTable_jp.lua`
-  - `D:\lua_new\lua\enc_jp.lua`
+- ROM: `C:\Users\owner\CLionProjects\deweb\data\dq9_new2.nds` 
+- Save: `C:\Users\owner\CLionProjects\deweb\data\28_ends.sav` (読み込み確認用)
+- State: `C:\Users\owner\CLionProjects\deweb\data\state.dst`
+- State: `C:\Users\owner\CLionProjects\deweb\data\state.dst`
 
 ## 参照
 
@@ -351,6 +399,11 @@ kill <PID>
 # 動作確認
 - あなたは、chrome mcpで動作確認をするべきです。この場合ユーザーが再現方法を述べているため、これを使用し、コードが期待通りに修正されているか確かめる必要があります。
 - ユーザーに丸なげする場合でも、提出前にpublic/desmume.jsをローカルにコピーするべきです。
+- chromeをヘッドレスモードで起動するな
+- node_repl.jsはchrome-devtools-mcpではない。
+- chrome devtools mcpはbrowser useのことではない。
+
+
 
 # agents.md End
 

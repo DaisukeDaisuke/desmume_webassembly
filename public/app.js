@@ -116,6 +116,7 @@ const apiDescriptions = {
     smartStep: "現在命令を見て、通常命令はStep、bx/bl/blxはStep Overで進めます。b系やpc書き換え系はそのまま1命令進めます。",
     stepOver: "ステップオーバーを1回実行します。",
     stepNextBranchOrReturn: "分岐またはreturnらしいPC操作命令の直前まで進めます。途中の関数呼び出しはstep overします。",
+    trueNextBranch: "条件不成立の分岐を通過し、実際にPCを変更した次の分岐を実行した直後で停止します。",
     continue: "デバッグ停止から再開します。",
     setStackTraceMode: "重いスタックトレース処理を有効または無効にします。",
     setStackTracePrivilegeCheck: "スタックトレースのIRQ除外を有効または無効にします。",
@@ -132,6 +133,7 @@ const apiDescriptions = {
     nextCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
     nextFunctionCall: "runUntilNextCall の別名です。次の関数入口まで進めます。",
     nextBranchOrReturn: "stepNextBranchOrReturn の別名です。",
+    nextTrueBranch: "trueNextBranch の別名です。",
     wait: "指定ミリ秒だけ待機します。状態確認や外部操作待ちに使います。",
     waitMs: "指定ミリ秒だけ待機して status を返します。短い sleep 用の別名です。",
     setCTableSeed: "DQ9のCテーブル乱数相当の2ワードを書き込みます。",
@@ -1345,6 +1347,7 @@ function selectScript(id) {
     if (!script) return;
     state.activeScriptId = script.id;
     ui.scriptName.value = script.name;
+    ui.scriptAsyncMode.checked = script.asyncMode;
     if (document.activeElement !== ui.scriptCode) ui.scriptCode.value = script.code;
     renderScriptConsole(script);
     renderScripts();
@@ -1391,7 +1394,7 @@ async function registerScriptTrigger(script, trigger) {
 function persistentScriptWorkerCode() {
     return `
       const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
-      const callbacks = new Map(); let callbackSerial = 1;
+      const callbacks = new Map(); let callbackSerial = 1; let eventQueue = Promise.resolve();
       const ask = (type, data = {}) => new Promise((resolve, reject) => { const id = Math.random().toString(36).slice(2); const receive = (event) => { if (event.data && event.data.replyId === id) { removeEventListener("message", receive); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); } }; addEventListener("message", receive); postMessage({ type, id, ...data }); });
       const mcp = { call: (command, params = {}) => ask("call", { command, params }) };
       const webmcp = mcp;
@@ -1419,19 +1422,40 @@ function persistentScriptWorkerCode() {
       memory.write8 = memory.writebyte; memory.write16 = memory.writeword; memory.write32 = memory.writedword;
       const emu_registerstart = (callback, options) => register("start", 0, callback, options);
       const emu_ontick = (callback, options) => register("tick", 0, callback, options);
-      const emu = Object.fromEntries(["pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput", "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState", "reloadRecentFile"].map((command) => [command, (params = {}) => mcp.call(command, params)]));
-      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { try { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } finally { if (msg.eventId) postMessage({ type: "eventDone", eventId: msg.eventId }); } } };
+      const emu = Object.fromEntries(["pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "trueNextBranch", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput", "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState", "reloadRecentFile"].map((command) => [command, (params = {}) => mcp.call(command, params)]));
+      const runEvent = async (msg) => { try { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } finally { if (msg.eventId) postMessage({ type: "eventDone", eventId: msg.eventId }); } };
+      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { eventQueue = eventQueue.then(() => runEvent(msg)); } };
     `;
+}
+
+const ASYNC_SCRIPT_BLOCKED_COMMANDS = new Set([
+    "pause", "resume", "memoryGetRegister", "memorySetRegister",
+    "memoryReadByte", "memoryReadWord", "memoryReadDword",
+    "memoryWriteByte", "memoryWriteWord", "memoryWriteDword", "dumpMemory",
+    "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze"
+]);
+
+function queuePersistentScriptOperation(script, command, params) {
+    const operation = script.queue.then(async () => {
+        if (!script.running) throw new Error(`script stopped before queued ${command} operation`);
+        if (script.asyncMode && ASYNC_SCRIPT_BLOCKED_COMMANDS.has(command)) {
+            throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
+        }
+        return command === "register" ? registerScriptTrigger(script, params) : runCommand(command, params);
+    });
+    script.queue = operation.catch(() => undefined);
+    return operation;
 }
 
 async function startPersistentScript(params = {}) {
     const code = String(params.code ?? ui.scriptCode.value);
     const name = String(params.name ?? ui.scriptName.value ?? "scratch").trim() || "scratch";
-    const duplicate = [...state.scripts.values()].find((script) => script.code === code && script.running);
+    const asyncMode = !!(params.asyncMode ?? ui.scriptAsyncMode.checked);
+    const duplicate = [...state.scripts.values()].find((script) => script.code === code && script.asyncMode === asyncMode && script.running);
     if (duplicate) return scriptSummary(duplicate, true);
     const existing = [...state.scripts.values()].find((script) => script.name === name);
     if (existing) await stopPersistentScript({ id: existing.id });
-    const script = { id: existing?.id || state.nextScriptId++, name, code, worker: null, running: true, output: [], triggers: [] };
+    const script = { id: existing?.id || state.nextScriptId++, name, code, asyncMode, queue: Promise.resolve(), worker: null, running: true, output: [], triggers: [] };
     const worker = new Worker(URL.createObjectURL(new Blob([persistentScriptWorkerCode()], { type: "text/javascript" })));
     script.worker = worker;
     state.scripts.set(script.id, script);
@@ -1439,8 +1463,8 @@ async function startPersistentScript(params = {}) {
     worker.onmessage = async (event) => {
         const msg = event.data || {};
         try {
-            if (msg.type === "call") worker.postMessage({ replyId: msg.id, result: await runCommand(msg.command, msg.params || {}) });
-            else if (msg.type === "register") worker.postMessage({ replyId: msg.id, result: await registerScriptTrigger(script, msg.trigger || {}) });
+            if (msg.type === "call") worker.postMessage({ replyId: msg.id, result: await queuePersistentScriptOperation(script, msg.command, msg.params || {}) });
+            else if (msg.type === "register") worker.postMessage({ replyId: msg.id, result: await queuePersistentScriptOperation(script, "register", msg.trigger || {}) });
             else if (msg.type === "eventDone") finishPersistentScriptEvent(msg.eventId);
             else if (msg.type === "print") scriptConsoleLine(script, msg.values || []);
             else if (msg.type === "failed") { script.running = false; scriptConsoleLine(script, [msg.error]); renderScripts(); }
@@ -1464,7 +1488,7 @@ async function stopPersistentScript(params = {}) {
 }
 
 function scriptSummary(script, duplicate = false) {
-    return { id: script.id, name: script.name, running: script.running, triggers: script.triggers.map(({ id, type, address, cpu }) => ({ id, type, address: hex(address), cpu })), duplicate };
+    return { id: script.id, name: script.name, running: script.running, asyncMode: script.asyncMode, triggers: script.triggers.map(({ id, type, address, cpu }) => ({ id, type, address: hex(address), cpu })), duplicate };
 }
 
 function stripDisassemblyBytesLine(line) {
@@ -1483,7 +1507,7 @@ function shouldIncludeDisassemblyBytes(params = {}) {
 }
 
 function instructionBody(line) {
-    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:[0-9a-fA-F]{4}|[0-9a-fA-F]{8})\s*/i, "").trim();
+    return instructionOpcode(line).replace(/^\s*[0-9a-fA-F]+:\s*(?:(?:[0-9a-fA-F]{4}|[0-9a-fA-F]{8})\s+)?/i, "").trim();
 }
 
 function armConditionSuffix(text) {
@@ -1620,6 +1644,7 @@ async function runUntilNextBranchOrReturn(params = {}) {
     const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
     let steps = 0;
     state.breakRefreshKey = "";
+    state.fns.dbgClearBreakStatus();
     syncBreakpointsToNative();
     while (performance.now() < deadline && steps < maxSteps) {
         const info = await getCurrentInstructionInfo(cpu);
@@ -1643,6 +1668,37 @@ async function runUntilNextBranchOrReturn(params = {}) {
     }
     await refreshDebuggerViews({ cpu, keepHighlight: true });
     throw new Error(`stepNextBranchOrReturn timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
+}
+
+async function runUntilTrueNextBranch(params = {}) {
+    ensureRomLoaded("true next branch requires a loaded ROM");
+    const cpu = String(params.cpu ?? state.selectedCpu);
+    const pcBefore = getPc(cpu);
+    const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
+    const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+    let steps = 0;
+    state.breakRefreshKey = "";
+    state.fns.dbgClearBreakStatus();
+    syncBreakpointsToNative();
+    while (performance.now() < deadline && steps < maxSteps) {
+        const info = await getCurrentInstructionInfo(cpu);
+        const sequentialPc = info.address == null ? null : (info.address + instructionWidthForMode("auto", cpu)) >>> 0;
+        await withCurrentExecBreakpointSuspended(cpu, async () => state.fns.dbgStep(cpuIndex(cpu), 1));
+        steps++;
+        applyFreezes();
+        const native = syncNativeBreakStatus();
+        const pcAfter = getPc(cpu);
+        if (native && native.lastBreak && native.lastBreak.hit) {
+            await refreshDebuggerViews({ cpu, keepHighlight: true });
+            return attachDebuggerContext({ kind: "trueNextBranch", ok: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, native);
+        }
+        if ((info.isBranch || info.isReturn || info.isCall) && sequentialPc !== null && pcAfter !== sequentialPc) {
+            await refreshDebuggerViews({ cpu, keepHighlight: true });
+            return attachDebuggerContext({ kind: "trueNextBranch", ok: true, steps, instruction: info, branchFrom: hex(info.address), branchTo: hex(pcAfter) }, cpu, pcBefore);
+        }
+    }
+    await refreshDebuggerViews({ cpu, keepHighlight: true });
+    throw new Error(`trueNextBranch timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
 }
 
 function renderDisassembly(text) {
@@ -1769,6 +1825,7 @@ async function runTraceStepper(label, params = {}, shouldStop) {
     ensureRomLoaded(`${label} requires a loaded ROM`);
     const cpu = String(params.cpu ?? state.selectedCpu);
     const pcBefore = getPc(cpu);
+    state.fns.dbgClearBreakStatus();
     if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
     if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
         await commands.setStackTracePrivilegeCheck({ enabled: true });
@@ -2524,6 +2581,7 @@ const commands = {
         return runDebuggerInstruction("stepOver", params);
     },
     async stepNextBranchOrReturn(params = {}) { return runUntilNextBranchOrReturn(params); },
+    async trueNextBranch(params = {}) { return runUntilTrueNextBranch(params); },
     async continue() { return commands.resume(); },
     async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; if (!params.enabled) state.selectedCallstackLaneId = null; renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled }); return { enabled: !!params.enabled }; },
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
@@ -2575,6 +2633,7 @@ const commands = {
     async nextCall(params = {}) { return commands.runUntilNextCall(params); },
     async nextFunctionCall(params = {}) { return commands.runUntilNextCall(params); },
     async nextBranchOrReturn(params = {}) { return commands.stepNextBranchOrReturn(params); },
+    async nextTrueBranch(params = {}) { return commands.trueNextBranch(params); },
     async returnToPop(params = {}) { return commands.runUntilReturn(params); },
     async setCTableSeed(params = {}) {
         ensureRomLoaded("CTable write requires a loaded ROM");
@@ -2631,7 +2690,7 @@ const commands = {
     async restartScript(params = {}) {
         const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
         if (!script) throw new Error("script not found");
-        const next = { name: script.name, code: script.code };
+        const next = { name: script.name, code: script.code, asyncMode: script.asyncMode };
         await stopPersistentScript({ id: script.id });
         state.scripts.delete(script.id);
         return startPersistentScript(next);
@@ -2747,6 +2806,23 @@ function updateTouch(e, active) {
     if (state.ready && active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
 }
 
+const COMMAND_UI_REFRESH = new Set([
+    "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "trueNextBranch",
+    "runUntilReturn", "runUntilNextCall", "stepFrames", "setRegister", "writeMemory", "injectBytes",
+    "setBreakpoint", "removeBreakpoint", "setSpecialBreakpoint", "setStackTraceMode", "setStackTracePrivilegeCheck",
+    "loadState", "reloadRecentFile", "setInput", "runInputHold", "runInputTap"
+]);
+let commandUiRefreshTimer = 0;
+
+function queueCommandUiRefresh(name) {
+    if (!COMMAND_UI_REFRESH.has(name) || !state.ready || !hasLoadedRom() || state.loadingFile) return;
+    if (commandUiRefreshTimer) clearTimeout(commandUiRefreshTimer);
+    commandUiRefreshTimer = setTimeout(() => {
+        commandUiRefreshTimer = 0;
+        refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message || String(error)));
+    }, 0);
+}
+
 async function runCommand(name, params = {}) {
     if (!commands[name]) throw new Error(`unknown command: ${name}`);
     const timeoutMs = Number(params && params.timeoutMs || 0);
@@ -2758,6 +2834,7 @@ async function runCommand(name, params = {}) {
         ])
         : await run;
     updateStatus();
+    queueCommandUiRefresh(name);
     return result;
 }
 
@@ -2888,7 +2965,7 @@ const globalShortcutDefs = [
     ["L", "listOtherCoroutines", ["limit"], { limit: 32 }],
     ["m", "batch", ["commands"]],
     ["M", "setBreakpoint", ["address", "type", "enabled"]],
-    ["n", "nextBranchOrReturn", ["timeoutMs", "maxSteps"]],
+    ["n", "trueNextBranch", ["timeoutMs", "maxSteps"]],
     ["N", "removeBreakpoint", ["id"]],
     ["o", "searchMemory", ["address", "value", "condition", "size"], { limit: 64 }],
     ["O", "resetMemorySearch", []],
@@ -3058,10 +3135,12 @@ ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).t
 ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuNextBranchReturnBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+ui.cpuTrueNextBranchBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+ui.cpuTrueNextBranchDebugBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
 ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
 ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
 ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
@@ -3221,7 +3300,7 @@ ui.mcpBatchRunBtn.addEventListener("click", () => {
     try { items = JSON.parse(ui.mcpBatch.value || "[]"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
     runCommand("batch", Array.isArray(items) ? items : { commands: items.commands || [] }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
 });
-ui.scriptRunBtn.addEventListener("click", () => runCommand("runPersistentScript", { name: ui.scriptName.value, code: ui.scriptCode.value }).then((result) => {
+ui.scriptRunBtn.addEventListener("click", () => runCommand("runPersistentScript", { name: ui.scriptName.value, code: ui.scriptCode.value, asyncMode: ui.scriptAsyncMode.checked }).then((result) => {
     try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}
     selectScript(result.id);
 }).catch((e) => { ui.scriptRawOutput.value = e.message; ui.scriptOutput.textContent = e.message; }));
