@@ -410,7 +410,7 @@
           <div class="row">
             <label>CPU<select id="cpu-select"><option value="arm9">ARM9</option><option value="arm7">ARM7</option></select></label>
             <label class="switch"><input id="debug-toggle" type="checkbox" checked> debugger</label>
-            <label class="switch"><input id="trace-toggle" type="checkbox"> stack trace</label>
+            <label class="switch"><input id="trace-toggle" type="checkbox" checked> stack trace</label>
             <label class="switch"><input id="trace-privilege-toggle" type="checkbox" checked> skip IRQ</label>
           </div>
           <div id="registers" class="registers" aria-live="polite">
@@ -628,7 +628,7 @@ memory.ontick(async ({ frame }) => {
 });</textarea></label>
           <div class="row">
             <label>Script name<input id="script-name" class="mono" value="scratch"></label>
-            <label class="switch" title="Queues each script context's calls without blocking emulation. Memory reads/writes and pause/resume require blocking mode."><input id="script-async-mode" type="checkbox" checked> async queue</label>
+            <label class="switch" title="Queues each script context's calls without blocking emulation. Async scripts can only read registers; memory access and pause/resume require blocking mode."><input id="script-async-mode" type="checkbox"> async queue</label>
             <label class="file-button">Load source<input id="script-file" class="hidden-input" type="file" accept=".js,.mjs,.txt,.lua"></label>
             <button id="script-run-btn" type="button">Run / Update</button>
             <button id="script-stop-btn" type="button">Stop</button>

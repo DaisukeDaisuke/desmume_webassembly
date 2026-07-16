@@ -683,6 +683,7 @@ async function initWasm() {
         ["dbgDisassembleOpcode", "string", ["number", "number", "number"]],
         ["dbgStackTrace", "string", ["number", "number"]], ["dbgCallStackJson", "string", []], ["dbgCallStackJsonLimit", "string", ["number"]], ["utilBinaryFloat", "string", ["number", "number", "number", "number", "number"]], ["emuSetOpt", "number", ["number", "number"]]
     ].forEach(([name, ret, args]) => wrap(name, ret, args));
+    state.fns.traceSetEnabled(ui.traceToggle.checked ? 1 : 0);
     state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
     state.ready = true;
     ui.readyLed.className = "led ready";
@@ -1394,14 +1395,14 @@ async function registerScriptTrigger(script, trigger) {
 function persistentScriptWorkerCode() {
     return `
       const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined, Function = undefined;
-      const callbacks = new Map(); let callbackSerial = 1; let eventQueue = Promise.resolve();
+      const callbacks = new Map(); let callbackSerial = 1; let eventQueue = Promise.resolve(), asyncMode = false;
       const ask = (type, data = {}) => new Promise((resolve, reject) => { const id = Math.random().toString(36).slice(2); const receive = (event) => { if (event.data && event.data.replyId === id) { removeEventListener("message", receive); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); } }; addEventListener("message", receive); postMessage({ type, id, ...data }); });
       const mcp = { call: (command, params = {}) => ask("call", { command, params }) };
       const webmcp = mcp;
       const print = (...values) => postMessage({ type: "print", values });
       const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\\d*)x|%[sd]/g, (match, width) => { const value = values.shift(); if (match.endsWith("x")) return "0x" + (Number(value) >>> 0).toString(16).padStart(Number(width || 0), "0"); return match.endsWith("d") ? String(Number(value)) : String(value); }));
       const printhex = (label, value) => print(label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0")));
-      const register = async (kind, address, callback, options = {}) => { if (typeof address === "function") { options = callback || {}; callback = address; address = 0; } if (typeof callback !== "function") throw new Error(kind + " callback is required"); const callbackId = callbackSerial++; callbacks.set(callbackId, { callback, kind }); return ask("register", { trigger: { kind, address, callbackId, ...options } }); };
+      const register = async (kind, address, callback, options = {}) => { if (typeof address === "function") { options = callback || {}; callback = address; address = 0; } if (typeof callback !== "function") throw new Error(kind + " callback is required"); const callbackId = callbackSerial++; callbacks.set(callbackId, { callback, kind }); try { return await ask("register", { trigger: { kind, address, callbackId, ...options } }); } catch (error) { callbacks.delete(callbackId); throw error; } };
       const memory = {
         getregister: (register, cpu) => ask("call", { command: "memoryGetRegister", params: { register, cpu } }),
         setregister: (register, value, cpu) => ask("call", { command: "memorySetRegister", params: { register, value, cpu } }),
@@ -1423,13 +1424,14 @@ function persistentScriptWorkerCode() {
       const emu_registerstart = (callback, options) => register("start", 0, callback, options);
       const emu_ontick = (callback, options) => register("tick", 0, callback, options);
       const emu = Object.fromEntries(["pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "trueNextBranch", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput", "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState", "reloadRecentFile"].map((command) => [command, (params = {}) => mcp.call(command, params)]));
-      const runEvent = async (msg) => { try { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } finally { if (msg.eventId) postMessage({ type: "eventDone", eventId: msg.eventId }); } };
-      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { postMessage({ type: "failed", error: String(error.stack || error.message || error) }); } } else if (msg.type === "event") { eventQueue = eventQueue.then(() => runEvent(msg)); } };
+      const fail = (error) => postMessage({ type: "failed", error: String(error && (error.stack || error.message) || error) });
+      const runEvent = async (msg) => { try { for (const [id, entry] of callbacks) { if (msg.callbackId ? id !== msg.callbackId : entry.kind !== msg.event) continue; try { await entry.callback(msg.payload); } catch (error) { if (asyncMode) throw error; postMessage({ type: "print", values: ["callback error: " + String(error.message || error)] }); } } } finally { if (msg.eventId) postMessage({ type: "eventDone", eventId: msg.eventId }); } };
+      onmessage = async (event) => { const msg = event.data || {}; if (msg.type === "start") { asyncMode = !!msg.asyncMode; try { await (0, eval)("(async () => {\\n" + msg.code + "\\n})()\\n//# sourceURL=desmume-persistent-user.js"); postMessage({ type: "started" }); } catch (error) { fail(error); } } else if (msg.type === "event") { eventQueue = eventQueue.then(() => runEvent(msg)).catch((error) => asyncMode ? fail(error) : print("callback error: " + String(error.message || error))); } };
     `;
 }
 
 const ASYNC_SCRIPT_BLOCKED_COMMANDS = new Set([
-    "pause", "resume", "memoryGetRegister", "memorySetRegister",
+    "pause", "resume", "memorySetRegister",
     "memoryReadByte", "memoryReadWord", "memoryReadDword",
     "memoryWriteByte", "memoryWriteWord", "memoryWriteDword", "dumpMemory",
     "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze"
@@ -1467,10 +1469,17 @@ async function startPersistentScript(params = {}) {
             else if (msg.type === "register") worker.postMessage({ replyId: msg.id, result: await queuePersistentScriptOperation(script, "register", msg.trigger || {}) });
             else if (msg.type === "eventDone") finishPersistentScriptEvent(msg.eventId);
             else if (msg.type === "print") scriptConsoleLine(script, msg.values || []);
-            else if (msg.type === "failed") { script.running = false; scriptConsoleLine(script, [msg.error]); renderScripts(); }
-        } catch (error) { worker.postMessage({ replyId: msg.id, error: String(error.message || error) }); }
+            else if (msg.type === "failed") {
+                if (script.asyncMode) await failPersistentScript(script, msg.error);
+                else { script.running = false; scriptConsoleLine(script, [msg.error]); renderScripts(); }
+            }
+        } catch (error) {
+            worker.postMessage({ replyId: msg.id, error: String(error.message || error) });
+            if (script.asyncMode && msg.type === "register") await failPersistentScript(script, error);
+        }
     };
-    worker.postMessage({ type: "start", code });
+    worker.onerror = (event) => { if (script.asyncMode) void failPersistentScript(script, event.error || event.message || "persistent script worker error"); };
+    worker.postMessage({ type: "start", code, asyncMode });
     renderScripts();
     return scriptSummary(script, false);
 }
@@ -1479,12 +1488,29 @@ async function stopPersistentScript(params = {}) {
     const id = Number(params.id ?? state.activeScriptId);
     const script = state.scripts.get(id);
     if (!script) throw new Error(`script not found: ${id}`);
-    await unregisterScriptTriggers(script);
-    script.worker?.terminate();
     script.running = false;
-    renderScripts();
-    renderScriptConsole(script);
+    try {
+        await unregisterScriptTriggers(script);
+    } finally {
+        script.worker?.terminate();
+        renderScripts();
+        renderScriptConsole(script);
+    }
     return scriptSummary(script, false);
+}
+
+async function failPersistentScript(script, error) {
+    if (!script.running) return;
+    scriptConsoleLine(script, ["stopped: " + String(error?.message || error)]);
+    try {
+        await stopPersistentScript({ id: script.id });
+    } catch (stopError) {
+        script.worker?.terminate();
+        script.running = false;
+        scriptConsoleLine(script, ["trigger cleanup failed: " + String(stopError?.message || stopError)]);
+        renderScripts();
+        renderScriptConsole(script);
+    }
 }
 
 function scriptSummary(script, duplicate = false) {
@@ -2932,6 +2958,11 @@ function webMcpContent(result) {
     return rawOutputText(result);
 }
 
+function webMcpError(error) {
+    const message = String(error?.message || error || "Unknown WebMCP error");
+    return JSON.stringify({ ok: false, error: { name: String(error?.name || "Error"), message } });
+}
+
 function parseWebMcpInput(input) {
     if (typeof input !== "string") return input || {};
     if (!input.trim()) return {};
@@ -3060,7 +3091,13 @@ async function registerBrowserModelContextTools() {
             },
             additionalProperties: false
         },
-        execute: async (input = {}) => webMcpContent(await commands.eval(parseWebMcpInput(input)))
+        execute: async (input = {}) => {
+            try {
+                return webMcpContent(await commands.eval(parseWebMcpInput(input)));
+            } catch (error) {
+                return webMcpError(error);
+            }
+        }
     }, {
         name: "desmume.runScript",
         title: "DeSmuME run script",
@@ -3074,7 +3111,13 @@ async function registerBrowserModelContextTools() {
             },
             additionalProperties: false
         },
-        execute: async (input = {}) => webMcpContent(await commands.runScript(parseWebMcpInput(input)))
+        execute: async (input = {}) => {
+            try {
+                return webMcpContent(await commands.runScript(parseWebMcpInput(input)));
+            } catch (error) {
+                return webMcpError(error);
+            }
+        }
     }];
     let ok = 0;
     for (const tool of registrations) {

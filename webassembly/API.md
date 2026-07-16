@@ -12,6 +12,39 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `window.postMessage({ type: "desmume-mcp", id, command, params }, "*")`: Message-based command transport. The page replies with `{ type: "desmume-mcp-result", id, result }`.
 - Browser WebMCP: when `navigator.modelContext` is available, the page registers `desmume.list`, `desmume.call`, `desmume.eval`, and `desmume.runScript`. Use `desmume.eval` for multi-command investigation scripts with `mcp.call(command, params)`.
 
+### One-letter shortcut reference
+
+Each shortcut is an `async` function on `window`; call it with positional arguments in the listed order, or with one parameter object to name values explicitly. Omitted arguments use the defaults shown below (or the command's normal defaults). Upper- and lower-case names are distinct. `window.DesmumeShortcuts` exposes the same command/parameter/default mapping for discovery.
+
+| Shortcut | Command | Positional parameters and defaults |
+| --- | --- | --- |
+| `a` / `A` | `disassemble` | `address, count=16, before=4, mode`; `A` includes opcode bytes |
+| `b` / `B` | `disassembleBytes` / `binaryFloat` | `b(input, mode, endian)` / `B(value, bits, op)` |
+| `c` / `C` | `callStack` / `getOtherCoroutines` | `c(limit=32)` / `C(stackId, limit=32)` |
+| `d` / `D` | `status` / `dumpMemory` | `d()` / `D(address, length=64, view)` |
+| `e` / `E` | `getRegisters` / `eval` | `e(cpu)` / `E(code, timeoutMs)` |
+| `f` / `F` | `step` / `stepFrames` | `f(count=1)` / `F(frames=1)` |
+| `g` / `G` | `smartStep` / `setRegister` | `g()` / `G(register, value, cpu)` |
+| `h` / `H` | `stepOver` / `setFeatureSet` | `h()` / `H(debugger, memory, mcp)` |
+| `i` / `I` | `stepNextBranchOrReturn` / `injectBytes` | `i(timeoutMs, maxSteps)` / `I(address, input)` |
+| `j` / `J` | `runUntilNextCall` / `nextFunctionCall` | `j(timeoutMs, maxSteps)` / `J(timeoutMs, maxSteps)` |
+| `k` / `K` | `runUntilReturn` / `returnToPop` | `k(timeoutMs, maxSteps)` / `K(timeoutMs, maxSteps)` |
+| `l` / `L` | `listBreakpoints` / `listOtherCoroutines` | `l()` / `L(limit=32)` |
+| `m` / `M` | `batch` / `setBreakpoint` | `m(commands)` / `M(address, type, enabled)` |
+| `n` / `N` | `trueNextBranch` / `removeBreakpoint` | `n(timeoutMs, maxSteps)` / `N(id)` |
+| `o` / `O` | `searchMemory` / `resetMemorySearch` | `o(address, value, condition, size)` (limit `64`) / `O()` |
+| `p` / `P` | `pause` / `resume` | `p()` / `P()` |
+| `q` / `Q` | `setInput` / `runInputTap` | `q(button, pressed)` / `Q(button, repeat, holdMs, gapMs)` |
+| `r` / `R` | `runInputHold` / `runTouchHold` | `r(button, durationMs)` / `R(x, y, durationMs)` |
+| `s` / `S` | `setSpeed` / `setCTableSeed` | `s(speed)` / `S(address, value, high)` |
+| `t` / `T` | `stackTrace` / `setStackTraceMode` | `t(limit=32)` / `T(enabled)` |
+| `u` / `U` | `writeMemory` / `setStackTracePrivilegeCheck` | `u(address, value, size)` / `U(enabled)` |
+| `v` / `V` | `setRenderEnabled` / `setAudio` | `v(enabled)` / `V(enabled, volume)` |
+| `w` / `W` | `wait` / `waitMs` | `w(ms)` / `W(ms)` |
+| `x` / `X` | `clearBreakStatus` / `copyCallStackMarkdown` | `x()` / `X()` |
+| `y` / `Y` | `setScale` / `copyCallStackCsv` | `y(scale)` / `Y()` |
+| `z` / `Z` | `setRotation` / `takeScreenshot` | `z(rotation)` / `Z(type, includeDataUrl)` |
+
 ## Commands
 
 - `status`: Returns pause state, file-load gate state, ROM-loaded state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values.
@@ -98,20 +131,20 @@ Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the
 
 ## Persistent injection scripts
 
-`runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is non-blocking `{ "asyncMode": true }`; use `{ "asyncMode": false }` only for a script that must observe or mutate immediate emulator state.
+`runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is blocking `{ "asyncMode": false }`. Enable `{ "asyncMode": true }` only for a non-blocking register-observation script.
 
-- `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": true }` starts a script. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
+- `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": false }` starts a script. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
 - `listScripts`, `stopScript: { id }`, `restartScript: { id }`, `getScript: { id, regex, flags }` manage saved worker code. `getScript` without a regular expression returns the full source.
 - `listScriptPrint: { max: 10, id? }` returns the latest console lines; `clearScriptPrint: { id? }` clears one or all consoles.
 - The editor persists its draft in local storage. The source-file button loads a local `.js`, text, or Lua source into the editor only; it never uploads it. Lua source is reference material—the runnable injection language is JavaScript.
 - The breakpoints set by these persistent scripts significantly slow down the ROM. Defining a large number of breakpoints can cause them to take 30 seconds or more to complete.
-- Async mode unconditionally rejects register reads/writes, memory reads/writes/dumps/injection/freezes, and pause/resume. The returned error names the rejected command and tells the caller to restart with `asyncMode:false`; this prevents a queued operation from using stale immediate state or delaying emulation. Blocking mode retains those APIs and can pause the emulator.
+- Async mode permits only register reads (`memory.getregister` / `memory.reg`) among direct emulator-state APIs. It rejects register writes, memory reads/writes/dumps/injection/freezes, and pause/resume, preventing a queued script from mutating or observing stale immediate state. If an async script fails to register a callback, throws while starting or handling a callback, or its Worker reports an execution error, it is stopped automatically: its triggers are removed and its Worker is terminated. Blocking mode retains the full API and can pause the emulator.
 
 Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(label, value)` write to that script's own console. `printf` accepts `%s`, `%d`, and hexadecimal `%x` / `%.8x` forms. Each script gets these asynchronous APIs:
 
 
 ```js
-// All values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
+// Blocking mode: all values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
 const pc = await memory.getregister("pc", "arm9");
 const lr = await memory.getregister("r14", "arm9"); // r13=sp, r14=lr, r15=pc
 await memory.setregister("r0", 0x12345678, "arm9");
@@ -125,6 +158,15 @@ printhex("dword", await memory.readdword(0x02000020));
 ```
 
 `readword` / `readdword` and `writeword` / `writedword` use Big Endian values at the API boundary. The implementation converts those values to and from the emulator's Little Endian memory layout. `readbyte` / `writebyte` are aliases for one-byte access. WebMCP equivalents are `memoryGetRegister`, `memorySetRegister`, `memoryReadByte`, `memoryReadWord`, `memoryReadDword`, `memoryWriteByte`, `memoryWriteWord`, and `memoryWriteDword`.
+
+For an async script, register the callback and only read registers inside it. This mode never writes emulator state and stops itself if registration or callback execution fails:
+
+```js
+memory.ontick(async ({ frame }) => {
+  const pc = await memory.getregister("pc", "arm9");
+  if ((frame % 60) === 0) printhex("ARM9 PC", pc);
+});
+```
 
 Register a callback once; its registration is tied to the script and is removed automatically on `stopScript`:
 
