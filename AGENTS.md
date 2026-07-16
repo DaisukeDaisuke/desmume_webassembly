@@ -402,7 +402,8 @@ kill <PID>
 - chromeをヘッドレスモードで起動するな
 - node_repl.jsはchrome-devtools-mcpではない。
 - chrome devtools mcpはbrowser useのことではない。
-
+- gh codespace listは単体で実行しないとサンドボックス外で実行できないよ
+- ビルドは`gh codespace ssh -c stunning-waffle-wrjpjx79xqpcvjq "cd /workspaces/desmume_webassembly && bash webassembly/build_safe_heap.sh`ですること。pull方式でコマンド待機しないこと。
 
 
 # agents.md End

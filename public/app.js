@@ -57,11 +57,19 @@ const state = {
     pendingScriptEvents: new Map(),
     nextScriptEventId: 1,
     explicitPauseSerial: 0,
-    scriptStartGeneration: 0
+    scriptStartGeneration: 0,
+    analysisBaselines: new Map(),
+    romGeneration: 0,
+    nativeFault: false
 };
+
+const analysisBaselineSlotToken = Symbol("analysisBaselineSlot");
 
 const apiDescriptions = {
     status: "現在の停止状態、フレーム、速度、描画/音声/デバッグ設定、PC/CPSRを返します。",
+    snapshotContext: "解析用に停止状態、主要レジスタ、PC周辺命令、フレーム、IRQ方針を短くまとめて返します。",
+    saveAnalysisBaseline: "名前付き解析baselineを保存し、その時点のpause/IRQ方針も記録します。",
+    restoreAnalysisBaseline: "名前付き解析baselineと記録済みpause/IRQ方針を安全に復元し、短い状況を返します。",
     loadRomFile: "ユーザーがローカルROMを選択し、ブラウザ内だけで読み込みます。",
     loadRomBytes: "MCPから渡されたROMバイトをブラウザ内だけで読み込みます。bytes配列またはbase64を指定します。",
     loadRomUrl: "同一originまたはCORS許可済みURLからROMを取得し、ブラウザ内だけで読み込みます。ローカル検証は /dq9.nds のような同一origin URL が最短です。",
@@ -257,14 +265,14 @@ function callStackLimit(params = {}) {
 function readCallStackData(params = {}) {
     const limit = callStackLimit(params);
     const json = state.fns.dbgCallStackJsonLimit ? state.fns.dbgCallStackJsonLimit(limit) : state.fns.dbgCallStackJson();
-    return normalizeCallStackData(JSON.parse(json));
+    return normalizeCallStackData(parseNativeJson(json, "callStack"));
 }
 
 function disassemblyRows(cpu, address, options = {}) {
     const addr = Number(address) >>> 0;
     const mode = options.mode || (((Number(options.cpsr) >>> 0) & 0x20) ? "thumb" : "arm");
     const count = Math.max(1, Math.min(3, Number(options.count ?? 3)));
-    return String(state.fns.dbgDisassemble(cpuIndex(cpu), addr, count, modeNumber(mode)) || "")
+    return checkNativeText(state.fns.dbgDisassemble(cpuIndex(cpu), addr, count, modeNumber(mode)), "disassemble")
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean);
@@ -593,7 +601,7 @@ async function waitChecked(ms, deadline = 0, label = "wait") {
 
 function setTouchState(active, x = 0, y = 0) {
     state.touch = { active: !!active, x: Number(x) || 0, y: Number(y) || 0 };
-    if (state.ready && state.touch.active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
+    if (state.ready && state.touch.active) checkNativeResult(state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y), "touch release");
 }
 
 function cpuIndex(cpu = state.selectedCpu) {
@@ -728,10 +736,15 @@ function blockSaveFlush(ms = 10000) {
 }
 
 function handleNativeFault(error, where) {
+    state.nativeFault = true;
     state.paused = true;
     state.running = false;
     state.frameBudget = 0;
-    if (state.ready) state.fns.pauseEmu(1);
+    try {
+        if (state.ready) state.fns.pauseEmu(1);
+    } catch (pauseError) {
+        log(`pause after ${where}: ${pauseError && (pauseError.stack || pauseError.message) || pauseError}`);
+    }
     state.breakLabel = `native fault ${where}`;
     blockSaveFlush(30000);
     log(`${where}: ${error && (error.stack || error.message) || error}`);
@@ -743,7 +756,7 @@ async function reloadSelectedRom() {
     writeRomFile(file.name, bytes);
     state.fns.pauseEmu(1);
     await sleep(0);
-    const ret = state.fns.loadROM(bytes.length);
+    const ret = checkNativeResult(state.fns.loadROM(bytes.length), "loadROM");
     state.frame = 0;
     drawFrame();
     log(`ROM reloaded: ${file.name} (${bytes.length} bytes)`);
@@ -757,6 +770,7 @@ function writeRomFile(name, bytes) {
     state.romName = name || "rom.nds";
     state.romBytes = romBytes;
     state.romSize = romBytes.length;
+    state.romGeneration++;
     return romBytes.length;
 }
 
@@ -860,10 +874,11 @@ async function reloadCurrentRom(options = {}) {
     state.paused = true;
     state.frameBudget = 0;
     await sleep(Number(options.preWaitMs ?? 0));
-    const ret = state.fns.loadROM(romSize);
+    const ret = checkNativeResult(state.fns.loadROM(romSize), "loadROM");
     state.fns.pauseEmu(1);
     await sleep(Number(options.waitMs ?? 0));
     if (ret === 0) {
+        state.nativeFault = false;
         state.romSize = romSize;
         state.frame = 0;
         state.previousRegisters = null;
@@ -918,7 +933,7 @@ async function restorePendingSaveBoot() {
     const saveName = sessionStorage.getItem("desmume-pending-save-name") || "save.sav";
     sessionStorage.removeItem("desmume-pending-save-name");
     writeRomFile("pending-rom.nds", rom);
-    const ret = state.fns.loadROM(rom.length);
+    const ret = checkNativeResult(state.fns.loadROM(rom.length), "loadROM");
     if (ret === 0) {
         const saveLoad = await applySaveAndReloadRom(saveName, save, { waitMs: bootWaitMs() });
         log(`save applied via ${saveLoad.path}`);
@@ -1014,15 +1029,15 @@ function tick(now) {
             try {
                 if (state.touch.active) {
                     for (let i = 0; i < frames; i++) {
+                        const frameResult = checkNativeResult(state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y), "runFrame");
                         ran++;
-                        if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+                        if (frameResult > 0) break;
                     }
                 } else {
-                    ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+                    ran = checkNativeResult(state.fns.runFrames(frames, state.render ? 1 : 0, state.keys), "runFrames");
                 }
             } catch (error) {
                 handleNativeFault(error, "runFrame");
-                throw error;
             }
             const native = syncNativeBreakStatus();
             if (ran < frames || (native && native.lastBreak && native.lastBreak.hit)) {
@@ -1061,6 +1076,13 @@ function restoreAfterFileLoad(runState) {
     state.loadingFile = false;
     state.lastTick = performance.now();
     state.frameBudget = 0;
+    if (state.nativeFault) {
+        state.paused = true;
+        state.running = false;
+        state.fns.pauseEmu(1);
+        updateStatus();
+        return;
+    }
     if (runState.running && !runState.paused) {
         state.breakLabel = "";
         state.breakRefreshKey = "";
@@ -1106,7 +1128,7 @@ function breakpointKindName(kind) {
 }
 
 function getNativeStatus() {
-    return state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
+    return state.ready ? parseNativeJson(state.fns.dbgGetStatusJson(), "status") : null;
 }
 
 function currentInstructionAddress(cpu = state.selectedCpu) {
@@ -1134,7 +1156,7 @@ async function withCurrentExecBreakpointSuspended(cpu, callback) {
 
 function syncNativeBreakStatus(native = null) {
     if (!state.ready) return null;
-    const status = native || JSON.parse(state.fns.dbgGetStatusJson());
+    const status = native || parseNativeJson(state.fns.dbgGetStatusJson(), "status");
     if (Number.isFinite(Number(status.frame))) state.frame = Number(status.frame);
     const bp = status.lastBreak;
     if (bp && bp.hit) {
@@ -1185,7 +1207,7 @@ function finishPersistentScriptEvent(eventId) {
     state.pendingScriptEvents.delete(Number(eventId));
     if (pending.pauseSerial !== state.explicitPauseSerial || !hasLoadedRom()) return;
     if (currentInstructionAddress(pending.cpu) === pending.address) {
-        state.fns.dbgStep(cpuIndex(pending.cpu), 1);
+        checkNativeResult(state.fns.dbgStep(cpuIndex(pending.cpu), 1), "persistent script step");
         const afterStep = getNativeStatus();
         if (afterStep?.lastBreak?.hit) {
             syncNativeBreakStatus(afterStep);
@@ -1200,6 +1222,43 @@ function finishPersistentScriptEvent(eventId) {
     state.paused = false;
     state.running = true;
     state.fns.pauseEmu(0);
+    updateStatus();
+}
+
+function checkNativeResult(value, operation) {
+    if (Number(value) < 0) {
+        const error = new Error(`native fault during ${operation} (${value})`);
+        handleNativeFault(error, operation);
+        throw error;
+    }
+    return value;
+}
+
+function checkNativeText(value, operation) {
+    const text = String(value || "");
+    if (!text || text.includes('"nativeFault":true')) {
+        const error = new Error(`native fault during ${operation}`);
+        handleNativeFault(error, operation);
+        throw error;
+    }
+    return text;
+}
+
+function parseNativeJson(value, operation) {
+    return JSON.parse(checkNativeText(value, operation));
+}
+
+function stopAfterFailedStateLoad() {
+    state.loadingFile = false;
+    state.lastTick = performance.now();
+    state.frameBudget = 0;
+    state.paused = true;
+    state.running = false;
+    try {
+        if (state.ready) state.fns.pauseEmu(1);
+    } catch (error) {
+        handleNativeFault(error, "state load failure pause");
+    }
     updateStatus();
 }
 
@@ -1608,6 +1667,78 @@ function stepStatusSummary(cpu, native = null) {
     };
 }
 
+function emulatorActivity() {
+    return { paused: !!state.paused, running: !!state.running };
+}
+
+function analysisBaselineKey(name) {
+    return `analysis-baseline:${String(name || "default")}`;
+}
+
+function isAnalysisBaselineSlot(slot) {
+    return String(slot || "").startsWith(ANALYSIS_BASELINE_SLOT_PREFIX);
+}
+
+async function currentRomIdentity() {
+    if (!state.romBytes || state.romBytes.length !== state.romSize) throw new Error("current ROM bytes are unavailable for baseline verification");
+    if (!globalThis.crypto || !crypto.subtle) throw new Error("SHA-256 is unavailable; analysis baseline cannot be saved safely");
+    const digest = await crypto.subtle.digest("SHA-256", state.romBytes);
+    return {
+        romName: state.romName,
+        romSize: state.romSize,
+        romSha256: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+        stateFormatVersion: ANALYSIS_BASELINE_STATE_FORMAT_VERSION
+    };
+}
+
+async function sha256Hex(bytes) {
+    if (!globalThis.crypto || !crypto.subtle) throw new Error("SHA-256 is unavailable");
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readAnalysisBaseline(name) {
+    const key = String(name || "default");
+    const cached = state.analysisBaselines.get(key);
+    if (cached) return cached;
+    try {
+        const saved = JSON.parse(localStorage.getItem(analysisBaselineKey(key)) || "null");
+        if (saved && typeof saved === "object") state.analysisBaselines.set(key, saved);
+        return saved;
+    } catch (_) {
+        return null;
+    }
+}
+
+function writeAnalysisBaseline(name, baseline) {
+    const key = String(name || "default");
+    state.analysisBaselines.set(key, baseline);
+    localStorage.setItem(analysisBaselineKey(key), JSON.stringify(baseline));
+}
+
+async function snapshotContext(params = {}) {
+    ensureReady();
+    const cpu = String(params.cpu ?? state.selectedCpu);
+    const status = await commands.status();
+    const registers = registerHexSnapshot(cpu);
+    const disassembly = hasLoadedRom()
+        ? await commands.disassemble({ cpu, address: "pc", before: Math.max(0, Number(params.before ?? 1)), count: Math.max(1, Math.min(8, Number(params.count ?? 3))), mode: "auto" })
+        : { text: "" };
+    const native = status.native || {};
+    const lastBreak = native.lastBreak && native.lastBreak.hit ? native.lastBreak : null;
+    return {
+        ...emulatorActivity(),
+        romLoaded: !!status.romLoaded,
+        frame: status.frame,
+        cpu,
+        registers: { pc: registers.pc, sp: registers.sp, lr: registers.lr, cpsr: registers.cpsr },
+        nearPc: String(disassembly.text || "").split("\n").map((line) => line.trim()).filter(Boolean),
+        breakReason: lastBreak ? breakpointKindName(lastBreak.kind) : "",
+        skipIrq: !!ui.tracePrivilegeToggle.checked,
+        traceEnabled: !!ui.traceToggle.checked
+    };
+}
+
 async function attachDebuggerContext(result, cpu, pcBefore, native = null) {
     const pcAfter = getPc(cpu);
     const disassembly = await commands.disassemble({ cpu, address: pcAfter, before: 1, count: 2, mode: "auto" });
@@ -1639,12 +1770,7 @@ async function runDebuggerInstruction(kind, params = {}) {
     let result = { kind, count: 0 };
     state.breakRefreshKey = "";
     syncBreakpointsToNative();
-    if (kind === "step") {
-        result.count = state.fns.dbgStep(cpuIndex(cpu), Number(params.count ?? 1));
-    } else if (kind === "stepOver") {
-        result.count = state.fns.dbgStepOver(cpuIndex(cpu));
-        result.ret = result.count;
-    } else if (kind === "smartStep") {
+    if (kind === "smartStep") {
         const info = await getCurrentInstructionInfo(cpu);
         const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
         result = await runDebuggerInstruction(chosen, { ...params, cpu });
@@ -1653,7 +1779,16 @@ async function runDebuggerInstruction(kind, params = {}) {
         result.instruction = info;
         return result;
     } else {
-        throw new Error(`unsupported debugger step: ${kind}`);
+        try {
+            if (kind === "step") result.count = checkNativeResult(state.fns.dbgStep(cpuIndex(cpu), Number(params.count ?? 1)), kind);
+            else if (kind === "stepOver") {
+                result.count = checkNativeResult(state.fns.dbgStepOver(cpuIndex(cpu)), kind);
+                result.ret = result.count;
+            } else throw new Error(`unsupported debugger step: ${kind}`);
+        } catch (error) {
+            handleNativeFault(error, kind);
+            throw error;
+        }
     }
     applyFreezes();
     const native = syncNativeBreakStatus();
@@ -1680,9 +1815,9 @@ async function runUntilNextBranchOrReturn(params = {}) {
             return attachDebuggerContext(result, cpu, pcBefore);
         }
         if (info.isCall) {
-            state.fns.dbgStepOver(cpuIndex(cpu));
+            checkNativeResult(state.fns.dbgStepOver(cpuIndex(cpu)), "stepNextBranchOrReturn");
         } else {
-            state.fns.dbgStep(cpuIndex(cpu), 1);
+            checkNativeResult(state.fns.dbgStep(cpuIndex(cpu), 1), "stepNextBranchOrReturn");
         }
         steps++;
         applyFreezes();
@@ -1709,7 +1844,7 @@ async function runUntilTrueNextBranch(params = {}) {
     while (performance.now() < deadline && steps < maxSteps) {
         const info = await getCurrentInstructionInfo(cpu);
         const sequentialPc = info.address == null ? null : (info.address + instructionWidthForMode("auto", cpu)) >>> 0;
-        await withCurrentExecBreakpointSuspended(cpu, async () => state.fns.dbgStep(cpuIndex(cpu), 1));
+        await withCurrentExecBreakpointSuspended(cpu, async () => checkNativeResult(state.fns.dbgStep(cpuIndex(cpu), 1), "trueNextBranch"));
         steps++;
         applyFreezes();
         const native = syncNativeBreakStatus();
@@ -1862,7 +1997,7 @@ async function runTraceStepper(label, params = {}, shouldStop) {
     let steps = 0;
     while (performance.now() < deadline && steps < maxSteps) {
         await withCurrentExecBreakpointSuspended(cpu, async () => {
-            state.fns.dbgStep(cpuIndex(cpu), 1);
+            checkNativeResult(state.fns.dbgStep(cpuIndex(cpu), 1), label);
         });
         steps++;
         const native = syncNativeBreakStatus();
@@ -1971,9 +2106,60 @@ const commands = {
     async status() {
         const waitMs = Math.max(0, Math.min(600000, Number(arguments[0]?.waitMs ?? arguments[0]?.ms ?? 0)));
         if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
-        const native = state.ready ? JSON.parse(state.fns.dbgGetStatusJson()) : null;
+        const native = state.ready ? parseNativeJson(state.fns.dbgGetStatusJson(), "status") : null;
         if (native) syncNativeBreakStatus(native);
         return { ready: state.ready, paused: state.paused, running: state.running, loadingFile: state.loadingFile, romLoaded: hasLoadedRom(), romSize: state.romSize, frame: state.frame, speed: state.speed, render: state.render, audio: state.audio, cpu: state.selectedCpu, recentFiles: state.recentFiles, autoUpdate: { enabled: state.autoUpdate.enabled, hz: state.autoUpdate.hz }, native };
+    },
+    async snapshotContext(params = {}) {
+        return snapshotContext(params);
+    },
+    async saveAnalysisBaseline(params = {}) {
+        ensureRomLoaded("analysis baseline requires a loaded ROM");
+        const name = String(params.name || "default");
+        const existing = readAnalysisBaseline(name);
+        if (existing && params.replace !== true) throw new Error(`analysis baseline already exists: ${name}; pass replace:true to overwrite it`);
+        const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`;
+        const generation = state.romGeneration;
+        const identity = await currentRomIdentity();
+        const activity = emulatorActivity();
+        const result = await commands.saveState({ slot, _analysisBaselineSlotToken: analysisBaselineSlotToken });
+        if (generation !== state.romGeneration) throw new Error("ROM changed while saving analysis baseline");
+        const stateBytes = await idbGet(slot);
+        if (!stateBytes) throw new Error("analysis baseline state was not stored");
+        const baseline = {
+            name,
+            slot,
+            ...identity,
+            stateSize: stateBytes.length,
+            stateSha256: await sha256Hex(stateBytes),
+            ...activity,
+            skipIrq: !!ui.tracePrivilegeToggle.checked,
+            traceEnabled: !!ui.traceToggle.checked,
+            savedAt: new Date().toISOString()
+        };
+        writeAnalysisBaseline(name, baseline);
+        return { ok: true, name, slot, size: result.size, ...emulatorActivity(), skipIrq: baseline.skipIrq, traceEnabled: baseline.traceEnabled };
+    },
+    async restoreAnalysisBaseline(params = {}) {
+        ensureRomLoaded("analysis baseline restore requires a loaded ROM");
+        const name = String(params.name || "default");
+        const baseline = readAnalysisBaseline(name);
+        if (!baseline) throw new Error(`analysis baseline not found: ${name}`);
+        const rom = await currentRomIdentity();
+        for (const field of ["romName", "romSize", "romSha256", "stateFormatVersion"]) {
+            if (baseline[field] !== rom[field]) throw new Error(`analysis baseline ROM mismatch: ${field}`);
+        }
+        const stateBytes = await idbGet(baseline.slot);
+        if (!stateBytes || stateBytes.length !== baseline.stateSize || await sha256Hex(stateBytes) !== baseline.stateSha256) {
+            throw new Error("analysis baseline state integrity check failed");
+        }
+        await commands.loadState({ slot: baseline.slot, saveFlushBlockMs: params.saveFlushBlockMs, _analysisBaselineSlotToken: analysisBaselineSlotToken });
+        await commands.setStackTraceMode({ enabled: false });
+        await commands.setStackTraceMode({ enabled: baseline.traceEnabled });
+        await commands.setStackTracePrivilegeCheck({ enabled: baseline.skipIrq });
+        if (baseline.running && !baseline.paused) await commands.resume();
+        else await commands.pause();
+        return { ok: true, name, restored: true, ...await snapshotContext(params) };
     },
     async loadRomFile() {
         const { file, bytes } = ui.romFile.files && ui.romFile.files[0] ? await readFileFromInput(ui.romFile) : await openPicker(ui.romFile);
@@ -2069,15 +2255,16 @@ const commands = {
     },
     async saveState(params = {}) {
         ensureRomLoaded("state save requires a loaded ROM");
+        if (isAnalysisBaselineSlot(params.slot) && params._analysisBaselineSlotToken !== analysisBaselineSlotToken) throw new Error("analysis baseline slots are reserved");
         const size = state.fns.saveStateToBuffer();
         if (size <= 0) throw new Error("state save failed");
         const ptr = state.fns.stateGetPointer(0);
         const bytes = state.module.HEAPU8.slice(ptr, ptr + size);
         if (params.slot) {
-            rememberSlot(params.slot);
+            if (!isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
             if (bytes.length > 256 * 1024 * 1024) throw new Error("state exceeds 256MB browser storage limit");
             await idbPut(String(params.slot), bytes);
-            await recordRecentFile("state", String(params.slot), bytes, String(params.slot));
+            if (!isAnalysisBaselineSlot(params.slot)) await recordRecentFile("state", String(params.slot), bytes, String(params.slot));
             ui.storageStatus.textContent = `state saved ${params.slot}`;
         }
         dispatchScriptEvent("stateSave", { size, slot: params.slot || null });
@@ -2085,10 +2272,12 @@ const commands = {
     },
     async loadState(params = {}) {
         ensureRomLoaded("state load requires a loaded ROM");
+        if (isAnalysisBaselineSlot(params.slot) && params._analysisBaselineSlotToken !== analysisBaselineSlotToken) throw new Error("analysis baseline slots are reserved");
         const runState = pauseForFileLoad();
         let bytes = null;
+        let loaded = false;
         try {
-            if (params.slot) rememberSlot(params.slot);
+            if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
             if (params.slot) bytes = await idbGet(String(params.slot));
             if (params.slot && !bytes) throw new Error(`state slot not found: ${params.slot}`);
             let ret = 0;
@@ -2100,23 +2289,27 @@ const commands = {
                 ret = state.fns.loadStateFromBuffer(size);
             }
             if (ret !== 0) throw new Error(`state load failed (${ret})`);
+            loaded = true;
             state.frame = 0;
             blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
             drawLoadedStateFrame();
             dispatchScriptEvent("stateLoad", { slot: params.slot || null });
             return { ok: true, paused: runState.paused, reset: false };
         } finally {
-            restoreAfterFileLoad(runState);
+            if (loaded) restoreAfterFileLoad(runState);
+            else stopAfterFailedStateLoad();
         }
     },
     async importStateFile(params = {}) {
         ensureRomLoaded("state import requires a loaded ROM");
         const { file, bytes } = ui.stateFile.files && ui.stateFile.files[0] ? await readFileFromInput(ui.stateFile) : await openPicker(ui.stateFile);
         const runState = pauseForFileLoad();
+        let loaded = false;
         try {
             state.module.FS.writeFile("import.dst", bytes);
             const ret = state.fns.loadStateFromFile();
             if (ret !== 0) throw new Error(`state import failed (${ret})`);
+            loaded = true;
             state.frame = 0;
             blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
             drawLoadedStateFrame();
@@ -2124,24 +2317,28 @@ const commands = {
             log(`state imported: ${file.name}`);
             return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
         } finally {
-            restoreAfterFileLoad(runState);
+            if (loaded) restoreAfterFileLoad(runState);
+            else stopAfterFailedStateLoad();
         }
     },
     async loadStateBytes(params = {}) {
         ensureRomLoaded("state byte load requires a loaded ROM");
         const bytes = bytesFromParams(params);
         const runState = pauseForFileLoad();
+        let loaded = false;
         try {
             state.module.FS.writeFile("import.dst", bytes);
             const ret = state.fns.loadStateFromFile();
             if (ret !== 0) throw new Error(`state byte load failed (${ret})`);
+            loaded = true;
             state.frame = 0;
             blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
             drawLoadedStateFrame();
             log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
             return { ok: ret === 0, ret, size: bytes.length, reset: false, paused: runState.paused };
         } finally {
-            restoreAfterFileLoad(runState);
+            if (loaded) restoreAfterFileLoad(runState);
+            else stopAfterFailedStateLoad();
         }
     },
     async loadStateUrl(params = {}) {
@@ -2173,16 +2370,19 @@ const commands = {
             }
         }
         const runState = pauseForFileLoad();
+        let loaded = false;
         try {
             ensureRomLoaded("recent state reload requires a loaded ROM");
             const ret = item.slot ? loadStateBytesFromMemory(bytes) : (state.module.FS.writeFile("import.dst", bytes), state.fns.loadStateFromFile());
             if (ret !== 0) throw new Error(`recent state load failed (${ret})`);
+            loaded = true;
             state.frame = 0;
             blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
             drawLoadedStateFrame();
             return { ok: ret === 0, ret, item, size: bytes.length, paused: runState.paused };
         } finally {
-            restoreAfterFileLoad(runState);
+            if (loaded) restoreAfterFileLoad(runState);
+            else stopAfterFailedStateLoad();
         }
     },
     async exportStateFile() {
@@ -2274,11 +2474,12 @@ const commands = {
         try {
             if (state.touch.active) {
                 for (let i = 0; i < frames; i++) {
+                    const frameResult = checkNativeResult(state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y), "stepFrames");
                     ran++;
-                    if (state.fns.runFrame(state.render && i === frames - 1 ? 1 : 0, state.keys, 1, state.touch.x, state.touch.y) !== 0) break;
+                    if (frameResult > 0) break;
                 }
             } else {
-                ran = state.fns.runFrames(frames, state.render ? 1 : 0, state.keys);
+                ran = checkNativeResult(state.fns.runFrames(frames, state.render ? 1 : 0, state.keys), "stepFrames");
             }
         } catch (error) {
             handleNativeFault(error, "stepFrames");
@@ -2391,7 +2592,7 @@ const commands = {
         const base = parseAddress(params.address ?? ui.disasmAddress.value, getPc(params.cpu), params.cpu);
         const addr = (base - before * width) >>> 0;
         const count = Number(params.count ?? ui.disasmCount.value);
-        const text = state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count + before, modeNumber(mode));
+        const text = checkNativeText(state.fns.dbgDisassemble(cpuIndex(params.cpu), addr, count + before, modeNumber(mode)), "disassemble");
         return { address: addr, before, includeBytes: shouldIncludeDisassemblyBytes(params), text: formatDisassemblyText(text, shouldIncludeDisassemblyBytes(params)) };
     },
     async disassembleBytes(params = {}) {
@@ -2435,7 +2636,7 @@ const commands = {
         const encode = op === "encode";
         const parts = encode ? { low: 0, high: 0 } : splitBinaryBits(params, bits);
         const numeric = encode ? Number(params.value) : 0;
-        const result = JSON.parse(state.fns.utilBinaryFloat(bits, parts.low >>> 0, parts.high >>> 0, numeric, encode ? 1 : 0));
+        const result = parseNativeJson(state.fns.utilBinaryFloat(bits, parts.low >>> 0, parts.high >>> 0, numeric, encode ? 1 : 0), "binaryFloat");
         result.op = encode ? "encode" : "decode";
         return result;
     },
@@ -2445,6 +2646,11 @@ const commands = {
         const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
         const view = String(params.view ?? ui.memoryView?.value ?? "mixed");
         const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), addr, length);
+        if (!ptr && length > 0) {
+            const error = new Error("memory dump allocation failed");
+            handleNativeFault(error, "dumpMemory");
+            throw error;
+        }
         const bytes = [...state.module.HEAPU8.slice(ptr, ptr + length)];
         const lines = [];
         const words32 = [];
@@ -2497,6 +2703,11 @@ const commands = {
         const findRange = (address) => ranges.find((range) => address >= range.address && address + size <= range.address + range.length);
         const scanRange = (range, offsets) => {
             const ptr = state.fns.dbgDumpMemory(cpuIndex(params.cpu), range.address, range.length);
+            if (!ptr && range.length > 0) {
+                const error = new Error("memory search dump allocation failed");
+                handleNativeFault(error, "searchMemory");
+                throw error;
+            }
             const current = state.module.HEAPU8.slice(ptr, ptr + range.length);
             snapshots.set(range.name, current);
             const previous = previousSnapshots && previousSnapshots.get ? previousSnapshots.get(range.name) : null;
@@ -2611,7 +2822,7 @@ const commands = {
     async continue() { return commands.resume(); },
     async setStackTraceMode(params) { ensureReady(); state.fns.traceSetEnabled(params.enabled ? 1 : 0); ui.traceToggle.checked = !!params.enabled; if (!params.enabled) state.selectedCallstackLaneId = null; renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled }); return { enabled: !!params.enabled }; },
     async setStackTracePrivilegeCheck(params) { ensureReady(); state.fns.traceSetPrivilegeCheck(params.enabled ? 1 : 0); ui.tracePrivilegeToggle.checked = !!params.enabled; return { enabled: !!params.enabled }; },
-    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack: publicCallStackData(callStack, params), text: state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)) }; },
+    async stackTrace(params = {}) { ensureRomLoaded("stack trace requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return { callStack: publicCallStackData(callStack, params), text: checkNativeText(state.fns.dbgStackTrace(cpuIndex(params.cpu), Number(params.words ?? 32)), "stackTrace") }; },
     async callStack(params = {}) { ensureRomLoaded("call stack requires a loaded ROM"); const callStack = readCallStackData(params); renderCallStack(callStack); return publicCallStackData(callStack, params); },
     async listOtherCoroutines(params = {}) {
         ensureRomLoaded("other coroutine list requires a loaded ROM");
@@ -2768,6 +2979,9 @@ const commands = {
     }
 };
 
+const ANALYSIS_BASELINE_SLOT_PREFIX = "__analysis_baseline__:";
+const ANALYSIS_BASELINE_STATE_FORMAT_VERSION = 1;
+
 Object.assign(commands, {
     reg: commands.memoryGetRegister,
     regw: commands.memorySetRegister,
@@ -2829,14 +3043,14 @@ function updateTouch(e, active) {
         return;
     }
     state.touch = { active, x: pos.x, y: pos.y };
-    if (state.ready && active) state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y);
+    if (state.ready && active) checkNativeResult(state.fns.runFrame(0, state.keys, 1, state.touch.x, state.touch.y), "touch input");
 }
 
 const COMMAND_UI_REFRESH = new Set([
-    "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "trueNextBranch",
-    "runUntilReturn", "runUntilNextCall", "stepFrames", "setRegister", "writeMemory", "injectBytes",
+    "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "nextBranchOrReturn", "trueNextBranch", "nextTrueBranch",
+    "runUntilReturn", "returnToPop", "runUntilNextCall", "nextFunctionEnter", "nextCall", "nextFunctionCall", "stepFrames", "setRegister", "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze",
     "setBreakpoint", "removeBreakpoint", "setSpecialBreakpoint", "setStackTraceMode", "setStackTracePrivilegeCheck",
-    "loadState", "reloadRecentFile", "setInput", "runInputHold", "runInputTap"
+    "loadRomUrl", "loadState", "reloadRecentFile", "setInput", "runInputHold", "runInputTap"
 ]);
 let commandUiRefreshTimer = 0;
 
@@ -2849,6 +3063,12 @@ function queueCommandUiRefresh(name) {
     }, 0);
 }
 
+const COMMANDS_RETURNING_EMULATOR_ACTIVITY = new Set([
+    "loadRomFile", "loadRomBytes", "loadRomUrl", "importSaveFile", "loadSaveSlot", "saveState", "loadState", "importStateFile", "loadStateBytes", "loadStateUrl", "reloadRecentFile",
+    "pause", "resume", "continue", "reset", "reloadRom", "step", "smartStep", "stepOver", "stepNextBranchOrReturn", "nextBranchOrReturn", "trueNextBranch", "nextTrueBranch", "runUntilReturn", "returnToPop", "runUntilNextCall", "nextFunctionEnter", "nextCall", "nextFunctionCall", "stepFrames",
+    "setInput", "runInputHold", "runInputTap", "runTouchHold", "setRegister", "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze", "setCTableSeed", "memorySetRegister", "memoryWriteByte", "memoryWriteWord", "memoryWriteDword"
+]);
+
 async function runCommand(name, params = {}) {
     if (!commands[name]) throw new Error(`unknown command: ${name}`);
     const timeoutMs = Number(params && params.timeoutMs || 0);
@@ -2859,6 +3079,7 @@ async function runCommand(name, params = {}) {
             new Promise((_, reject) => setTimeout(() => reject(new Error(`${name} timeout after ${timeoutMs}ms`)), timeoutMs))
         ])
         : await run;
+    if (COMMANDS_RETURNING_EMULATOR_ACTIVITY.has(name) && result && typeof result === "object") Object.assign(result, emulatorActivity());
     updateStatus();
     queueCommandUiRefresh(name);
     return result;

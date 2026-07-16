@@ -76,7 +76,7 @@ OBJECTS=()
 compile_cpp() {
   local src="$1"
   local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
-  emcc "${INCLUDES[@]}" -O3 -std=c++17 -DHAVE_LIBZ -include algorithm -include cassert -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
+  emcc "${INCLUDES[@]}" -O3 -std=c++17 -fexceptions -DHAVE_LIBZ -include algorithm -include cassert -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
   OBJECTS+=("${obj}")
 }
 
@@ -103,6 +103,7 @@ emcc "${OBJECTS[@]}" \
   -sMAXIMUM_MEMORY=2147483648 \
   -sMODULARIZE=1 \
   -sUSE_ZLIB=1 \
+  -fexceptions \
   -O3 \
   -sEXPORT_NAME=CreateDesmumeModule \
   -sENVIRONMENT=web,worker \

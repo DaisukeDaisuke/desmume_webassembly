@@ -48,6 +48,9 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 ## Commands
 
 - `status`: Returns pause state, file-load gate state, ROM-loaded state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values.
+- `snapshotContext`: Returns a compact, self-contained analysis context: `paused`/`running`, ROM state, frame, ARM9/ARM7 selection, PC/SP/LR/CPSR, up to eight near-PC lines, latest break reason, and the current trace/`skipIrq` policy. A loaded ROM is required because register access is native state.
+- `saveAnalysisBaseline`: Saves a named browser state slot together with its pause/running and trace/`skipIrq` policy, ROM name, byte size, SHA-256, and baseline state-format version. Pass `{ "name": "before-menu" }`; an existing name is protected unless `{ "replace": true }` is explicit.
+- `restoreAnalysisBaseline`: Verifies the current ROM against the saved name, size, SHA-256, and format version before passing state bytes to native code. It then resets trace history and restores the recorded pause/running and trace/`skipIrq` policy. Pass `{ "name": "before-menu" }`. The result includes the same compact fields as `snapshotContext`; this requires a loaded ROM because the state belongs to that ROM.
 - `loadRomFile`: Opens the file picker. The user selects a local `.nds` ROM, which is mounted into the in-browser filesystem and loaded.
 - `loadRomBytes`: Loads ROM bytes supplied by WebMCP without opening a picker. Pass `{ "bytes": [..], "name": "debug.nds", "waitMs": 600, "resume": true }` or `{ "base64": "..." }`. Use this for local automation; do not paste private ROM data into chat.
 - `loadRomUrl`: Fetches ROM bytes from a same-origin or CORS-enabled URL, then loads them through the same retained-ROM path. Pass `{ "url": "/dq9.nds", "name": "dq9.nds", "waitMs": 600, "resume": true }`. For local debugging, this is the lowest-token path: expose the ROM from the same PHP server and call this command instead of pasting bytes.
@@ -55,7 +58,7 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 - `exportSaveFile`: Exports DeSmuME's current backup device data and downloads it as `desmume-save.sav`.
 - `saveSaveSlot`: Exports the current cartridge save data into a named browser slot. Pass `{ "slot": "name" }`; the UI slot name is used when omitted.
 - `loadSaveSlot`: Loads cartridge save data from a named browser slot, imports it into DeSmuME's backup device, then resets the loaded ROM so the game boots with that save.
-- `saveState`: Serializes the emulator state and stores it in memory. With `{ "slot": "name" }`, also stores it in IndexedDB/local storage when small enough.
+- `saveState`: Serializes the emulator state and stores it in memory. With `{ "slot": "name" }`, also stores it in IndexedDB/local storage when small enough. State-changing commands, including save/load, pause/resume, reset, stepping, input, and memory writes, return both `paused` and `running` so callers do not need a follow-up status query.
 - `loadState`: Loads the active in-memory state or a named browser storage slot without rebooting the emulator. Loading while paused keeps the emulator paused. Automatic browser save-slot flushing is blocked briefly after load; pass `{ "saveFlushBlockMs": number }` to override the default.
 - `loadStateBytes`: Loads emulator state bytes supplied by WebMCP without opening a picker. Pass `{ "bytes": [..], "name": "debug.dst", "saveFlushBlockMs": 30000 }` or `{ "base64": "..." }`.
 - `loadStateUrl`: Fetches emulator state bytes from a same-origin or CORS-enabled URL, then loads them through the same external-state path. Pass `{ "url": "/state.dst", "name": "state.dst", "saveFlushBlockMs": 30000 }`.
@@ -201,7 +204,7 @@ The current version exposes `stateLoad` and `stateSave` events to the worker eve
 - 手順:
     1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
     2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
-    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。(idは`uid: rom-file`**ではない。**`uid: 1_16`のはず)
+    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。(idは`uid: rom-file`**ではない。**`uid: 3_16`のはず)
     4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
 - DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
 

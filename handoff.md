@@ -104,7 +104,7 @@
 - BL/BLX instructions now register call frames immediately using their architectural return address (`BL+4`, Thumb return address with bit0 set). The later prologue hook updates the same frame instead of duplicating it. Return-like PC writes search all real frames in the active lanes and pop through the matched frame, so ordinary stale returns such as `LDMIAEQ SP!, {...,PC}` are less likely to appear as synthetic ROP frames.
 - Call Stack UI keeps the existing `mode` display for synthetic rows and restores CPU mode as a separate `cpu mode` column. `callee`, `mode`, and `cpu mode` columns are intentionally wider.
 - ARM9 hardware IRQ entry now records a separate synthetic `irq-entry` stack lane when `skip IRQ` is off. The pending IRQ resume PC is tracked so matching `SUBS PC` / `LDM ... {PC}^` exception returns remove that lane instead of leaving stale IRQ frames and add `irq-return` to control-flow history; when `skip IRQ` is on, both the IRQ entry and its matching return are suppressed from call-stack/control-flow output.
-- romアップロード先のidは固定である。`uid: rom-file`**ではない。**`uid: 1_16`に上げれば良い。固定であるため、take_snapshotは使用しなくてよい
+- romアップロード先のidは固定である。`uid: rom-file`**ではない。**`uid: 3_16`に上げれば良い。固定であるため、take_snapshotは使用しなくてよい
 ## 2026-07-01 Addendum
 
 - `disassembleBytes` is a ROM-independent MCP command for low-capability local AI. It accepts opcode words such as `0xe12fff1e` as architectural values, or raw bytes with explicit `endian`. ARM consumes 4 bytes and Thumb consumes 2; trailing short bytes are reported as `incompleteBytes` instead of being passed to native disassembly.
@@ -139,3 +139,9 @@
 - ARM9 IRQ entries always receive a dedicated call-stack lane, even when IRQ SP is close to a normal lane. Toggling `skip IRQ` does not clear existing normal history, and a pending IRQ return is finalized even if filtering is enabled while the handler is active.
 - Persistent scripts default to a per-script async queue. Immediate register/memory access and pause/resume fail with an explanatory error in async mode; use `asyncMode:false` for scripts that require those blocking operations.
 - MCP mutations schedule a debugger-view refresh so externally driven work becomes visible in the UI. `scripts/dq9/overlay_jp.js` checks periodically but prints slot rows only at startup or when slot state changes.
+
+## 2026-07-16 Addendum
+
+- `snapshotContext` returns a bounded analysis context (activity state, PC/SP/LR/CPSR, near-PC, frame, break reason, trace/IRQ policy) and requires a loaded ROM because its register snapshot is native emulator state.
+- `saveAnalysisBaseline` stores a named state slot plus pause/running and trace/`skipIrq` policy; `restoreAnalysisBaseline` restores all of those without changing the saved policy. Existing baseline names require explicit `replace:true` to overwrite.
+- State-mutating MCP commands now append both `paused` and `running` after their operation has completed, including state loads and pause/resume, so callers do not need an immediate `status` call.

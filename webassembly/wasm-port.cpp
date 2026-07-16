@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <exception>
 #include <iomanip>
 #include <map>
 #include <vector>
@@ -47,10 +48,22 @@ static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
 static bool specialBreakpoints[3] = {false, false, false};
 
+static int nativeFaultCode() {
+  paused = true;
+  execute = false;
+  return -99;
+}
+
 static std::vector<u32> execBreakpoints[2];
 static std::vector<u32> readBreakpoints[2];
 static std::vector<u32> writeBreakpoints[2];
 static std::string textScratch;
+
+static const char *nativeFaultText() {
+  nativeFaultCode();
+  textScratch = "{\"nativeFault\":true}";
+  return textScratch.c_str();
+}
 
 struct BreakStatus {
   bool hit;
@@ -457,9 +470,12 @@ void setSampleRate(int r) {
 }
 
 void *prepareRomBuffer(int rl) {
+  if (rl <= 0) return NULL;
   romLen = rl;
   if (romLen > romBufferCap) {
-    romBuffer = (u8 *)realloc((void *)romBuffer, romLen);
+    u8 *resized = (u8 *)realloc((void *)romBuffer, romLen);
+    if (!resized) return NULL;
+    romBuffer = resized;
     romBufferCap = romLen;
   }
   return romBuffer;
@@ -484,36 +500,43 @@ int reset() {
 }
 
 int loadROM(int len) {
-  romLen = len;
-  const bool hadRom = romLoaded;
-  romLoaded = false;
-  paused = true;
-  emuLastError = -2;
-  if (hadRom) {
-    NDS_FreeROM();
-  }
+  try {
+    romLen = len;
+    const bool hadRom = romLoaded;
+    romLoaded = false;
+    paused = true;
+    emuLastError = -2;
+    if (hadRom) {
+      NDS_FreeROM();
+    }
   // ★ ここで savFile を新しいインスタンスに差し替える
   // BackupDevice のデストラクタが旧 savFile を delete するので、
   // NDS_LoadROM の前に新しいポインタを用意しておく
-  savFile = new EMUFILE_MEMORY();
+    savFile = new EMUFILE_MEMORY();
 
-  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
-  SPU_SetVolume(35);
+    SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
+    SPU_SetVolume(35);
 
-  if (!NDS_LoadROM("rom.nds")) {
-    return emuLastError;
+    if (!NDS_LoadROM("rom.nds")) return emuLastError;
+    romLoaded = true;
+    paused = false;
+    execute = true;
+    frameCounter = 0;
+    lastBreak.hit = false;
+    return 0;
+  } catch (const std::exception &) {
+    romLoaded = false;
+    return nativeFaultCode();
+  } catch (...) {
+    romLoaded = false;
+    return nativeFaultCode();
   }
-  romLoaded = true;
-  paused = false;
-  execute = true;
-  frameCounter = 0;
-  lastBreak.hit = false;
-  return 0;
 }
 
 int isRomLoaded() { return romLoaded ? 1 : 0; }
 
 int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
+  try {
   if (paused || !romLoaded) return 0;
   const u32 startPc9 = NDS_ARM9.instruct_adr;
   const u32 startPc7 = NDS_ARM7.instruct_adr;
@@ -535,7 +558,12 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
      (lastBreak.proc == 1 && lastBreak.address == startPc7 && lastBreak.pc == startPc7));
   if (!retrappedSameExecBreakpoint) frameCounter++;
   if (shouldDraw) gpu_screen_to_rgb((u32 *)dstFrameBuffer);
-  return paused ? 1 : 0;
+    return paused ? 1 : 0;
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int captureFrameBuffer() {
@@ -553,8 +581,10 @@ int runFrames(int count, int shouldDraw, u32 keys) {
   if (count < 0) return -1;
   int ran = 0;
   for (int i = 0; i < count; i++) {
+    const int result = runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0);
+    if (result < 0) return result;
     ran++;
-    if (runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0) != 0) break;
+    if (result > 0) break;
   }
   return ran;
 }
@@ -602,20 +632,33 @@ void *stateGetPointer(int desiredSize) {
 }
 
 int saveStateToBuffer() {
-  stateFile->truncate(0);
-  stateFile->fseek(0, SEEK_SET);
-  savestate_save(*stateFile, 0);
-  return stateFile->size();
+  try {
+    stateFile->truncate(0);
+    stateFile->fseek(0, SEEK_SET);
+    savestate_save(*stateFile, 0);
+    return stateFile->size();
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int loadStateFromBuffer(int size) {
-  if (size < 0) return -1;
-  if (size > 0 && stateFile->size() != size) return -2;
-  stateFile->fseek(0, SEEK_SET);
-  return savestate_load(*stateFile) ? 0 : -1;
+  try {
+    if (size < 0) return -1;
+    if (size > 0 && stateFile->size() != size) return -2;
+    stateFile->fseek(0, SEEK_SET);
+    return savestate_load(*stateFile) ? 0 : -1;
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int loadStateFromFile() {
+  try {
   FILE *fp = fopen("import.dst", "rb");
   if (!fp) return -1;
   if (fseek(fp, 0, SEEK_END) != 0) {
@@ -636,7 +679,12 @@ int loadStateFromFile() {
   fclose(fp);
   if (read != bytes.size()) return -5;
   EMUFILE_MEMORY file(&bytes);
-  return savestate_load(file) ? 0 : -1;
+    return savestate_load(file) ? 0 : -1;
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int zlibCompress(u8 *srcBuffer, size_t srcLen, u8 *dstBuffer, size_t dstLen,
@@ -729,15 +777,24 @@ int dbgWrite32(int proc, u32 addr, u32 value) {
 }
 
 void *dbgDumpMemory(int proc, u32 addr, int len) {
-  static std::vector<u8> dump;
-  if (len < 0) len = 0;
-  if (len > 16 * 1024 * 1024) len = 16 * 1024 * 1024;
-  dump.resize(len);
-  for (int i = 0; i < len; i++) dump[i] = (u8)dbgRead8(proc, addr + i);
-  return dump.data();
+  try {
+    static std::vector<u8> dump;
+    if (len < 0) len = 0;
+    if (len > 16 * 1024 * 1024) len = 16 * 1024 * 1024;
+    dump.resize(len);
+    for (int i = 0; i < len; i++) dump[i] = (u8)dbgRead8(proc, addr + i);
+    return dump.data();
+  } catch (const std::exception &) {
+    nativeFaultCode();
+    return NULL;
+  } catch (...) {
+    nativeFaultCode();
+    return NULL;
+  }
 }
 
 static int setBreakpoint(std::vector<u32> &list, u32 addr, int enabled) {
+  try {
   for (size_t i = 0; i < list.size(); i++) {
     if (list[i] == addr) {
       if (!enabled) list.erase(list.begin() + i);
@@ -746,6 +803,9 @@ static int setBreakpoint(std::vector<u32> &list, u32 addr, int enabled) {
   }
   if (enabled) list.push_back(addr);
   return 0;
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 static int execBreakpointIndex(int proc) { return proc == 0 ? 0 : 1; }
@@ -783,15 +843,20 @@ int dbgClearBreakStatus() {
 }
 
 int dbgClearAllBreakpoints() {
+  try {
   for (int i = 0; i < 2; i++) {
     execBreakpoints[i].clear();
     readBreakpoints[i].clear();
     writeBreakpoints[i].clear();
   }
   return 0;
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int dbgStep(int proc, int count) {
+  try {
   if (count < 1) count = 1;
   bool wasPaused = paused;
   lastBreak.hit = false;
@@ -805,10 +870,16 @@ int dbgStep(int proc, int count) {
     }
   }
   paused = paused || wasPaused;
-  return executed;
+    return executed;
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 int dbgStepOver(int proc) {
+  try {
   armcpu_t *cpu = cpuFor(proc);
   const u32 next = cpu->instruct_adr + (cpu->CPSR.bits.T ? 2 : 4);
   bool wasPaused = paused;
@@ -823,10 +894,16 @@ int dbgStepOver(int proc) {
     count++;
   }
   paused = paused || wasPaused;
-  return count;
+    return count;
+  } catch (const std::exception &) {
+    return nativeFaultCode();
+  } catch (...) {
+    return nativeFaultCode();
+  }
 }
 
 const char *dbgGetStatusJson() {
+  try {
   std::ostringstream os;
   os << "{\"paused\":" << (paused ? "true" : "false")
      << ",\"debuggerEnabled\":" << (debuggerEnabled ? "true" : "false")
@@ -847,9 +924,13 @@ const char *dbgGetStatusJson() {
      << ",\"undefinedInstruction\":" << (specialBreakpoints[2] ? "true" : "false") << "}}";
   textScratch = os.str();
   return textScratch.c_str();
+  } catch (...) {
+    return nativeFaultText();
+  }
 }
 
 const char *dbgDisassemble(int proc, u32 addr, int count, int mode) {
+  try {
   if (count < 1) count = 1;
   if (count > 256) count = 256;
   std::ostringstream os;
@@ -870,6 +951,9 @@ const char *dbgDisassemble(int proc, u32 addr, int count, int mode) {
   }
   textScratch = os.str();
   return textScratch.c_str();
+  } catch (...) {
+    return nativeFaultText();
+  }
 }
 
 const char *dbgDisassembleOpcode(u32 addr, u32 opcode, int mode) {
@@ -884,6 +968,7 @@ const char *dbgDisassembleOpcode(u32 addr, u32 opcode, int mode) {
 }
 
 const char *utilBinaryFloat(int bits, u32 low, u32 high, double value, int encode) {
+  try {
   std::ostringstream os;
   os << std::setprecision(17);
   if (bits == 32) {
@@ -928,9 +1013,13 @@ const char *utilBinaryFloat(int bits, u32 low, u32 high, double value, int encod
   }
   textScratch = os.str();
   return textScratch.c_str();
+  } catch (...) {
+    return nativeFaultText();
+  }
 }
 
 const char *dbgStackTrace(int proc, int words) {
+  try {
   if (words < 1) words = 16;
   if (words > 256) words = 256;
   u32 sp = dbgGetReg(proc, 13);
@@ -970,6 +1059,9 @@ const char *dbgStackTrace(int proc, int words) {
   }
   textScratch = os.str();
   return textScratch.c_str();
+  } catch (...) {
+    return nativeFaultText();
+  }
 }
 
 static void writeCallStackFrameJson(std::ostringstream &os, const CallStackEntry &entry) {
@@ -1000,6 +1092,7 @@ static void writeCallStackFramesJson(std::ostringstream &os, const std::vector<C
 }
 
 const char *dbgCallStackJsonLimit(int limit) {
+  try {
   limit = normalizeFrameLimit(limit);
   compactCallStackLanes();
   if (callStackLanes.empty()) {
@@ -1052,6 +1145,9 @@ const char *dbgCallStackJsonLimit(int limit) {
   os << "]}";
   textScratch = os.str();
   return textScratch.c_str();
+  } catch (...) {
+    return nativeFaultText();
+  }
 }
 
 const char *dbgCallStackJson() {
