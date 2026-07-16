@@ -354,3 +354,15 @@ webmcpのjs実行でオブジェクトを返した場合は、特殊フォーマ
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
+
+### Chrome MCPでのファイルアップロード
+
+- AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。
+- file inputのIDは毎回変わる可能性がある。固定IDを仮定しない。
+- アップロード用ツールはデフォルトで見えていないことがある。必要なら `tool_search` で `take_snapshot` と `upload_file` を探して使う。
+- 手順:
+    1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
+    2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
+    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。(idは`uid: rom-file`**ではない。**`uid: 3_16`のはず)
+    4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
+- DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
