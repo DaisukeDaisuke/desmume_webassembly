@@ -30,6 +30,7 @@ export function createScriptPauseService() {
             };
             listeners.add(done);
             signal?.addEventListener("abort", aborted, { once: true });
+            if (signal?.aborted) aborted();
         });
     }
 

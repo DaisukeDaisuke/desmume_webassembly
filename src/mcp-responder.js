@@ -21,7 +21,18 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
     }
 
     function normalizeResult(result) {
-        if (result && typeof result === "object" && typeof result.ok === "boolean") return result;
+        if (result && typeof result === "object" && typeof result.ok === "boolean") {
+            if (result.ok) return result;
+            if (typeof result.error?.code === "string"
+                && typeof result.error?.message === "string") {
+                return result;
+            }
+            return fail(
+                ErrorCode.INTERNAL_ERROR,
+                "Command returned an invalid failure result",
+                { result }
+            );
+        }
         return ok(result && typeof result === "object" ? result : { value: result });
     }
 
@@ -75,7 +86,8 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
 
     function formatCompact(result) {
         if (result?.ok === false) {
-            return `ok=false\nerror.code=${result.error.code}\nerror.message=${result.error.message}`;
+            const normalized = normalizeResult(result);
+            return `ok=false\nerror.code=${normalized.error.code}\nerror.message=${normalized.error.message}`;
         }
         if (!result || Object.keys(result).length <= 1) return "ok=true";
         const fields = Object.entries(result)

@@ -69,6 +69,23 @@ const {
     hasLoadedRom,
     tryGetPc
 } = nativeBridge;
+const binaryTools = createBinaryTools({
+    getPc,
+    getSelectedCpu: () => state.selectedCpu
+});
+const {
+    bigEndianValue,
+    bytesFromFlexibleParams,
+    bytesFromParams,
+    opcodeWordsFromInput,
+    parseAddress,
+    parseNumber,
+    splitBinaryBits,
+    swap16,
+    swap32,
+    u16FromBytes,
+    u32FromBytes
+} = binaryTools;
 const mcpResponder = createMcpResponder({
     logger: { error: (name, error) => console.error(name, error) },
     pauseSafely: () => {
@@ -232,23 +249,6 @@ const {
     openPicker,
     readInput: readFileFromInput
 } = fileIo;
-const binaryTools = createBinaryTools({
-    getPc,
-    getSelectedCpu: () => state.selectedCpu
-});
-const {
-    bigEndianValue,
-    bytesFromFlexibleParams,
-    bytesFromParams,
-    opcodeWordsFromInput,
-    parseAddress,
-    parseNumber,
-    splitBinaryBits,
-    swap16,
-    swap32,
-    u16FromBytes,
-    u32FromBytes
-} = binaryTools;
 const romService = createRomService({
     state,
     native: nativeBridge,

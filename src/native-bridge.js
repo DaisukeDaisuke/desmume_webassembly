@@ -1,3 +1,5 @@
+import { ErrorCode } from "./error-codes.js";
+
 const NATIVE_FUNCTIONS = Object.freeze([
     ["loadROM", "number", ["number"]],
     ["reset", "number", []],
@@ -92,18 +94,31 @@ export function createNativeBridge({
     }
 
     function checkResult(value, operation) {
-        if (Number(value) < 0) {
-            const error = new Error(`native fault during ${operation} (${value})`);
-            onFault(error, operation);
-            throw error;
-        }
-        return value;
+        const result = Number(value);
+        if (result >= 0) return value;
+        const normalErrors = {
+            [-1]: [ErrorCode.ROM_NOT_LOADED, "ROM is not loaded"],
+            [-2]: [ErrorCode.INVALID_ARGUMENT, "Native operation received an invalid argument"],
+            [-3]: [ErrorCode.STATE_INVALID, "State data is invalid"],
+            [-4]: [ErrorCode.BUFFER_TOO_SMALL, "Native buffer is too small"]
+        };
+        const normalError = normalErrors[result];
+        const error = new Error(normalError
+            ? `${normalError[1]} during ${operation} (${result})`
+            : `native fault during ${operation} (${result})`);
+        error.mcpCode = normalError?.[0]
+            || (result === -99 ? ErrorCode.NATIVE_ERROR : ErrorCode.NATIVE_FAULT);
+        error.mcpDetails = { operation, nativeCode: result };
+        if (!normalError) onFault(error, operation);
+        throw error;
     }
 
     function checkText(value, operation) {
         const text = String(value || "");
         if (!text || text.includes('"nativeFault":true')) {
             const error = new Error(`native fault during ${operation}`);
+            error.mcpCode = ErrorCode.NATIVE_FAULT;
+            error.mcpDetails = { operation };
             onFault(error, operation);
             throw error;
         }

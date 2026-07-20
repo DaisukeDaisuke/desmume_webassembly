@@ -31,6 +31,7 @@ export function createBreakpointService({ ownerStore }) {
             };
             listeners.add(done);
             signal?.addEventListener("abort", aborted, { once: true });
+            if (signal?.aborted) aborted();
         });
     }
 

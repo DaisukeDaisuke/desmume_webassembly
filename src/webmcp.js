@@ -116,12 +116,23 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
     }
 
     window.addEventListener("message", async (event) => {
+        if (event.origin !== window.location.origin) return;
         const message = event.data || {};
         if (message.type !== "desmume-mcp") return;
-        const result = await runCommand(message.command, message.params || {});
+        const params = message.params ?? {};
+        const paramsPrototype = params && typeof params === "object"
+            ? Object.getPrototypeOf(params)
+            : undefined;
+        const validParams = paramsPrototype === Object.prototype || paramsPrototype === null;
+        const result = typeof message.command === "string" && validParams
+            ? await runCommand(message.command, params)
+            : responder.fail(
+                ErrorCode.INVALID_ARGUMENT,
+                "message command must be a string and params must be a plain object"
+            );
         event.source?.postMessage(
             { type: "desmume-mcp-result", id: message.id, result },
-            event.origin || "*"
+            window.location.origin
         );
     });
     void registerBrowserTools().catch((error) => logger(error?.message || String(error)));
