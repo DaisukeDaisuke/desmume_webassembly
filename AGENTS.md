@@ -405,6 +405,8 @@ kill <PID>
 - gh codespace listは単体で実行しないとサンドボックス外で実行できないよ
 - ビルドは`gh codespace ssh -c stunning-waffle-wrjpjx79xqpcvjq "cd /workspaces/desmume_webassembly && bash webassembly/build_safe_heap.sh`ですること。pull方式でコマンド待機しないこと。
 
+# 重要なこと
+- nodejsはpostinstallスクリプト爆弾が怖いので、依存関係は必ずcodespaceでインストールすること。ローカルのnodejsではしない。
 
 # agents.md End
 
