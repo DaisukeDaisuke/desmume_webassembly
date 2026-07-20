@@ -119,6 +119,13 @@ export function createViewService({
         const raw = Number(params.limit ?? 128);
         return Math.max(1, Math.min(1024, Number.isFinite(raw) ? Math.trunc(raw) : 128));
     }
+
+    function modeNumber(mode) {
+        const normalized = String(mode || "").toLowerCase();
+        if (normalized === "thumb") return 1;
+        if (normalized === "arm") return 2;
+        return 0;
+    }
     
     function readCallStackData(params = {}) {
         const limit = callStackLimit(params);

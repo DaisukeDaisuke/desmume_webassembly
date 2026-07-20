@@ -1,3 +1,5 @@
+import { ErrorCode } from "./error-codes.js";
+
 export function breakpointSiteKey({ cpu, type, address }) {
     return `${cpu}:${type}:${Number(address) >>> 0}`;
 }
@@ -29,6 +31,12 @@ export function createBreakpointOwnerStore({ onFirstOwner = () => {}, onLastOwne
     return {
         addOwner(site, owner) {
             const key = breakpointSiteKey(site);
+            if (ids.has(owner.id)) {
+                const error = new Error(`breakpoint owner ID already exists: ${owner.id}`);
+                error.mcpCode = ErrorCode.BREAKPOINT_EXISTS;
+                error.mcpDetails = { id: owner.id, existingSite: ids.get(owner.id), requestedSite: key };
+                throw error;
+            }
             let entry = sites.get(key);
             if (!entry) {
                 entry = {

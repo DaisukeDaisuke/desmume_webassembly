@@ -1,3 +1,5 @@
+import { ErrorCode } from "./error-codes.js";
+
 export function createEmulationLoop({
     state,
     ui,
@@ -61,6 +63,7 @@ export function createEmulationLoop({
                 state.frameBudget -= frames;
                 applyFreezes();
                 let ran = 0;
+                let frameFailed = false;
                 try {
                     if (state.touch.active) {
                         for (let index = 0; index < frames; index++) {
@@ -79,9 +82,18 @@ export function createEmulationLoop({
                         });
                     }
                 } catch (error) {
-                    handleNativeFault(error, "runFrame");
+                    frameFailed = true;
+                    if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                        || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                        handleNativeFault(error, "runFrame");
+                    }
                 }
-                const native = syncNativeBreakStatus();
+                if (frameFailed) {
+                    state.lastTick = now;
+                    scheduleTick();
+                    return;
+                }
+                const nativeStatus = syncNativeBreakStatus();
                 if (state.frame > frameBefore) {
                     for (let frame = frameBefore + 1; frame <= state.frame; frame++) {
                         frameService.onFrameCompleted(frame);
@@ -90,7 +102,7 @@ export function createEmulationLoop({
                     state.framesSinceStateLoad += state.frame - frameBefore;
                     state.completedFrameSerial += state.frame - frameBefore;
                 }
-                if (ran < frames || native?.lastBreak?.hit) {
+                if (ran < frames || nativeStatus?.lastBreak?.hit) {
                     state.paused = true;
                     state.running = false;
                     native.pause(true);

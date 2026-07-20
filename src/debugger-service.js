@@ -1,6 +1,9 @@
+import { ErrorCode } from "./error-codes.js";
+
 export function createDebuggerService({
     ANALYSIS_BASELINE_SLOT_PREFIX,
     ANALYSIS_BASELINE_STATE_FORMAT_VERSION,
+    applyFreezes,
     breakpointKindName,
     cpsrModeInfo,
     disasmRefreshParams,
@@ -25,6 +28,9 @@ export function createDebuggerService({
     withCurrentExecBreakpointSuspended,
     getCommands
 }) {
+    if (typeof applyFreezes !== "function") {
+        throw new TypeError("createDebuggerService requires applyFreezes");
+    }
     const commands = new Proxy({}, {
         get: (_, command) => getCommands()[command]
     });
@@ -210,21 +216,12 @@ export function createDebuggerService({
         };
     }
     
-    function syncBreakpointsToNative() {
-        native.clearAllBreakpoints();
-        for (const bp of state.breakpoints) {
-            if (!bp.enabled) continue;
-            native.setBreakpoint(bp.cpu, bp.type, bp.address, true);
-        }
-    }
-    
     async function runDebuggerInstruction(kind, params = {}) {
         ensureRomLoaded("debugger step requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
         let result = { kind, count: 0 };
         state.breakRefreshKey = "";
-        syncBreakpointsToNative();
         if (kind === "smartStep") {
             const info = await getCurrentInstructionInfo(cpu);
             const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
@@ -241,15 +238,18 @@ export function createDebuggerService({
                     result.ret = result.count;
                 } else throw new Error(`unsupported debugger step: ${kind}`);
             } catch (error) {
-                handleNativeFault(error, kind);
+                if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                    || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                    handleNativeFault(error, kind);
+                }
                 throw error;
             }
         }
         applyFreezes();
-        const native = syncNativeBreakStatus();
+        const nativeStatus = syncNativeBreakStatus();
         updateStatus();
         result.paused = state.paused;
-        return attachDebuggerContext(result, cpu, pcBefore, native);
+        return attachDebuggerContext(result, cpu, pcBefore, nativeStatus);
     }
     
     async function runUntilNextBranchOrReturn(params = {}) {
@@ -261,7 +261,6 @@ export function createDebuggerService({
         let steps = 0;
         state.breakRefreshKey = "";
         native.clearBreakStatus();
-        syncBreakpointsToNative();
         while (performance.now() < deadline && steps < maxSteps) {
             const info = await getCurrentInstructionInfo(cpu);
             if (info.isReturn || info.isBranch) {
@@ -276,10 +275,10 @@ export function createDebuggerService({
             }
             steps++;
             applyFreezes();
-            const native = syncNativeBreakStatus();
-            if (native && native.lastBreak && native.lastBreak.hit) {
+            const nativeStatus = syncNativeBreakStatus();
+            if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 await refreshDebuggerViews({ cpu, keepHighlight: true });
-                return attachDebuggerContext({ kind: "stepNextBranchOrReturn", ok: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, native);
+                return attachDebuggerContext({ kind: "stepNextBranchOrReturn", ok: true, complete: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, nativeStatus);
             }
         }
         await refreshDebuggerViews({ cpu, keepHighlight: true });
@@ -295,18 +294,17 @@ export function createDebuggerService({
         let steps = 0;
         state.breakRefreshKey = "";
         native.clearBreakStatus();
-        syncBreakpointsToNative();
         while (performance.now() < deadline && steps < maxSteps) {
             const info = await getCurrentInstructionInfo(cpu);
             const sequentialPc = info.address == null ? null : (info.address + instructionWidthForMode("auto", cpu)) >>> 0;
             await withCurrentExecBreakpointSuspended(cpu, async () => native.step(cpu, 1));
             steps++;
             applyFreezes();
-            const native = syncNativeBreakStatus();
+            const nativeStatus = syncNativeBreakStatus();
             const pcAfter = getPc(cpu);
-            if (native && native.lastBreak && native.lastBreak.hit) {
+            if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 await refreshDebuggerViews({ cpu, keepHighlight: true });
-                return attachDebuggerContext({ kind: "trueNextBranch", ok: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, native);
+                return attachDebuggerContext({ kind: "trueNextBranch", ok: true, complete: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, nativeStatus);
             }
             if ((info.isBranch || info.isReturn || info.isCall) && sequentialPc !== null && pcAfter !== sequentialPc) {
                 await refreshDebuggerViews({ cpu, keepHighlight: true });
@@ -455,12 +453,12 @@ export function createDebuggerService({
                 native.step(cpu, 1);
             });
             steps++;
-            const native = syncNativeBreakStatus();
+            const nativeStatus = syncNativeBreakStatus();
             const callStack = readCallStackData();
             const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
-            if (native && native.lastBreak && native.lastBreak.hit) {
+            if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 await refreshDebuggerViews({ cpu });
-                return attachDebuggerContext({ kind: label, ok: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, native);
+                return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
             if (shouldStop({ startDepth, depth, callStack })) {
                 await refreshDebuggerViews({ cpu });
@@ -579,7 +577,6 @@ export function createDebuggerService({
         writeAnalysisBaseline,
         snapshotContext,
         attachDebuggerContext,
-        syncBreakpointsToNative,
         runDebuggerInstruction,
         runUntilNextBranchOrReturn,
         runUntilTrueNextBranch,

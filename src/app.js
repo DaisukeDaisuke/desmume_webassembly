@@ -285,6 +285,7 @@ applyScaleRotation();
 const debuggerService = createDebuggerService({
     ANALYSIS_BASELINE_SLOT_PREFIX,
     ANALYSIS_BASELINE_STATE_FORMAT_VERSION,
+    applyFreezes,
     breakpointKindName,
     cpsrModeInfo,
     disasmRefreshParams,

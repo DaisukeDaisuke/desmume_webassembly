@@ -31,11 +31,11 @@ export function createDebuggerCoordinator({
 
     function currentExecBreakpoint(cpu = state.selectedCpu, address = currentInstructionAddress(cpu)) {
         if (!Number.isFinite(address)) return null;
-        return state.breakpoints.find((breakpoint) => (
-            breakpoint.type === "exec"
-            && breakpoint.cpu === String(cpu)
-            && (breakpoint.address >>> 0) === (address >>> 0)
-        )) || null;
+        return breakpointOwners.getSite({
+            type: "exec",
+            cpu: String(cpu),
+            address: Number(address) >>> 0
+        }) || null;
     }
 
     async function withCurrentExecBreakpointSuspended(cpu, callback) {
@@ -45,7 +45,9 @@ export function createDebuggerCoordinator({
         try {
             return await callback(address);
         } finally {
-            if (breakpoint) native.setBreakpoint(cpu, "exec", address, true);
+            if (breakpoint && breakpointOwners.getOwners(breakpoint).length) {
+                native.setBreakpoint(cpu, "exec", address, true);
+            }
         }
     }
 
@@ -64,7 +66,7 @@ export function createDebuggerCoordinator({
         ));
     }
 
-    function finishPersistentScriptEvent(eventId) {
+    async function finishPersistentScriptEvent(eventId) {
         const pending = state.pendingScriptEvents.get(Number(eventId));
         if (!pending || --pending.remaining > 0) return;
         state.pendingScriptEvents.delete(Number(eventId));
@@ -73,7 +75,11 @@ export function createDebuggerCoordinator({
         // Exec hooks stop before the instruction. MMU read/write hooks have already
         // completed the access, so stepping those would duplicate the side effect.
         if (pending.type === "exec" && currentInstructionAddress(pending.cpu) === pending.address) {
-            native.step(pending.cpu, 1);
+            state.lastBreakKey = "";
+            await withCurrentExecBreakpointSuspended(pending.cpu, () => {
+                native.clearBreakStatus();
+                return native.step(pending.cpu, 1);
+            });
             const statusAfterStep = getNativeStatus();
             if (statusAfterStep?.lastBreak?.hit) {
                 syncNativeBreakStatus(statusAfterStep);
@@ -118,7 +124,7 @@ export function createDebuggerCoordinator({
                     }
                 });
             } else if (autoResume) {
-                finishPersistentScriptEvent(eventId);
+                void finishPersistentScriptEvent(eventId);
             }
         }
     }

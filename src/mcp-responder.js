@@ -30,7 +30,10 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
             return fail(
                 ErrorCode.INTERNAL_ERROR,
                 "Command returned an invalid failure result",
-                { result }
+                {
+                    keys: Object.keys(result).slice(0, 20),
+                    hasError: Object.prototype.hasOwnProperty.call(result, "error")
+                }
             );
         }
         return ok(result && typeof result === "object" ? result : { value: result });

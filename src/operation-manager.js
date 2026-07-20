@@ -36,10 +36,21 @@ export function createOperationManager({ responder, pause = async () => {}, rele
         const cleanupOnce = async () => {
             if (cleaned) return;
             cleaned = true;
-            clearTimeout(timer);
-            await releaseInput();
-            await cleanup(operation);
-            if (active === operation) active = null;
+            let cleanupError;
+            try {
+                await releaseInput();
+            } catch (error) {
+                cleanupError = error;
+            }
+            try {
+                await cleanup(operation);
+            } catch (error) {
+                cleanupError ||= error;
+            } finally {
+                clearTimeout(timer);
+                if (active === operation) active = null;
+            }
+            if (cleanupError) throw cleanupError;
         };
         const timeoutResult = () => responder.fail(
             ErrorCode.TIMEOUT,

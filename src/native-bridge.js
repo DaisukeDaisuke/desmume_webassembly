@@ -126,7 +126,20 @@ export function createNativeBridge({
     }
 
     function parseJson(value, operation) {
-        return JSON.parse(checkText(value, operation));
+        const text = checkText(value, operation);
+        try {
+            return JSON.parse(text);
+        } catch (cause) {
+            const error = new Error(`native returned invalid JSON during ${operation}`);
+            error.mcpCode = ErrorCode.NATIVE_ERROR;
+            error.mcpDetails = {
+                operation,
+                errorType: cause?.name || "Error",
+                preview: text.slice(0, 120)
+            };
+            onFault(error, operation);
+            throw error;
+        }
     }
 
     function wrapFunctions() {

@@ -5,6 +5,7 @@ import { createBreakpointOwnerStore } from "../src/breakpoint-owner-store.js";
 import { createBreakpointService } from "../src/breakpoint-service.js";
 import { createScriptPauseService } from "../src/script-pause-service.js";
 import { createNativeBridge } from "../src/native-bridge.js";
+import { createBinaryTools } from "../src/binary-tools.js";
 import { compareFramePixels } from "../src/frame-diff/index.js";
 
 test("responder returns normal errors", async () => {
@@ -56,6 +57,16 @@ test("event waits reject immediately for pre-aborted signals", async () => {
   await assert.rejects(scriptPauses.waitForEvent({ signal: controller.signal }), { name: "AbortError" });
 });
 
+test("address parsing rejects malformed and out-of-range input", () => {
+  const { parseAddress } = createBinaryTools({ getPc: () => 0x1234, getSelectedCpu: () => "arm9" });
+  assert.equal(parseAddress("0x02000000"), 0x02000000);
+  assert.equal(parseAddress("02000000"), 0x02000000);
+  assert.equal(parseAddress("0"), 0);
+  for (const value of ["xyz", "123junk", NaN, Infinity, -1, 0x100000000]) {
+    assert.throws(() => parseAddress(value), (error) => error.mcpCode === "INVALID_ARGUMENT");
+  }
+});
+
 test("breakpoint owners preserve mixed sites", () => {
   let adds = 0;
   let removes = 0;
@@ -69,6 +80,17 @@ test("breakpoint owners preserve mixed sites", () => {
   store.removeOwner(1);
   assert.equal(adds, 1);
   assert.equal(removes, 1);
+});
+
+test("breakpoint owner IDs cannot be reused", () => {
+  const store = createBreakpointOwnerStore();
+  store.addOwner({ cpu: "arm9", type: "exec", address: 1 }, { id: 7, origin: "user" });
+  assert.throws(
+    () => store.addOwner({ cpu: "arm9", type: "exec", address: 2 }, { id: 7, origin: "script" }),
+    (error) => error.mcpCode === "BREAKPOINT_EXISTS"
+  );
+  assert.equal(store.list().length, 1);
+  assert.equal(store.getOwners(store.list()[0]).length, 1);
 });
 
 test("frame algorithms use the supplied fixed baseline", async () => {

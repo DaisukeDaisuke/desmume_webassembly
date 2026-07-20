@@ -1,3 +1,5 @@
+import { getInternalMetadata } from "../internal-command-metadata.js";
+
 export function createDebuggerControlCommands(context) {
     const {
         breakpointOwners,
@@ -31,9 +33,24 @@ export function createDebuggerControlCommands(context) {
             if (params.id && params.enabled === false) {
                 return debuggerCommands.removeBreakpoint({ id: params.id });
             }
-            const origin = String(params._origin || "user");
+            const explicitId = params.id === undefined ? null : Number(params.id);
+            if (explicitId !== null && (
+                !Number.isSafeInteger(explicitId)
+                || explicitId <= 0
+                || explicitId >= Number.MAX_SAFE_INTEGER
+            )) {
+                const error = new Error("breakpoint id must be a positive safe integer");
+                error.mcpCode = "INVALID_ARGUMENT";
+                throw error;
+            }
+            const id = explicitId ?? state.nextBreakpointId++;
+            if (explicitId !== null) {
+                state.nextBreakpointId = Math.max(state.nextBreakpointId, explicitId + 1);
+            }
+            const metadata = getInternalMetadata(params);
+            const origin = String(metadata.origin || "user");
             const breakpoint = {
-                id: Number(params.id ?? state.nextBreakpointId++),
+                id,
                 cpu: String(params.cpu ?? state.selectedCpu),
                 type: String(params.type ?? "exec"),
                 address: parseAddress(params.address, 0, params.cpu),
@@ -52,9 +69,9 @@ export function createDebuggerControlCommands(context) {
             breakpointOwners.addOwner(breakpoint, {
                 id: breakpoint.id,
                 origin,
-                scriptId: params._scriptId,
-                triggerId: params._triggerId,
-                operationId: params._operationId
+                scriptId: metadata.scriptId,
+                triggerId: metadata.triggerId,
+                operationId: metadata.operationId
             });
             if (origin === "user") state.breakpoints.push(breakpoint);
             renderBreakpoints();

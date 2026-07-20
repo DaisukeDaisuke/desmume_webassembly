@@ -1,3 +1,5 @@
+import { withInternalMetadata } from "../internal-command-metadata.js";
+
 export function createContextCommands(context) {
     const {
         ANALYSIS_BASELINE_SLOT_PREFIX,
@@ -60,10 +62,10 @@ export function createContextCommands(context) {
             const generation = state.romGeneration;
             const identity = await currentRomIdentity();
             const activity = emulatorActivity();
-            const result = await call("saveState", {
-                slot,
-                _analysisBaselineSlotToken: analysisBaselineSlotToken
-            });
+            const result = await call("saveState", withInternalMetadata(
+                { slot },
+                { analysisBaselineSlotToken }
+            ));
             if (generation !== state.romGeneration) {
                 throw new Error("ROM changed while saving analysis baseline");
             }
@@ -108,11 +110,10 @@ export function createContextCommands(context) {
                 || stateBytes.length !== baseline.stateSize
                 || await sha256Hex(stateBytes) !== baseline.stateSha256;
             if (invalidState) throw new Error("analysis baseline state integrity check failed");
-            await call("loadState", {
+            await call("loadState", withInternalMetadata({
                 slot: baseline.slot,
-                saveFlushBlockMs: params.saveFlushBlockMs,
-                _analysisBaselineSlotToken: analysisBaselineSlotToken
-            });
+                saveFlushBlockMs: params.saveFlushBlockMs
+            }, { analysisBaselineSlotToken }));
             await call("setStackTraceMode", { enabled: false });
             await call("setStackTraceMode", { enabled: baseline.traceEnabled });
             await call("setStackTracePrivilegeCheck", { enabled: baseline.skipIrq });

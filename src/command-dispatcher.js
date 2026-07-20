@@ -27,6 +27,17 @@ const CANCELLING_COMMANDS = new Set([
     "reloadRecentFile"
 ]);
 
+const RESERVED_PARAM_FIELDS = Object.freeze([
+    "_operation",
+    "_origin",
+    "_scriptId",
+    "_triggerId",
+    "_operationId",
+    "_scriptCallback",
+    "_scriptEventId",
+    "_analysisBaselineSlotToken"
+]);
+
 export function createCommandDispatcher({
     state,
     registry,
@@ -55,11 +66,20 @@ export function createCommandDispatcher({
     }
 
     async function run(name, params = {}) {
+        const reservedField = RESERVED_PARAM_FIELDS.find((field) => (
+            Object.prototype.hasOwnProperty.call(params, field)
+        ));
+        if (reservedField) {
+            return responder.fail(
+                ErrorCode.INVALID_ARGUMENT,
+                `Reserved parameter is not allowed: ${reservedField}`
+            );
+        }
         const active = operationManager.current();
         if (active
             && ACTIVITY_COMMANDS.has(name)
             && !CANCELLING_COMMANDS.has(name)
-            && !params._operation) {
+        ) {
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
         }
         const result = await registry.execute(name, params);

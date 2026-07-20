@@ -1,18 +1,44 @@
 export function createBinaryTools({ getPc, getSelectedCpu }) {
+    function invalidNumber(message) {
+        const error = new Error(message);
+        error.mcpCode = "INVALID_ARGUMENT";
+        throw error;
+    }
+
     function parseNumber(value, fallback = 0) {
-        if (typeof value === "number") return value;
+        if (typeof value === "number") {
+            if (!Number.isFinite(value) || !Number.isInteger(value)) {
+                invalidNumber("value must be a finite integer");
+            }
+            return value;
+        }
         if (value === "pc") return getPc();
         const text = String(value ?? "").trim();
         if (!text) return fallback;
-        return Number(text.startsWith("0x") ? parseInt(text, 16) : parseInt(text, 10));
+        if (!/^(?:0x[0-9a-f]+|[-+]?\d+)$/i.test(text)) {
+            invalidNumber(`invalid integer: ${text}`);
+        }
+        const parsed = Number(text);
+        if (!Number.isSafeInteger(parsed)) invalidNumber("integer is outside the safe range");
+        return parsed;
     }
 
     function parseAddress(value, fallback = 0, cpu = getSelectedCpu()) {
-        if (typeof value === "number") return value >>> 0;
+        if (typeof value === "number") {
+            if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+                invalidNumber("address must be a uint32 integer");
+            }
+            return value;
+        }
         const text = String(value ?? "").trim().toLowerCase();
         if (!text) return fallback >>> 0;
         if (text === "pc") return getPc(cpu);
-        return parseInt(text.replace(/^0x/, ""), 16) >>> 0;
+        if (!/^(?:0x)?[0-9a-f]+$/i.test(text)) invalidNumber(`invalid address: ${text}`);
+        const parsed = Number.parseInt(text.replace(/^0x/, ""), 16);
+        if (!Number.isInteger(parsed) || parsed > 0xffffffff) {
+            invalidNumber("address must be within the uint32 range");
+        }
+        return parsed;
     }
 
     function bytesFromParams(params = {}) {

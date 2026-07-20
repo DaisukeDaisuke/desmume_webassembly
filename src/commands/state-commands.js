@@ -1,3 +1,5 @@
+import { getInternalMetadata } from "../internal-command-metadata.js";
+
 export function createStateCommands(context) {
     const {
         analysisBaselineSlotToken,
@@ -29,7 +31,8 @@ export function createStateCommands(context) {
     const stateCommands = {
         async saveState(params = {}) {
             ensureRomLoaded("state save requires a loaded ROM");
-            if (isAnalysisBaselineSlot(params.slot) && params._analysisBaselineSlotToken !== analysisBaselineSlotToken) {
+            if (isAnalysisBaselineSlot(params.slot)
+                && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw new Error("analysis baseline slots are reserved");
             }
             const bytes = native.saveStateBytes();
@@ -52,7 +55,8 @@ export function createStateCommands(context) {
         async loadState(params = {}) {
             cancelOperation("state-load");
             ensureRomLoaded("state load requires a loaded ROM");
-            if (isAnalysisBaselineSlot(params.slot) && params._analysisBaselineSlotToken !== analysisBaselineSlotToken) {
+            if (isAnalysisBaselineSlot(params.slot)
+                && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw new Error("analysis baseline slots are reserved");
             }
             const runState = pauseForFileLoad();

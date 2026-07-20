@@ -1,6 +1,7 @@
 import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import persistentScriptWorkerSource from "./workers/persistent-script.worker.js";
+import { withInternalMetadata } from "./internal-command-metadata.js";
 
 export function createScriptService({
     state,
@@ -106,8 +107,7 @@ export function createScriptService({
     async function unregisterScriptTriggers(script) {
         for (const trigger of [...script.triggers]) {
             if (trigger.breakpointId) {
-                const bp = state.breakpoints.find((item) => item.id === trigger.breakpointId);
-                if (bp) await commands.removeBreakpoint({ id: bp.id });
+                await commands.removeBreakpoint({ id: trigger.breakpointId });
             }
             if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(trigger.type) && !state.scriptTriggers.some((item) => item.id !== trigger.id && item.type === trigger.type)) {
                 await commands.setSpecialBreakpoint({ kind: trigger.type, enabled: false });
@@ -122,7 +122,10 @@ export function createScriptService({
         const type = String(trigger.kind || trigger.type || "tick");
         const item = { id: state.nextScriptTriggerId++, scriptId: script.id, callbackId: Number(trigger.callbackId), type, cpu: String(trigger.cpu || state.selectedCpu), address: parseAddress(trigger.address, 0, trigger.cpu) };
         if (["read", "write", "exec"].includes(type)) {
-            const result = await commands.setBreakpoint({ cpu: item.cpu, type, address: item.address, enabled: true, _origin: "script", _scriptId: script.id, _triggerId: item.id });
+            const result = await commands.setBreakpoint(withInternalMetadata(
+                { cpu: item.cpu, type, address: item.address, enabled: true },
+                { origin: "script", scriptId: script.id, triggerId: item.id }
+            ));
             item.breakpointId = result.id;
         } else if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)) {
             await commands.setSpecialBreakpoint({ kind: type, enabled: true });
@@ -149,12 +152,13 @@ export function createScriptService({
                 throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
             }
             if (command === "register") return registerScriptTrigger(script, params);
-            const result = await runCommand(command, command === "pause" && eventId ? {
-                ...params,
-                _scriptCallback: true,
-                _scriptId: script.id,
-                _scriptEventId: eventId
-            } : params);
+            const result = command === "pause" && eventId
+                ? await commands.pause(withInternalMetadata(params, {
+                    scriptCallback: true,
+                    scriptId: script.id,
+                    scriptEventId: eventId
+                }))
+                : await runCommand(command, params);
             if (command === "pause" && eventId && result?.ok !== false) {
                 onExplicitPause({ scriptId: script.id, eventId: Number(eventId) });
             }
@@ -266,7 +270,7 @@ export function createScriptService({
                         result: await queuePersistentScriptOperation(script, "register", msg.trigger)
                     });
                 } else if (msg.type === "eventDone" && Number.isFinite(Number(msg.eventId))) {
-                    finishPersistentScriptEvent(msg.eventId);
+                void finishPersistentScriptEvent(msg.eventId);
                 } else if (msg.type === "print" && Array.isArray(msg.values)) {
                     scriptConsoleLine(script, msg.values);
                 } else if (msg.type === "started") {

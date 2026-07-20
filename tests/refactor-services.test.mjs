@@ -9,6 +9,12 @@ import { createInputSequenceService } from "../src/input-service.js";
 import { compareFramePixels } from "../src/frame-diff/index.js";
 import { createScriptPauseService } from "../src/script-pause-service.js";
 import { registerWaitCommands } from "../src/commands/wait-commands.js";
+import { createDebuggerService } from "../src/debugger-service.js";
+import { createViewService } from "../src/ui/view-service.js";
+import { createCommandDispatcher } from "../src/command-dispatcher.js";
+import { createDebuggerCoordinator } from "../src/debugger-coordinator.js";
+import { createRuntimeCommands } from "../src/commands/runtime-commands.js";
+import { createBreakpointOwnerStore } from "../src/breakpoint-owner-store.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAME_WIDTH = 256;
@@ -84,6 +90,26 @@ test("operation cancellation reports its reason and cleans up exactly once", asy
   assert.equal(manager.cancel(), false);
 });
 
+test("operation manager is reusable after cleanup throws", async () => {
+  const manager = createOperationManager({
+    responder,
+    releaseInput: async () => { throw new Error("release failed"); }
+  });
+  await assert.rejects(manager.run({
+    name: "cleanup-failure",
+    timeoutMs: 1000,
+    task: async () => responder.ok()
+  }), /release failed/);
+  assert.equal(manager.current(), null);
+  const next = await manager.run({
+    name: "next-operation",
+    timeoutMs: 1000,
+    task: async () => responder.ok()
+  }).catch((error) => error);
+  assert.equal(manager.current(), null);
+  assert.match(String(next.message), /release failed/);
+});
+
 test("persistent script pause stops a wait with SCRIPT_PAUSED", async () => {
     const scriptPauseService = createScriptPauseService();
     const operationManager = createOperationManager({ responder });
@@ -123,6 +149,168 @@ test("persistent script pause stops a wait with SCRIPT_PAUSED", async () => {
     assert.equal(result.error.code, "SCRIPT_PAUSED");
     assert.equal(result.error.details.scriptId, 4);
     assert.equal(operationManager.current(), null);
+});
+
+function createDebuggerHarness() {
+    let freezes = 0;
+    let disassemblyCalls = 0;
+    const state = {
+        selectedCpu: "arm9",
+        paused: true,
+        running: false,
+        breakpoints: [],
+        autoUpdate: {},
+        highlightedDisasmAddress: null,
+        highlightedCallstackAddress: null,
+        highlightedCallstackCpsr: null
+    };
+    const ui = {
+        disasmOutput: { innerHTML: "" },
+        callstackBody: { innerHTML: "" },
+        memoryAuto: { value: "0" },
+        tracePrivilegeToggle: { checked: false },
+        traceToggle: { checked: false }
+    };
+    const commands = {
+        disassemble: async () => ({
+            text: ++disassemblyCalls === 2
+                ? "=>02000004: ea000000 b 02000010"
+                : "=>02000000: e1a00000 mov r0, r0"
+        })
+    };
+    const service = createDebuggerService({
+        applyFreezes: () => { freezes++; },
+        breakpointKindName: () => "",
+        cpsrModeInfo: () => ({ className: "" }),
+        disasmRefreshParams: (value) => value,
+        ensureReady: () => {},
+        ensureRomLoaded: () => {},
+        getPc: () => 0x02000000,
+        getRegisters: () => ({ pc: 0x02000000 }),
+        hasLoadedRom: () => true,
+        hex: (value) => `0x${(Number(value) >>> 0).toString(16)}`,
+        log: () => {},
+        native: { step: () => 1, stepOver: () => 1, clearBreakStatus: () => {} },
+        normalizeCallStackData: (value) => value,
+        readCallStackData: () => ({ enabled: true, frames: [] }),
+        renderRegisters: () => {},
+        setFollowPc: () => {},
+        state,
+        syncNativeBreakStatus: () => ({}),
+        ui,
+        updateStatus: () => {},
+        withCurrentExecBreakpointSuspended: async (_cpu, callback) => callback(),
+        getCommands: () => commands
+    });
+    return { service, freezes: () => freezes };
+}
+
+test("debugger service requires and applies freezes for step paths", async () => {
+    assert.throws(() => createDebuggerService({}), /requires applyFreezes/);
+    const step = createDebuggerHarness();
+    await step.service.runDebuggerInstruction("step");
+    assert.equal(step.freezes(), 1);
+    const over = createDebuggerHarness();
+    await over.service.runDebuggerInstruction("stepOver");
+    assert.equal(over.freezes(), 1);
+    const branch = createDebuggerHarness();
+    await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
+    assert.equal(branch.freezes(), 1);
+});
+
+test("view service converts call stack disassembly modes", () => {
+    const modes = [];
+    const view = createViewService({
+        state: { selectedCpu: "arm9" },
+        ui: {},
+        native: {
+            disassemble: (_cpu, _address, _count, mode) => {
+                modes.push(mode);
+                return "02000000: nop";
+            }
+        },
+        getIdbPut: () => () => {}
+    });
+    const frame = {
+        caller: 0x02000000,
+        returnAddress: 0x02000004,
+        callee: 0x02000008,
+        sp: 0x023ffff0,
+        cpsrHex: "0x00000000",
+        modeName: "system",
+        thumb: false,
+        id: 1
+    };
+    assert.equal(view.publicCallStackFrame(frame).callerDisassembly.length, 1);
+    assert.deepEqual(modes, [2, 2]);
+    modes.length = 0;
+    view.disassemblyRows("arm9", 0x02000000, { mode: "thumb" });
+    view.disassemblyRows("arm9", 0x02000000, { mode: "unknown" });
+    assert.deepEqual(modes, [1, 0]);
+});
+
+test("public dispatcher rejects internal metadata fields", async () => {
+    let executed = 0;
+    const dispatcher = createCommandDispatcher({
+        state: { ready: false },
+        registry: { execute: async () => { executed++; return responder.ok(); } },
+        responder,
+        operationManager: { current: () => ({ name: "active" }) },
+        hasLoadedRom: () => false,
+        emulatorActivity: () => ({}),
+        refreshDebuggerViews: async () => {},
+        updateStatus: () => {},
+        log: () => {}
+    });
+    for (const field of ["_operation", "_origin", "_scriptId", "_triggerId", "_operationId", "_scriptCallback", "_scriptEventId", "_analysisBaselineSlotToken"]) {
+        const result = await dispatcher.run("step", { [field]: true });
+        assert.equal(result.error.code, "INVALID_ARGUMENT");
+    }
+    assert.equal(executed, 0);
+});
+
+test("the same breakpoint publishes again after each resume", async () => {
+    const state = {
+        ready: true,
+        selectedCpu: "arm9",
+        lastBreakKey: "",
+        breakRefreshKey: "",
+        scriptTriggers: [],
+        pendingScriptEvents: new Map(),
+        frame: 0
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner({ cpu: "arm9", type: "exec", address: 0x02000000 }, { id: 1, origin: "user" });
+    let published = 0;
+    const native = {
+        getStatus: () => ({}),
+        pause: () => {},
+        clearBreakStatus: () => {}
+    };
+    const coordinator = createDebuggerCoordinator({
+        state,
+        native,
+        breakpointOwners: owners,
+        breakpointService: { publish: () => { published++; } },
+        getQueueBreakpointRefresh: () => () => {},
+        log: () => {},
+        hex: String,
+        updateStatus: () => {}
+    });
+    const runtime = createRuntimeCommands({
+        cancelOperation: () => {},
+        ensureReady: () => {},
+        hasLoadedRom: () => true,
+        native,
+        state,
+        updateStatus: () => {}
+    });
+    const hit = { hit: true, cpu: "arm9", kind: 0, address: 0x02000000, pc: 0x02000000, value: 0 };
+    for (let index = 0; index < 10; index++) {
+        coordinator.syncNativeBreakStatus({ frame: index, lastBreak: hit });
+        await runtime.resume();
+    }
+    assert.equal(published, 10);
 });
 
 test("all built-in frame algorithms accept fixed pixel buffers", async (t) => {

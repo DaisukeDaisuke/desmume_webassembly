@@ -1,3 +1,5 @@
+import { getInternalMetadata } from "../internal-command-metadata.js";
+
 export function createRuntimeCommands(context) {
     const {
         applyFreezes,
@@ -38,7 +40,8 @@ export function createRuntimeCommands(context) {
         },
 
         async pause(params = {}) {
-            if (!params._operation && !params._scriptCallback) cancelOperation("pause");
+            const metadata = getInternalMetadata(params);
+            if (!metadata.operation && !metadata.scriptCallback) cancelOperation("pause");
             ensureReady();
             state.explicitPauseSerial++;
             state.paused = true;
@@ -60,6 +63,7 @@ export function createRuntimeCommands(context) {
             }
             state.breakLabel = "";
             state.breakRefreshKey = "";
+            state.lastBreakKey = "";
             state.paused = false;
             state.running = true;
             native.clearBreakStatus();

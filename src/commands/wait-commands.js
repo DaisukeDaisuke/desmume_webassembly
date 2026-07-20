@@ -1,4 +1,5 @@
 import { ErrorCode } from "../error-codes.js";
+import { withInternalMetadata } from "../internal-command-metadata.js";
 
 export function registerWaitCommands({
     commands,
@@ -69,13 +70,13 @@ export function registerWaitCommands({
                 }));
                 const native = getNativeStatus();
                 if (native?.lastBreak?.hit && Number(native.lastBreak.kind) === 0) {
-                    await commands.step({ count: 1, _operation: true });
+                    await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
                 }
-                await commands.resume({ _operation: true });
+                await commands.resume(withInternalMetadata({}, { operation: true }));
                 const waited = await pending;
                 if (waited.scriptPause) return scriptPausedResult(waited.scriptPause);
                 const event = waited.value;
-                await commands.pause({ _operation: true });
+                await commands.pause(withInternalMetadata({}, { operation: true }));
                 return responder.ok({
                     cpu: event.cpu,
                     type: event.type,
@@ -102,14 +103,12 @@ export function registerWaitCommands({
                 let predicate;
                 if (hasPc) {
                     const address = parseAddress(params.pc, 0, params.cpu);
-                    const result = await commands.setBreakpoint({
+                    const result = await commands.setBreakpoint(withInternalMetadata({
                         cpu: params.cpu,
                         type: "exec",
                         address,
-                        enabled: true,
-                        _origin: "operation",
-                        _operationId: operation.id
-                    });
+                        enabled: true
+                    }, { origin: "operation", operationId: operation.id }));
                     temporaryId = result.id;
                     predicate = (event) => event.type === "exec" && event.address === address;
                 } else {
@@ -133,17 +132,17 @@ export function registerWaitCommands({
                             predicate,
                             signal
                         }));
-                        await commands.resume({ _operation: true });
+                        await commands.resume(withInternalMetadata({}, { operation: true }));
                         const waited = await pending;
                         if (waited.scriptPause) return scriptPausedResult(waited.scriptPause);
                         const event = waited.value;
                         afterSerial = event.serial;
                         progress.hits++;
                         if (progress.hits < progress.expectedHits) {
-                            if (event.type === "exec") await commands.step({ count: 1, _operation: true });
+                            if (event.type === "exec") await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
                             continue;
                         }
-                        await commands.pause({ _operation: true });
+                        await commands.pause(withInternalMetadata({}, { operation: true }));
                         return responder.ok({
                             ...(hasPc ? { pc: hex(event.pc) } : { bp: Number(params.bp), hits: progress.hits }),
                             frames: getFrame()
@@ -177,7 +176,7 @@ export function registerWaitCommands({
             timeoutMs: Number(params.timeoutMs),
             timeoutDetails: () => ({ maxPct: progress.maxPct }),
             task: async (operation) => {
-                await commands.pause({ _operation: true });
+                await commands.pause(withInternalMetadata({}, { operation: true }));
                 const baseline = frameService.captureCurrent();
                 if (!baseline.ok) return baseline;
                 const stableFrames = Math.max(1, Number(params.stableFrames ?? 1));
@@ -198,7 +197,7 @@ export function registerWaitCommands({
                         if (finished) return;
                         finished = true;
                         cleanup();
-                        await commands.pause({ _operation: true });
+                        await commands.pause(withInternalMetadata({}, { operation: true }));
                         resolve(result);
                     };
                     const aborted = () => {
@@ -251,7 +250,7 @@ export function registerWaitCommands({
                         void finish(scriptPausedResult(event));
                     });
                     operation.signal.addEventListener("abort", aborted, { once: true });
-                    await commands.resume({ _operation: true });
+                    await commands.resume(withInternalMetadata({}, { operation: true }));
                 });
             }
         });
