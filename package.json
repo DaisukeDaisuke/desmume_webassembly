@@ -1,0 +1,17 @@
+{
+  "name": "desmume-web-debugger",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:js": "node scripts/build-js.mjs",
+    "watch:js": "node scripts/watch-js.mjs",
+    "check:js": "node scripts/check-js.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build:notices": "node scripts/build-third-party-notices.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.6",
+    "terser": "5.43.1"
+  }
+}

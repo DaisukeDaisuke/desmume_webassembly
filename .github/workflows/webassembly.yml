@@ -37,16 +37,35 @@ jobs:
         run: |
           bash webassembly/build.sh
 
-      - name: Install JS minifier
+      - name: Install JavaScript dependencies
         run: |
-          npm install -g terser
+          npm ci
 
-      - name: Minify JavaScript files
+      - name: Verify third-party licenses
         run: |
-          find public -maxdepth 1 -name "*.js" -print0 | while IFS= read -r -d '' f; do
-            terser "$f" -o "$f" --compress --mangle
-            echo "Minified: $f"
-          done
+          npm run check:licenses
+
+      - name: Bundle application JavaScript
+        run: |
+          npm run build:js
+
+      - name: Build third-party notices
+        run: |
+          npm run build:notices
+
+      - name: Minify Emscripten JavaScript
+        run: |
+          npx terser public/desmume.js -o public/desmume.js --compress --mangle
+
+      - name: Verify Pages output
+        run: |
+          test -f public/index.html
+          test -f public/app.js
+          test -f public/coi-serviceworker.js
+          test -f public/desmume.js
+          test ! -d public/src
+          test ! -f public/app.js.map
+          grep -q "coi-serviceworker v0.1.7" public/coi-serviceworker.js
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

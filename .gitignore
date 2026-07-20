@@ -1,5 +1,8 @@
 /cmake-build-debug
 /.idea
 /public/desmume.js
+/public/app.js
+/public/app.js.map
+/node_modules/
 /data
 /data/dq9_new2.nds

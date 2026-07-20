@@ -132,6 +132,81 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
 
+## Long-running operations and normal errors
+
+`waitForBreak`, `runUntil`, `runInputSequence`, and `waitForScreenChange` are mutually exclusive. A second long-running operation returns `ok:false` with `error.code="BUSY"`; it does not wait or start another emulator loop. `pause`, ROM/State load, reset, page unload, and explicit cancellation stop the active operation and release timers, listeners, temporary breakpoint owners, DS buttons, and touch input.
+
+`waitForBreak`, `runUntil`, and `waitForScreenChange` require `timeoutMs` in the range 1 through 600000. Timeout is a normal result with `error.code="TIMEOUT"`, not a rejected Promise. The emulator is paused and the next command can run immediately.
+
+All expected failures use this shape across `DesmumeMCP`, WebMCP, and Worker RPC:
+
+```js
+{ ok: false, error: { code, message, recoverable: true, details? } }
+```
+
+Stable error codes include `WASM_NOT_READY`, `ROM_NOT_LOADED`, `INVALID_ARGUMENT`, `UNKNOWN_COMMAND`, `TIMEOUT`, `BUSY`, `CANCELLED`, `SCREEN_INVALID`, `NO_WAITABLE_BREAKPOINTS`, `BREAKPOINT_NOT_FOUND`, `BREAKPOINT_NOT_WAITABLE`, `BREAKPOINT_INTERRUPTED`, `SCRIPT_PAUSED`, `SCRIPT_SOURCE_INVALID`, `SCRIPT_COMPILE_ERROR`, `SCRIPT_RUNTIME_ERROR`, `WORKER_START_FAILED`, `WORKER_CRASHED`, `WORKER_PROTOCOL_ERROR`, `SEQUENCE_NOT_FOUND`, `SEQUENCE_EXISTS`, `FRAME_SNAPSHOT_NOT_FOUND`, `FRAME_SNAPSHOT_EXISTS`, `ALGORITHM_UNAVAILABLE`, `ALGORITHM_INTEGRITY_FAILED`, `NATIVE_ERROR`, `NATIVE_FAULT`, and `INTERNAL_ERROR`.
+
+Application errors remain successful WebMCP transports. Compact text contains the short `ok`/error summary, while structured content remains an object.
+
+### `waitForBreak`
+
+```js
+waitForBreak({ timeoutMs: 30000, scriptBreakpoints: "ignore" })
+```
+
+The default ignores script-only breakpoints and requires at least one enabled non-script breakpoint. With none it returns `NO_WAITABLE_BREAKPOINTS` without resuming. Mixed script/user ownership is user-visible. A persistent script callback still runs; an explicit callback pause ends the wait with `SCRIPT_PAUSED`.
+
+### `runUntil`
+
+Use exactly one condition:
+
+```js
+runUntil({ timeoutMs: 30000, pc: "021e54fc" })
+runUntil({ timeoutMs: 30000, bp: 12, hits: 10 })
+```
+
+The PC form owns a temporary execution breakpoint without replacing an existing owner. The hit-count form counts only events after the call begins. All temporary ownership is removed on every exit path.
+
+### `runInputSequence`
+
+```js
+runInputSequence({ id: "menu-open", seq: [["t", "A", 2], ["w", 300], ["hf", "Up", 2]] })
+runInputSequence({ id: "menu-open" })
+```
+
+Opcodes are `t` (tap), `s` (spam for milliseconds), `h` (hold for milliseconds), `hf` (hold for emulator frames), `w` (real-time wait), `wf` (emulator-frame wait), and `x` (touch). Join simultaneous buttons with `+`. The entire sequence is validated before execution. IDs are stored under the versioned `desmume-input-sequences-v1` key. Replacing a different existing sequence requires `replace:true`. `listInputSequences` and `deleteInputSequence` manage saved entries.
+
+## Frame snapshots and comparison
+
+State load invalidates capture APIs until one complete emulator frame increments the native frame counter. CPU stepping, a partial frame interrupted by a breakpoint, canvas repaint, and framebuffer capture alone do not validate it. During this interval the UI keeps the last valid canvas visible and reports that execution must resume; capture, comparison, screenshot, and screen-wait commands return `SCREEN_INVALID`.
+
+`captureFrame({id, replace:false})` copies the native 256x384 framebuffer into independent JavaScript storage. At most 16 snapshots are retained; exceeding the limit or reusing an ID without `replace:true` returns a normal error. `listFrameSnapshots` and `deleteFrameSnapshot` manage them.
+
+`compareFrame` requires `id`, `algorithm`, and `thresholdPct`. `screen` is `top`, `bottom`, or `both` (default); `region` is `[x,y,width,height]`; and absolute `ignoreRects` are not silently clipped.
+
+| ID | Meaning | Suggested use | Main defaults |
+| --- | --- | --- | --- |
+| `px` | changed pixel percentage | static UI, fades | tolerance 8 |
+| `px-window` | dense local pixel change | scattered noise | tolerance 8 |
+| `hist` | luminance histogram distance | scenes and overall tone | 16 bins |
+| `blk` | trimmed block-layout change | menus with local animation | tile 16, grid 4, blur 1, tile threshold 8%, trim 20% |
+| `edge` | trimmed edge-layout change | text boxes, borders, positioning | tile 16, blur 1, tile threshold 10%, trim 20% |
+| `ssim-trim` | trimmed tiled SSIM | texture/lighting tolerance | tile 16, tile threshold 12%, trim 20%; verified optional library |
+
+All scores are 0–100, but thresholds are algorithm-specific. `hist`, `blk`, `edge`, and the built-in `px` fallback work offline.
+
+### `waitForScreenChange`
+
+The operation captures frame A once while paused and compares every later completed sample to A: B-vs-A, C-vs-A, D-vs-A. It never advances the baseline. `stableFrames` counts consecutive samples meeting `thresholdPct`; `sampleEveryFrames` reduces comparison frequency without changing A. A user-visible breakpoint returns `BREAKPOINT_INTERRUPTED`; script-only hits are ignored unless requested. Timeout details include `maxPct`.
+
+## Worker and optional algorithm policy
+
+Persistent/eval Worker sources live under `src/workers`, are embedded as strings in the production `public/app.js` bundle, and start from Blob URLs. Stop, timeout, crash, and restart terminate the Worker, settle pending RPC, and revoke its URL. Workers cannot access the DOM, `window`, ROM/State bytes, frame pixels, arbitrary network URLs, or unapproved RPC.
+
+Optional external image algorithms use only fixed HTTPS allowlist entries with exact versions and SHA-256 verification. Integrity/network failure disables only that algorithm. License/version/hash/source metadata is maintained in `THIRD_PARTY_NOTICES.md`; `public/coi-serviceworker.js` remains an independent unminified vendored asset with its MIT header.
+
+`ssim-trim` loads the exact npm asset `ssim.js@3.5.0/dist/ssim.web.js` from jsDelivr only when requested. Its expected SHA-256 is `238ab90f2dd1c6dfe9ab532d5e9da9b541545760fb970fb621398ae84daaacfe`; verified source is executed only inside the embedded algorithm Worker. A network, COEP, timeout, or integrity failure returns `ALGORITHM_UNAVAILABLE` or `ALGORITHM_INTEGRITY_FAILED` for `ssim-trim` without affecting `px`, `px-window`, `hist`, `blk`, or `edge`.
+
 ## Persistent injection scripts
 
 `runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is blocking `{ "asyncMode": false }`. Enable `{ "asyncMode": true }` only for a non-blocking register-observation script.

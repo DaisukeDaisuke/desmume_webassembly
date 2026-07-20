@@ -1,0 +1,75 @@
+"use strict";
+
+const fetch = undefined;
+const XMLHttpRequest = undefined;
+const WebSocket = undefined;
+const EventSource = undefined;
+const importScripts = undefined;
+const Function = undefined;
+const replies = new Map();
+
+function call(command, params = {}) {
+    return new Promise((resolve, reject) => {
+        const id = Math.random().toString(36).slice(2);
+        replies.set(id, { resolve, reject });
+        postMessage({ type: "call", id, command, params });
+    });
+}
+
+const mcp = { call };
+const webmcp = mcp;
+
+function installShortcuts(definitions) {
+    for (const [name, command, parameterNames, defaults = {}] of definitions || []) {
+        globalThis[name] = (...args) => {
+            const params = args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])
+                ? { ...defaults, ...args[0] }
+                : Object.fromEntries(parameterNames.map((parameter, index) => [parameter, args[index]])
+                    .filter(([, value]) => value !== undefined));
+            return call(command, { ...defaults, ...params });
+        };
+    }
+}
+
+function describeError(error, code, phase) {
+    const name = String(error?.name || "Error");
+    const message = String(error?.message || error);
+    const stack = String(error?.stack || "");
+    const match = stack.match(/desmume-eval-user\.js:(\d+):(\d+)/);
+    const details = { phase, errorName: name };
+    if (match) {
+        details.line = Math.max(1, Number(match[1]) - 1);
+        details.column = Number(match[2]);
+        details.sourceExcerpt = String(code || "").split("\n")[details.line - 1] || "";
+    }
+    if (stack) details.stack = stack.split("\n").slice(0, 4).join("\n");
+    return { name, message, details };
+}
+
+onmessage = async (event) => {
+    const message = event.data || {};
+    if (message.replyId) {
+        const pending = replies.get(message.replyId);
+        if (!pending) {
+            postMessage({ type: "protocolError", message: `unknown reply id: ${message.replyId}` });
+            return;
+        }
+        replies.delete(message.replyId);
+        if (message.error) pending.reject(new Error(message.error));
+        else pending.resolve(message.result);
+        return;
+    }
+    if (message.type !== "run" || typeof message.code !== "string") {
+        postMessage({ type: "protocolError", message: "run message with string code is required" });
+        return;
+    }
+    installShortcuts(message.shortcuts);
+    try {
+        const script = `(async (mcp, webmcp) => {\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
+        const result = await (0, eval)(script)(mcp, webmcp);
+        postMessage({ type: "done", result });
+    } catch (error) {
+        const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
+        postMessage({ type: "error", error: describeError(error, message.code, phase) });
+    }
+};
