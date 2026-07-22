@@ -468,3 +468,10 @@ Read this file, `DEBUGGER_LOGIC_FIX_LIVE_HANDOFF.md`, from the newest checkpoint
 - Native WebMCP exposed the expected four tools. A harmless `desmume.eval` probe confirmed `document`, `window`, `fetch`, `Worker`, `localStorage`, and raw `postMessage` are all unavailable in the sandbox. A dynamic-import probe failed closed as `SCRIPT_SOURCE_INVALID` and reported Acorn 8.17.0. No ROM/save/state or raw memory data was read or emitted.
 - The stronger browser-profile/OS-owner trust-model sentence remains removed. The note states only concrete technical boundaries.
 - Review status: ready to submit. Do not add further speculative changes after this checkpoint unless a new failure appears.
+
+## Checkpoint 20 — Actions deployment guard correction
+
+- Workflow-dispatch run `29897646291` on `rework` failed before runner assignment: zero steps ran, no artifact was uploaded, and no Pages deployment occurred. The published old version remains unchanged for comparison.
+- Root cause: the build/test job itself carried the protected `github-pages` environment, so a non-deployment branch could not even start tests.
+- `.github/workflows/webassembly.yml` is now split logically: `build` has no Pages environment and runs tests/builds on manual branch dispatch; Pages setup/artifact upload and the separate `deploy` job are guarded by both `github.event_name == 'push'` and `github.ref == 'refs/heads/main'`.
+- Therefore `workflow_dispatch` on `rework` cannot deploy, and neither can pushes to `webassembly`. Only a normal push to `main` may deploy after a successful build.
