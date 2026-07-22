@@ -14,6 +14,28 @@ try {
         cryptoMutationAccepted = globalThis.crypto.randomUUID() === "forged";
     }
 } catch {}
+const dangerousPrototypeNames = new Set([
+    "fetch", "postMessage", "close", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror"
+]);
+let prototypeCapabilityVisible = false;
+let symbolCapabilityVisible = false;
+let getterCapabilityVisible = false;
+let currentPrototype = Object.getPrototypeOf(globalThis);
+while (currentPrototype) {
+    for (const key of Reflect.ownKeys(currentPrototype)) {
+        const descriptor = Object.getOwnPropertyDescriptor(currentPrototype, key);
+        const keyName = typeof key === "symbol" ? String(key.description || key) : key;
+        if (dangerousPrototypeNames.has(keyName) && descriptor?.value !== undefined) prototypeCapabilityVisible = true;
+        if (typeof key === "symbol" && [...dangerousPrototypeNames].some((name) => keyName.includes(name))) {
+            symbolCapabilityVisible = true;
+        }
+        if (dangerousPrototypeNames.has(keyName)
+            && (typeof descriptor?.get === "function" || typeof descriptor?.set === "function")) {
+            getterCapabilityVisible = true;
+        }
+    }
+    currentPrototype = Object.getPrototypeOf(currentPrototype);
+}
 
 export const results = Object.freeze({
     fetchVisible: visible("fetch"),
@@ -30,5 +52,10 @@ export const results = Object.freeze({
     stringTimeoutAccepted,
     closeVisible: visible("close"),
     domVisible: visible("document") || visible("window") || visible("parent"),
-    cryptoMutationAccepted
+    cryptoMutationAccepted,
+    workerGlobalConstructorVisible: visible("WorkerGlobalScope") || visible("DedicatedWorkerGlobalScope"),
+    eventTargetConstructorVisible: visible("EventTarget"),
+    prototypeCapabilityVisible,
+    symbolCapabilityVisible,
+    getterCapabilityVisible
 });

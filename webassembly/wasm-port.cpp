@@ -26,6 +26,7 @@
 #include "rasterize.h"
 #include "saves.h"
 #include "utils/colorspacehandler/colorspacehandler.h"
+#include "runtime-state-contract.h"
 
 CHEATSEXPORT *cheatsExport = NULL;
 
@@ -117,6 +118,11 @@ struct TraceControlEvent {
 
 static std::vector<TraceControlEvent> traceControlEvents;
 static u32 tracePendingIrqResume[2] = {0, 0};
+
+static void clearTraceRuntimeState() {
+  clearTraceState(callStackLanes, activeCallStackLane, nextCallStackLaneId,
+                  callCountMap, traceControlEvents, tracePendingIrqResume);
+}
 
 u32 dstFrameBuffer[2][256 * 192];
 
@@ -470,15 +476,10 @@ void setSampleRate(int r) {
 }
 
 void *prepareRomBuffer(int rl) {
-  if (rl <= 0) return NULL;
-  if (rl > romBufferCap) {
-    u8 *resized = (u8 *)realloc((void *)romBuffer, rl);
-    if (!resized) return NULL;
-    romBuffer = resized;
-    romBufferCap = rl;
-  }
-  romLen = rl;
-  return romBuffer;
+  return prepareRomStorage(romBuffer, romBufferCap, romLen, rl,
+                           [](void *buffer, size_t length) {
+                             return realloc(buffer, length);
+                           });
 }
 
 void *getSymbol(int id) {
@@ -493,6 +494,7 @@ int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
   execute = false;
+  clearTraceRuntimeState();
   NDS_Reset();
   frameCounter = 0;
   lastBreak.hit = false;
@@ -503,8 +505,8 @@ int loadROM(int len) {
   try {
     if (len <= 0) return -2;
     const bool hadRom = romLoaded;
-    romLoaded = false;
-    paused = true;
+    beginRomLoadState(romLoaded, paused, execute);
+    clearTraceRuntimeState();
     emuLastError = -2;
     if (hadRom) {
       NDS_FreeROM();
@@ -518,10 +520,7 @@ int loadROM(int len) {
     SPU_SetVolume(35);
 
     if (!NDS_LoadROM("rom.nds")) return emuLastError;
-    romLen = len;
-    romLoaded = true;
-    paused = false;
-    execute = true;
+    finishRomLoadState(len, romLen, romLoaded, paused, execute);
     frameCounter = 0;
     lastBreak.hit = false;
     return 0;
@@ -712,15 +711,7 @@ int debuggerSetEnabled(int value) {
 
 int traceSetEnabled(int value) {
   traceEnabled = value != 0;
-  if (!traceEnabled) {
-    callStackLanes.clear();
-    activeCallStackLane = 0;
-    nextCallStackLaneId = 1;
-    callCountMap.clear();
-    traceControlEvents.clear();
-    tracePendingIrqResume[0] = 0;
-    tracePendingIrqResume[1] = 0;
-  }
+  if (!traceEnabled) clearTraceRuntimeState();
   return traceEnabled ? 1 : 0;
 }
 
@@ -780,7 +771,7 @@ void *dbgDumpMemory(int proc, u32 addr, int len) {
     static std::vector<u8> dump;
     if (len < 0) len = 0;
     if (len > 16 * 1024 * 1024) len = 16 * 1024 * 1024;
-    if (len > 0 && (uint64_t)addr + (uint64_t)len > 0x100000000ULL) return NULL;
+    if (len > 0 && !uint32RangeFits(addr, (size_t)len)) return NULL;
     dump.resize(len);
     for (int i = 0; i < len; i++) dump[i] = (u8)dbgRead8(proc, addr + i);
     return dump.data();
@@ -844,11 +835,8 @@ int dbgClearBreakStatus() {
 
 int dbgClearAllBreakpoints() {
   try {
-  for (int i = 0; i < 2; i++) {
-    execBreakpoints[i].clear();
-    readBreakpoints[i].clear();
-    writeBreakpoints[i].clear();
-  }
+  clearAllBreakpointState(execBreakpoints, readBreakpoints, writeBreakpoints,
+                          specialBreakpoints);
   return 0;
   } catch (...) {
     return nativeFaultCode();

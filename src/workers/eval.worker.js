@@ -1,7 +1,8 @@
 "use strict";
 
-import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
+import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
+import { normalizeWorkerRpcParams } from "../worker-rpc-value.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -25,9 +26,9 @@ let parse = null;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
-    "navigator", "crypto"
+    "navigator", "crypto", "EventTarget", "WorkerGlobalScope", "DedicatedWorkerGlobalScope"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -95,10 +96,11 @@ function lockDownRuntimeCodeGeneration() {
 }
 
 function call(command, params = {}) {
+    const normalizedParams = normalizeWorkerRpcParams(command, params);
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
         replies.set(id, { resolve, reject });
-        send({ type: "call", id, command, params });
+        send({ type: "call", id, command, params: normalizedParams });
     });
 }
 
@@ -133,6 +135,7 @@ function describeError(error, code, phase) {
 }
 
 lockDownRuntimeCodeGeneration();
+lockDownCapabilityPrototypes();
 assertLockedGlobals();
 
 function assertSandboxSource(source) {
@@ -185,6 +188,16 @@ nativeAddEventListener("message", async (event) => {
         replies.delete(message.replyId);
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.result);
+        return;
+    }
+    if (message.type === "securityProbe") {
+        const forged = { type: "done", result: { forged: true } };
+        if (message.probe === "wrongToken") forged.channelToken = `${channelToken}-wrong`;
+        else if (message.probe === "guessedToken") forged.channelToken = "00000000-0000-4000-8000-000000000000";
+        else if (message.probe === "fakeCall") Object.assign(forged, { type: "call", id: "forged", command: "status", params: {} });
+        else if (message.probe === "fakePrint") Object.assign(forged, { type: "print", values: ["forged"] });
+        else if (message.probe === "fakeEventDone") Object.assign(forged, { type: "eventDone", eventId: 1 });
+        nativePostMessage(forged);
         return;
     }
     if (message.type !== "run" || typeof message.code !== "string") {

@@ -4,6 +4,10 @@ import vm from "node:vm";
 import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as esbuild from "esbuild";
 
 import { normalizeBoundedValue } from "../src/bounded-value.js";
@@ -207,6 +211,35 @@ test("breakpoint reconciliation clears partial native state before failing", () 
     assert.deepEqual([...nativeSites], [1, 2]);
 });
 
+test("special breakpoint reconciliation clears a discarded owner after native disable failure", () => {
+    let nativeSpecial = false;
+    let failDisable = true;
+    let inSync = true;
+    const store = createBreakpointOwnerStore({
+        onFirstOwner: (entry) => { if (entry.type === "dataAbort") nativeSpecial = true; },
+        onLastOwner: (entry) => {
+            if (entry.type !== "dataAbort") return;
+            if (failDisable) throw new Error("injected native special disable failure");
+            nativeSpecial = false;
+        },
+        onClearNative: () => { nativeSpecial = false; },
+        onReconcileStart: () => { inSync = false; },
+        onReconcileSuccess: () => { inSync = true; },
+        onReconcileFailure: () => { inSync = false; }
+    });
+    store.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
+        id: 91, origin: "script", scriptId: 7
+    });
+    assert.equal(nativeSpecial, true);
+    assert.throws(() => store.removeOwner(91), /injected native special disable failure/);
+    store.discardOwner(91);
+    failDisable = false;
+    assert.deepEqual(store.reconcileNativeBreakpoints(), { cleared: true, registered: 0 });
+    assert.equal(nativeSpecial, false);
+    assert.equal(store.list().length, 0);
+    assert.equal(inSync, true);
+});
+
 test("structured Worker values reject cycles, exotic objects, and all configured limits", () => {
     assert.deepEqual(normalizeBoundedValue({ ok: [1, "two", true] }).value, { ok: [1, "two", true] });
     const cyclic = {};
@@ -293,6 +326,33 @@ test("fixed adversarial dependency executes only after the security Worker is lo
     assert.equal(forbiddenCalls, 0);
 });
 
+test("sandbox boundary self-test uses production supervisors and contains no fixed security success fields", async () => {
+    const selfTest = await readFile(new URL("../src/sandbox-boundary-self-test.js", import.meta.url), "utf8");
+    const dedicatedWorker = await readFile(new URL("../src/workers/security-boundary.worker.js", import.meta.url), "utf8");
+    assert.match(selfTest, /eval-supervisor\.worker\.js/);
+    assert.match(selfTest, /eval\.worker\.js/);
+    assert.match(selfTest, /pendingRpcBeforeDispose/);
+    assert.match(selfTest, /host\.status\(\)/);
+    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /unauthenticatedMessageAccepted:\s*false/);
+    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /tokenPredictionAccepted:\s*false/);
+    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /listenersAfter:\s*0/);
+});
+
+test("automation security context preserves its boundary within the accessibility byte budget", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const note = html.match(/<aside class="automation-security-context"[^>]*>\s*([\s\S]*?)\s*<\/aside>/)?.[1] || "";
+    const bytes = Buffer.byteLength(note, "utf8");
+    assert.ok(bytes >= 1200 && bytes <= 1500, `security context byte length: ${bytes}`);
+    for (const expected of [
+        "NDS, Save, and State", "local emulation, debugging, and reverse engineering",
+        "No external CDN executable code", "Exact-version Acorn and SSIM", "fixed hashes",
+        "browser-native modelContext", "cross-origin or opaque-origin", "supervisor and sandbox Workers",
+        "raw-memory reads", "disassembly", "Ghidra-style", "large code analysis",
+        "full or near-full ROM", "repeated, periodic, or chunked exfiltration", "evaluate_script",
+        "window.DesmumeMCP", "window.memory", "one-character shortcuts"
+    ]) assert.match(note, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
 test("persistent supervisor bounds queued non-tick events and terminates on overflow", async () => {
     const source = await readFile(new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url), "utf8");
     const messages = [];
@@ -341,10 +401,28 @@ test("persistent supervisor bounds queued non-tick events and terminates on over
 test("native source contracts preserve allocation, frame, dump, and pthread failure semantics", async () => {
     const wasm = await readFile(new URL("../webassembly/wasm-port.cpp", import.meta.url), "utf8");
     const support = await readFile(new URL("../webassembly/support.c", import.meta.url), "utf8");
-    assert.match(wasm, /u8 \*resized = \(u8 \*\)realloc\(\(void \*\)romBuffer, rl\);[\s\S]*if \(!resized\) return NULL;[\s\S]*romBuffer = resized;[\s\S]*romBufferCap = rl;/);
+    assert.match(wasm, /prepareRomStorage\(romBuffer, romBufferCap, romLen, rl,/);
     assert.match(wasm, /if \(!romLoaded\) return -1;\s*if \(paused\) return 1;/);
     assert.match(wasm, /if \(result > 0\) break;\s*ran\+\+;/);
-    assert.match(wasm, /\(uint64_t\)addr \+ \(uint64_t\)len > 0x100000000ULL/);
+    assert.match(wasm, /!uint32RangeFits\(addr, \(size_t\)len\)/);
     assert.match(support, /pthread_attr_setschedpolicy[\s\S]*return ENOTSUP;/);
     assert.match(support, /pthread_setname_np[\s\S]*return ENOTSUP;/);
+});
+
+test("native runtime contracts execute failure and reset transitions", {
+    skip: process.platform === "win32"
+}, () => {
+    const directory = mkdtempSync(join(tmpdir(), "desmume-native-contract-"));
+    const executable = join(directory, "native-runtime-harness");
+    try {
+        execFileSync("c++", [
+            "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+            fileURLToPath(new URL("./native-runtime-harness.cpp", import.meta.url)),
+            fileURLToPath(new URL("../webassembly/support.c", import.meta.url)),
+            "-pthread", "-o", executable
+        ], { stdio: "pipe" });
+        execFileSync(executable, [], { stdio: "pipe" });
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });

@@ -28,9 +28,43 @@ export async function initializeLockedDependency({
 export function assertLockedGlobals() {
     for (const name of [
         "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
-        "postMessage", "addEventListener", "removeEventListener", "indexedDB", "caches", "localStorage",
+        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "indexedDB", "caches", "localStorage",
         "sessionStorage", "close", "navigator", "crypto", "eval", "Function"
     ]) {
         if (globalThis[name] !== undefined) throw new Error(`lockdown invariant failed: ${name}`);
+    }
+}
+
+export function lockDownCapabilityPrototypes() {
+    const names = [
+        "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
+        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "close"
+    ];
+    const prototypes = [];
+    let current = Object.getPrototypeOf(globalThis);
+    while (current) {
+        prototypes.push(current);
+        current = Object.getPrototypeOf(current);
+    }
+    for (const prototype of prototypes) {
+        for (const name of names) {
+            if (!Object.prototype.hasOwnProperty.call(prototype, name)) continue;
+            try {
+                Object.defineProperty(prototype, name, {
+                    value: undefined,
+                    writable: false,
+                    configurable: false
+                });
+            } catch (error) {
+                throw new Error(`prototype lockdown failed: ${name}: ${String(error?.message || error)}`);
+            }
+        }
+    }
+    for (const prototype of prototypes) {
+        for (const name of names) {
+            if (Object.prototype.hasOwnProperty.call(prototype, name) && prototype[name] !== undefined) {
+                throw new Error(`prototype lockdown invariant failed: ${name}`);
+            }
+        }
     }
 }

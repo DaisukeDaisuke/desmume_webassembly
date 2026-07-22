@@ -90,7 +90,7 @@ export function createApiDescriptions() {
         runPersistentScript: "隔離Workerで常駐JavaScriptを開始または更新します。onTick、reset、各ブレークポイントコールバックを登録できます。",
         listScripts: "実行中・停止中の常駐スクリプト一覧とトリガー数を返します。",
         stopScript: "指定スクリプトを停止し、そのスクリプトのトリガーを全解除します。",
-        runSandboxBoundarySelfTest: "固定されたfirst-party敵対的fixtureを本番Worker経路で実行し、ロックダウン前後の禁止能力とcleanupをboolean・固定SHA-256だけで診断します。引数は受け取りません。ROM・セーブ・State・memory・registerにはアクセスしません。",
+        runSandboxBoundarySelfTest: "実eval supervisor＋sandbox経路で固定first-party probeを実行し、prototype経路、偽token拒否、pending RPC、Worker終了、Blob URL revoke、timer解放を実測します。引数は受け取らず、ROM・セーブ・State・memory・registerにはアクセスしません。",
         restartScript: "指定スクリプトをログを消去して再起動します。",
         getScript: "指定スクリプトのJavaScript本文を上限付きで返します。truncatedとoriginalCharsで切り詰めを確認できます。",
         listScriptPrint: "常駐スクリプトのコンソール出力を最大max件返します。",

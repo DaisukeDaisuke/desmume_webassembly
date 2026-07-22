@@ -28,6 +28,8 @@ import { assertSafeScriptSource, containsDynamicImport } from "../src/script-sou
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
 import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
+import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "../src/script-rpc-policy.js";
+import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../src/worker-rpc-value.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -1184,6 +1186,47 @@ test("hardened eval worker rejects dynamic import syntax after lockdown", async 
     )));
 });
 
+test("Worker RPC values are bounded before the sandbox first postMessage", async () => {
+    for (const expression of [
+        "new Uint8Array(8 * 1024 * 1024)",
+        "new ArrayBuffer(1024)",
+        "Array.from({ length: 2048 }, (_, index) => index)",
+        "(() => { const value = {}; value.self = value; return value; })()",
+        "(() => { let value = {}; for (let index = 0; index < 12; index++) value = { value }; return value; })()"
+    ]) {
+        const result = await runEvalSandbox(`
+            await mcp.call("status", { payload: ${expression} });
+            return "unexpected";
+        `);
+        assert.equal(result.messages.filter((message) => message.type === "call").length, 0);
+        assert.ok(result.messages.some((message) => message.type === "error"));
+    }
+});
+
+test("Worker RPC policy preserves normal debugger calls and bounded byte injection", () => {
+    assert.deepEqual(normalizeWorkerRpcParams("status", { verbose: true }), { verbose: true });
+    assert.deepEqual(normalizeWorkerRpcParams("dumpMemory", {
+        cpu: "arm9", address: 0x02000000, length: 64
+    }), { cpu: "arm9", address: 0x02000000, length: 64 });
+    assert.deepEqual(normalizeWorkerRpcParams("disassemble", {
+        cpu: "arm9", address: 0x02000000, count: 8, mode: "auto"
+    }), { cpu: "arm9", address: 0x02000000, count: 8, mode: "auto" });
+    const bytes = new Uint8Array([0, 1, 2, 255]);
+    const normalized = normalizeWorkerRpcParams("injectBytes", { address: 0x02000000, bytes });
+    assert.deepEqual(Array.from(normalized.bytes), [0, 1, 2, 255]);
+    assert.notEqual(normalized.bytes, bytes);
+    assert.deepEqual(normalizeWorkerTrigger({ kind: "exec", address: 0x02000000, callbackId: 1 }), {
+        kind: "exec", address: 0x02000000, callbackId: 1
+    });
+    const seen = new Set();
+    assert.deepEqual(validateWorkerRpc({
+        id: "rpc-1", command: "status", params: { concise: true }
+    }, EVAL_RPC_ALLOWLIST, seen), { command: "status", params: { concise: true } });
+    assert.throws(() => validateWorkerRpc({
+        id: "rpc-2", command: "status", params: { payload: new Uint8Array(8 * 1024 * 1024) }
+    }, EVAL_RPC_ALLOWLIST, seen), /binary Worker RPC values|byte budget/);
+});
+
 test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-chain escape", async () => {
     const harmless = await runEvalSandbox('return "import("');
     assert.equal(harmless.messages.find((message) => message.type === "done")?.result, "import(");
@@ -1367,6 +1410,49 @@ test("persistent sandbox blocks network, message forgery, storage, and code-gene
     assert.deepEqual(Array.from(printed.values), [
         "undefined", "undefined", "undefined", "undefined", "undefined"
     ]);
+});
+
+test("persistent sandbox rejects oversized RPC before its first postMessage", async () => {
+    for (const expression of [
+        "new Uint8Array(8 * 1024 * 1024)",
+        "new ArrayBuffer(1024)",
+        "Array.from({ length: 2048 }, (_, index) => index)",
+        "(() => { const value = {}; value.self = value; return value; })()",
+        "(() => { let value = {}; for (let index = 0; index < 12; index++) value = { value }; return value; })()"
+    ]) {
+        const { messages } = await runPersistentScalarSandbox(`
+            try {
+                await mcp.call("status", { payload: ${expression} });
+                print("unexpected persistent RPC success");
+            } catch (error) {
+                print("persistent RPC rejected", String(error.message || error));
+            }
+        `, []);
+        assert.equal(messages.filter((message) => message.type === "call").length, 0);
+        assert.ok(messages.some((message) => (
+            message.type === "print" && message.values[0] === "persistent RPC rejected"
+        )));
+        assert.equal(messages.some((message) => (
+            message.type === "print" && message.values[0] === "unexpected persistent RPC success"
+        )), false);
+    }
+});
+
+test("persistent sandbox rejects oversized trigger metadata before register postMessage", async () => {
+    const { messages } = await runPersistentScalarSandbox(`
+        try {
+            await memory.registerexec(0x02000000, () => {}, {
+                payload: Array.from({ length: 2048 }, (_, index) => index)
+            });
+            print("unexpected persistent trigger success");
+        } catch (error) {
+            print("persistent trigger rejected", String(error.message || error));
+        }
+    `, []);
+    assert.equal(messages.filter((message) => message.type === "register").length, 0);
+    assert.ok(messages.some((message) => (
+        message.type === "print" && message.values[0] === "persistent trigger rejected"
+    )));
 });
 
 test("Ctable script registers hooks and lets the coordinator resume after callbacks", async () => {
@@ -1586,6 +1672,14 @@ test("eval supervisor accepts only authenticated sandbox protocol messages", asy
     assert.equal(forged.messages.some((message) => message.type === "done"), false);
     assert.ok(forged.messages.some((message) => message.type === "protocolError"));
     assert.equal(forged.child.terminated, true);
+
+    const oversized = await runEvalSupervisor({
+        type: "call", id: "oversized", command: "status",
+        params: { payload: new Uint8Array(8 * 1024 * 1024) }, channelToken: "secret"
+    });
+    assert.equal(oversized.messages.some((message) => message.type === "call"), false);
+    assert.ok(oversized.messages.some((message) => message.type === "protocolError"));
+    assert.equal(oversized.child.terminated, true);
 });
 
 test("persistent supervisor gates replies and rejects forged child messages", async () => {
@@ -1614,10 +1708,22 @@ test("persistent supervisor gates replies and rejects forged child messages", as
         type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
         dependencyHash: dependency.sha256
     } });
-    child.onmessage({ data: { type: "call", id: "request-1", command: "status", params: {}, channelToken: "secret" } });
+    const validChildCall = vm.runInContext(`({
+        type: "call", id: "request-1", command: "status", params: {}, channelToken: "secret"
+    })`, context);
+    child.onmessage({ data: validChildCall });
     assert.ok(messages.some((message) => message.type === "call" && message.id === "request-1"));
     context.onmessage({ data: { replyId: "request-1", result: { ok: true } } });
     assert.ok(child.messages.some((message) => message.replyId === "request-1"));
+
+    const oversizedChildCall = vm.runInContext(`({
+        type: "call", id: "oversized", command: "status",
+        params: { payload: new Uint8Array(8 * 1024 * 1024) }, channelToken: "secret"
+    })`, context);
+    child.onmessage({ data: oversizedChildCall });
+    assert.equal(messages.some((message) => message.id === "oversized"), false);
+    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "protocol"));
+    assert.equal(child.terminated, true);
 
     child.onmessage({ data: { type: "print", values: ["forged"], channelToken: "wrong" } });
     assert.equal(messages.some((message) => message.type === "print"), false);

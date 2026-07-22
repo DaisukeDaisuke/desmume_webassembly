@@ -226,7 +226,7 @@ gh codespace stop -c <name>
 - ファイルの中身を応答に復唱しない。
 - スクリーンショットはcanvasだけで取る。canvasサイズはトークン消費を抑えるため1倍にする。ユーザーが詳細にバグを指定した場合は、ピクセル検査スクリプトを使う。
 - GitHub Pagesへ毎回デプロイしない。HTML変更や軽い確認はローカル/プレビューサーバーで高速に回す。
-- C++/WASM変更の開発では `webassembly/build_safe_heap.sh` (クラッシュ時、cpp側スタックトレースありモード) と `webassembly/build_sanitize.sh` を積極的に使う。
+- C++/WASM変更の開発では `webassembly/build_safe_heap.sh` (クラッシュ時、cpp側スタックトレースありモード) を使う、`webassembly/build_sanitize.sh` はコンソールエラーが増えるだけなので、c++クラッシュなど緊急時以外使わない。
 - GitHub Actionsでデプロイする場合は、最終段階でまとめて行い、cache-bustする。
 - Actions完了待ちは実デプロイを見たいなら、次のコマンドで待つ: `gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3` で対象runを確認し、`gh run watch <run-id> --repo DaisukeDaisuke/desmume_webassembly --exit-status` で終了まで待つ。
 - Codespaceでのbuildと構文チェックは本番Actionsほど重要ではない。軽い変更は本番環境で確認してよい。ただしビルドはリアルタイムで約5分かかるため、複数の問題をまとめて確認する。
@@ -407,7 +407,9 @@ kill <PID>
 
 # 重要なこと
 - nodejsはpostinstallスクリプト爆弾が怖いので、依存関係は必ずcodespaceでインストールすること。ローカルのnodejsではしない。
-
+- Always use --ignore-scripts
+- ビルド、workflowのpullは60秒ごとにしてね。10秒ごとだとリミット消費えぐいから
+- 絶対にbrowser use使うなmcp__chrome_devtools__*使え。browserツールはポリシーで任意コードできず、この目的には不適。
 # agents.md End
 
 If the context has been injected up to this point, do not reread AGENTS.md file.

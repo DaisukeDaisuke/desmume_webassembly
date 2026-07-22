@@ -1,6 +1,6 @@
 "use strict";
 
-import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
+import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -15,8 +15,9 @@ const send = (message) => nativePostMessage({ ...message, channelToken });
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream",
-    "indexedDB", "caches", "localStorage", "sessionStorage", "close", "navigator", "crypto"
+    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "BroadcastChannel", "WebTransport", "WebSocketStream",
+    "indexedDB", "caches", "localStorage", "sessionStorage", "close", "navigator", "crypto",
+    "EventTarget", "WorkerGlobalScope", "DedicatedWorkerGlobalScope"
 ]) {
     try { Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false }); }
     catch { try { globalThis[name] = undefined; } catch {} }
@@ -41,6 +42,7 @@ for (const value of [() => {}, async () => {}, function* () {}, async function* 
     }
 }
 try { Object.defineProperty(globalThis, "eval", { value: undefined, writable: false, configurable: false }); } catch {}
+lockDownCapabilityPrototypes();
 assertLockedGlobals();
 
 nativeAddEventListener("message", async (event) => {
@@ -63,9 +65,7 @@ nativeAddEventListener("message", async (event) => {
             result: {
                 passed,
                 fixtureSha256: message.dependency.sha256,
-                preReady,
-                forgery: { unauthenticatedMessageAccepted: false, tokenPredictionAccepted: false },
-                cleanup: { workerCountAfter: 0, pendingRpcAfter: 0, listenersAfter: 0 }
+                preReady
             }
         });
     } catch (error) {

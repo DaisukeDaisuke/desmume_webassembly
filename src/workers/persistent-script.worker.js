@@ -1,7 +1,8 @@
 "use strict";
 
-import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
+import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
+import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-value.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -33,9 +34,9 @@ let parse = null;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
-    "navigator", "crypto"
+    "navigator", "crypto", "EventTarget", "WorkerGlobalScope", "DedicatedWorkerGlobalScope"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -111,13 +112,16 @@ function ask(type, data = {}) {
 }
 
 const mcp = {
-    call: (command, params = {}) => ask("call", {
-        command,
-        params,
-        eventId: activeEvent?.eventId || 0,
-        callbackId: activeEvent?.callbackId,
-        callbackToken: activeEvent?.callbackToken
-    })
+    call: (command, params = {}) => {
+        const normalizedParams = normalizeWorkerRpcParams(command, params);
+        return ask("call", {
+            command,
+            params: normalizedParams,
+            eventId: activeEvent?.eventId || 0,
+            callbackId: activeEvent?.callbackId,
+            callbackToken: activeEvent?.callbackToken
+        });
+    }
 };
 const webmcp = mcp;
 const print = (...values) => send({ type: "print", values: normalizeBoundedValue(values, { maxBytes: 64 * 1024 }).value });
@@ -162,7 +166,9 @@ async function register(kind, address, callback, options = {}) {
     const callbackId = callbackSerial++;
     callbacks.set(callbackId, { callback, kind });
     try {
-        return await ask("register", { trigger: { kind, address, callbackId, ...options } });
+        return await ask("register", {
+            trigger: normalizeWorkerTrigger({ kind, address, callbackId, ...options })
+        });
     } catch (error) {
         callbacks.delete(callbackId);
         throw error;
@@ -227,6 +233,7 @@ function fail(error, phase = "runtime") {
 }
 
 lockDownRuntimeCodeGeneration();
+lockDownCapabilityPrototypes();
 assertLockedGlobals();
 
 function assertSandboxSource(source) {
