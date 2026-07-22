@@ -1,4 +1,7 @@
 import { ErrorCode } from "./error-codes.js";
+import { completeFrames } from "./frame-completion.js";
+
+const FRAMEBUFFER_BYTES = 256 * 384 * 4;
 
 export function createEmulationLoop({
     state,
@@ -8,13 +11,24 @@ export function createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
+    onScreenValid = () => {},
     updateStatus,
     log = () => {}
 }) {
     function drawFrame() {
         if (!state.ready || !state.render || !frameService.isValid()) return;
+        if (!ui.screen.isConnected) log("screen canvas detached");
+        const rect = ui.screenShell.getBoundingClientRect();
+        if (rect.width <= 0
+            || rect.height <= 0
+            || !Number.isFinite(rect.width)
+            || !Number.isFinite(rect.height)) {
+            log(`screen shell collapsed: scale=${state.scale} rotation=${state.rotation} width=${rect.width} height=${rect.height}`);
+        }
         const bytes = native.getFrameBytes();
-        if (!bytes) return;
+        if (!bytes || bytes.byteLength !== FRAMEBUFFER_BYTES) {
+            throw new Error("invalid framebuffer length");
+        }
         state.imageData.data.set(bytes);
         ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
     }
@@ -96,14 +110,7 @@ export function createEmulationLoop({
                     return;
                 }
                 const nativeStatus = syncNativeBreakStatus();
-                if (state.frame > frameBefore) {
-                    for (let frame = frameBefore + 1; frame <= state.frame; frame++) {
-                        frameService.onFrameCompleted(frame);
-                    }
-                    state.screenValid = true;
-                    state.framesSinceStateLoad += state.frame - frameBefore;
-                    state.completedFrameSerial += state.frame - frameBefore;
-                }
+                completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
                 if (ran < frames || nativeStatus?.lastBreak?.hit) {
                     state.paused = true;
                     state.running = false;

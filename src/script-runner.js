@@ -1,9 +1,11 @@
 import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
+import { assertSafeScriptSource } from "./script-source-policy.js";
 
 export function createScriptRunner({
     source,
+    sandboxSource,
     responder,
     callCommand,
     getShortcuts = () => [],
@@ -16,6 +18,11 @@ export function createScriptRunner({
                 ErrorCode.SCRIPT_SOURCE_INVALID,
                 "Script source must be a non-empty string up to 262144 characters"
             );
+        }
+        try {
+            assertSafeScriptSource(code);
+        } catch (error) {
+            return responder.fail(error.mcpCode, error.message, error.mcpDetails);
         }
         const timeout = Number(timeoutMs);
         if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600000) {
@@ -58,7 +65,12 @@ export function createScriptRunner({
                         { timeoutMs: timeout }
                     )), timeout);
                     try {
-                        worker.postMessage({ type: "run", code, shortcuts: getShortcuts() });
+                        worker.postMessage({
+                            type: "run",
+                            code,
+                            shortcuts: getShortcuts(),
+                            sandboxSource
+                        });
                     } catch (error) {
                         finish(responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Script request could not be sent", {
                             message: String(error?.message || error)

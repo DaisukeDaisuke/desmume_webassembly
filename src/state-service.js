@@ -10,12 +10,12 @@ export function createStateService({
         return native.loadStateBytes(bytes);
     }
 
-    function invalidateAfterLoad() {
+    function invalidateAfterLoad({ showResumeNotice = true } = {}) {
         frameService.invalidateAfterStateLoad();
         state.screenValid = false;
         state.framesSinceStateLoad = 0;
         state.stateLoadSerial++;
-        onScreenInvalid();
+        onScreenInvalid({ showResumeNotice });
     }
 
     function pauseForLoad() {

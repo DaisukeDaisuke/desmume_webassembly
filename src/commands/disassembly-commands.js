@@ -15,7 +15,6 @@ export function createDisassemblyCommands(context) {
         opcodeWordsFromInput,
         parseAddress,
         parseNumber,
-        renderRegisters,
         shouldIncludeDisassemblyBytes,
         u16FromBytes,
         u32FromBytes,
@@ -37,7 +36,6 @@ export function createDisassemblyCommands(context) {
             }
             const ret = native.setRegister(params.cpu, index, parseNumber(params.value));
             if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Register write failed (${ret})`, { nativeCode: ret });
-            renderRegisters();
             return { ret };
         },
 

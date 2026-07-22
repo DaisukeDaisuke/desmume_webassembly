@@ -1,8 +1,10 @@
 import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
-import persistentScriptWorkerSource from "./workers/persistent-script.worker.js";
+import persistentScriptSupervisorSource from "./workers/persistent-script-supervisor.worker.js";
+import persistentScriptSandboxSource from "./workers/persistent-script.worker.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
+import { assertSafeScriptSource } from "./script-source-policy.js";
 
 export function createScriptService({
     state,
@@ -184,6 +186,11 @@ export function createScriptService({
         if (typeof source !== "string" || !source.trim() || source.length > 262144) {
             return responder.fail(ErrorCode.SCRIPT_SOURCE_INVALID, "Persistent script source must be a non-empty string up to 262144 characters");
         }
+        try {
+            assertSafeScriptSource(source);
+        } catch (error) {
+            return responder.fail(error.mcpCode, error.message, error.mcpDetails);
+        }
         const code = source;
         const name = String(params.name ?? ui.scriptName.value ?? "scratch").trim() || "scratch";
         const asyncMode = !!(params.asyncMode ?? ui.scriptAsyncMode.checked);
@@ -212,7 +219,7 @@ export function createScriptService({
         };
         let workerHost;
         try {
-            workerHost = createEmbeddedWorker(persistentScriptWorkerSource);
+            workerHost = createEmbeddedWorker(persistentScriptSupervisorSource);
         } catch (error) {
             return responder.fail(ErrorCode.WORKER_START_FAILED, "Persistent script Worker could not be started", {
                 errorName: String(error?.name || "Error"),
@@ -260,6 +267,7 @@ export function createScriptService({
                         type: "start",
                         code,
                         asyncMode,
+                        sandboxSource: persistentScriptSandboxSource,
                         shortcuts: Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [
                             shortcut,
                             definition.command,

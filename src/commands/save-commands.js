@@ -57,6 +57,11 @@ export function createSaveCommands({
         async exportSaveFile() {
             ensureRomLoaded("save export requires a loaded ROM");
             const bytes = native.exportSaveBytes();
+            if (!bytes.length) throw codedError(
+                ErrorCode.NATIVE_ERROR,
+                "Save export produced an empty buffer",
+                { size: 0 }
+            );
             download("desmume-save.sav", bytes);
             return { ok: true, size: bytes.length };
         },
@@ -66,7 +71,11 @@ export function createSaveCommands({
             const slot = String(params.slot ?? ui.stateSlot.value);
             rememberSlot(slot);
             const bytes = native.exportSaveBytes();
-            if (!bytes.length) throw new Error("save export produced an empty buffer");
+            if (!bytes.length) throw codedError(
+                ErrorCode.NATIVE_ERROR,
+                "Save export produced an empty buffer",
+                { size: 0 }
+            );
             await idbPut(`save:${slot}`, bytes);
             await recordRecentFile("save", slot, bytes, slot);
             ui.storageStatus.textContent = `save saved ${slot}`;

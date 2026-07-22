@@ -1,5 +1,11 @@
 "use strict";
 
+(() => {
+const nativePostMessage = globalThis.postMessage.bind(globalThis);
+const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const channelToken = globalThis.crypto.randomUUID();
+const send = (message) => nativePostMessage({ ...message, channelToken });
+
 const fetch = undefined;
 const XMLHttpRequest = undefined;
 const WebSocket = undefined;
@@ -9,7 +15,8 @@ const Function = undefined;
 const replies = new Map();
 
 for (const name of [
-    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function"
+    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
+    "postMessage", "BroadcastChannel", "WebTransport", "indexedDB", "caches"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -26,7 +33,7 @@ function call(command, params = {}) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
         replies.set(id, { resolve, reject });
-        postMessage({ type: "call", id, command, params });
+        send({ type: "call", id, command, params });
     });
 }
 
@@ -60,12 +67,12 @@ function describeError(error, code, phase) {
     return { name, message, details };
 }
 
-onmessage = async (event) => {
+nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
     if (message.replyId) {
         const pending = replies.get(message.replyId);
         if (!pending) {
-            postMessage({ type: "protocolError", message: `unknown reply id: ${message.replyId}` });
+            send({ type: "protocolError", message: `unknown reply id: ${message.replyId}` });
             return;
         }
         replies.delete(message.replyId);
@@ -74,7 +81,7 @@ onmessage = async (event) => {
         return;
     }
     if (message.type !== "run" || typeof message.code !== "string") {
-        postMessage({ type: "protocolError", message: "run message with string code is required" });
+        send({ type: "protocolError", message: "run message with string code is required" });
         return;
     }
     installShortcuts(message.shortcuts);
@@ -84,11 +91,12 @@ onmessage = async (event) => {
         }
         const script = `(async (mcp, webmcp) => {\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
         const result = await (0, eval)(script)(mcp, webmcp);
-        postMessage({ type: "done", result });
+        send({ type: "done", result });
     } catch (error) {
         const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
-        postMessage({ type: "error", error: describeError(error, message.code, phase) });
+        send({ type: "error", error: describeError(error, message.code, phase) });
     }
-};
+});
 
-postMessage({ type: "ready" });
+send({ type: "ready" });
+})();

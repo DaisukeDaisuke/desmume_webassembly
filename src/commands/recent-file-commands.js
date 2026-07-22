@@ -1,5 +1,5 @@
 import { ErrorCode } from "../error-codes.js";
-import { codedError } from "../validation.js";
+import { codedError, nonNegativeNumber } from "../validation.js";
 
 export function createRecentFileCommands(context) {
     const {
@@ -33,6 +33,9 @@ export function createRecentFileCommands(context) {
             const id = String(params.id ?? ui.recentFileSelect.value);
             const item = state.recentFiles.find((entry) => entry.id === id);
             if (!item) throw new Error(`recent file not found: ${id}`);
+            const saveFlushBlockMs = item.kind === "state"
+                ? nonNegativeNumber(params.saveFlushBlockMs ?? 30000, "saveFlushBlockMs")
+                : 0;
             cancelOperation(item.kind === "save" ? "reset" : "state-load");
             if (item.slot) rememberSlot(item.slot);
             const bytes = item.key
@@ -71,11 +74,17 @@ export function createRecentFileCommands(context) {
             try {
                 ensureRomLoaded("recent state reload requires a loaded ROM");
                 const ret = item.slot ? loadStateBytesFromMemory(bytes) : native.loadStateFile(bytes);
-                if (ret !== 0) throw new Error(`recent state load failed (${ret})`);
+                if (ret !== 0) throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    `Recent State load failed (${ret})`,
+                    { nativeCode: ret }
+                );
                 loaded = true;
                 state.frame = 0;
-                blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-                drawLoadedStateFrame();
+                blockSaveFlush(saveFlushBlockMs);
+                drawLoadedStateFrame({
+                    showResumeNotice: !(runState.running && !runState.paused)
+                });
                 return { ok: true, ret, item, size: bytes.length, paused: runState.paused };
             } finally {
                 if (loaded) restoreAfterFileLoad(runState);

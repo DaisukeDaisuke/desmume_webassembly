@@ -1,4 +1,5 @@
 import { withInternalMetadata } from "../internal-command-metadata.js";
+import { nonNegativeNumber } from "../validation.js";
 
 export function createContextCommands(context) {
     const {
@@ -22,7 +23,7 @@ export function createContextCommands(context) {
 
     return {
         async status(params = {}) {
-            const waitMs = Math.max(0, Math.min(600000, Number(params.waitMs ?? params.ms ?? 0)));
+            const waitMs = nonNegativeNumber(params.waitMs ?? params.ms ?? 0, "waitMs", 600000);
             if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
             const nativeStatus = state.ready ? native.getStatus() : null;
             if (nativeStatus) syncNativeBreakStatus(nativeStatus);

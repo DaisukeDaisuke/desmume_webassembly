@@ -1,4 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
+import { unwrapLegacyScalar } from "./legacy-scalar.js";
 
 export function registerWebMcp({ commands, descriptions, responder, runCommand, compact, installShortcuts, logger }) {
     const toContent = (result) => responder.toWebMcpContent(result, compact);
@@ -18,6 +19,10 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
         if (!parsed.ok) return toContent(parsed);
         return toContent(await handler(parsed.value));
     };
+    const callLegacyScalar = async (command, params) => unwrapLegacyScalar(
+        await runCommand(command, params),
+        command
+    );
 
     installShortcuts(runCommand);
     window.DesmumeMCP = {
@@ -26,11 +31,11 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
         shortcuts: () => window.DesmumeShortcuts || {}
     };
     window.memory = {
-        getregister: (register, cpu) => runCommand("memoryGetRegister", { register, cpu }),
+        getregister: (register, cpu) => callLegacyScalar("memoryGetRegister", { register, cpu }),
         setregister: (register, value, cpu) => runCommand("memorySetRegister", { register, value, cpu }),
-        readbyte: (address, cpu) => runCommand("memoryReadByte", { address, cpu }),
-        readword: (address, cpu) => runCommand("memoryReadWord", { address, cpu }),
-        readdword: (address, cpu) => runCommand("memoryReadDword", { address, cpu }),
+        readbyte: (address, cpu) => callLegacyScalar("memoryReadByte", { address, cpu }),
+        readword: (address, cpu) => callLegacyScalar("memoryReadWord", { address, cpu }),
+        readdword: (address, cpu) => callLegacyScalar("memoryReadDword", { address, cpu }),
         writebyte: (address, value, cpu) => runCommand("memoryWriteByte", { address, value, cpu }),
         writeword: (address, value, cpu) => runCommand("memoryWriteWord", { address, value, cpu }),
         writedword: (address, value, cpu) => runCommand("memoryWriteDword", { address, value, cpu })

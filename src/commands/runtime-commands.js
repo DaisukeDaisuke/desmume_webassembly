@@ -1,6 +1,11 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
 import { ErrorCode } from "../error-codes.js";
-import { codedError, positiveInteger } from "../validation.js";
+import { codedError, finiteNumber, positiveInteger } from "../validation.js";
+import { completeFrames } from "../frame-completion.js";
+
+const ALLOWED_SPEEDS = new Set([0.25, 0.5, 1, 1.5, 2, 3, 4]);
+const ALLOWED_SCALES = new Set([1, 1.5, 2, 2.5, 3, 3.5, 4]);
+const ALLOWED_ROTATIONS = new Set([0, 90, 180, 270]);
 
 export function createRuntimeCommands(context) {
     const {
@@ -15,6 +20,7 @@ export function createRuntimeCommands(context) {
         frameService,
         hasLoadedRom,
         native,
+        onScreenValid = () => {},
         pauseForFileLoad,
         pumpAudio,
         queueAutoUpdateLoop,
@@ -29,11 +35,9 @@ export function createRuntimeCommands(context) {
 
     const commands = {
         async setAutoUpdate(params = {}) {
+            const hz = finiteNumber(params.hz ?? params.rate ?? ui.autoUpdateRate.value, "hz", 1, 20);
             state.autoUpdate.enabled = !!params.enabled;
-            state.autoUpdate.hz = Math.max(
-                1,
-                Math.min(20, Number(params.hz ?? params.rate ?? ui.autoUpdateRate.value) || 4)
-            );
+            state.autoUpdate.hz = hz;
             ui.autoUpdateToggle.checked = state.autoUpdate.enabled;
             ui.autoUpdateRate.value = String(state.autoUpdate.hz);
             if (state.autoUpdate.enabled) queueAutoUpdateLoop();
@@ -70,6 +74,7 @@ export function createRuntimeCommands(context) {
             state.running = true;
             native.clearBreakStatus();
             native.pause(false);
+            onScreenValid();
             updateStatus();
             return { ok: true, romLoaded: true };
         },
@@ -133,8 +138,12 @@ export function createRuntimeCommands(context) {
             }
         },
 
-        async setSpeed(params) {
-            state.speed = Math.min(4, Math.max(0.25, Number(params.speed ?? params.value ?? 1)));
+        async setSpeed(params = {}) {
+            const speed = Number(params.speed ?? params.value ?? 1);
+            if (!ALLOWED_SPEEDS.has(speed)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "speed must be one of 0.25, 0.5, 1, 1.5, 2, 3, or 4");
+            }
+            state.speed = speed;
             ui.speedSelect.value = String(state.speed);
             updateStatus();
             return { speed: state.speed };
@@ -164,19 +173,11 @@ export function createRuntimeCommands(context) {
             } else {
                 ran = native.runFrames(frames, { render: state.render, keys: state.keys });
             }
+            const nativeStatus = syncNativeBreakStatus();
+            completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
             applyFreezes();
             drawFrame();
             pumpAudio(ran);
-            const nativeStatus = syncNativeBreakStatus();
-            if (state.frame > frameBefore) {
-                for (let frame = frameBefore + 1; frame <= state.frame; frame++) {
-                    frameService.onFrameCompleted(frame);
-                }
-                const completed = state.frame - frameBefore;
-                state.screenValid = true;
-                state.framesSinceStateLoad += completed;
-                state.completedFrameSerial += completed;
-            }
             const hitBreak = !!nativeStatus?.lastBreak?.hit;
             for (let index = 0; index < ran; index++) {
                 dispatchScriptEvent("tick", {
@@ -198,24 +199,33 @@ export function createRuntimeCommands(context) {
         },
 
         async setAudio(params) {
+            const volume = finiteNumber(params.volume ?? ui.volumeRange.value, "volume", 0, 1);
             state.audio = !!params.enabled;
             ui.audioToggle.checked = state.audio;
-            ui.volumeRange.value = Number(params.volume ?? ui.volumeRange.value);
+            ui.volumeRange.value = volume;
             if (state.audio && state.audioContext?.state === "suspended") {
                 await state.audioContext.resume();
             }
-            return { audio: state.audio, volume: Number(ui.volumeRange.value) };
+            return { audio: state.audio, volume };
         },
 
-        async setScale(params) {
-            state.scale = Number(params.scale ?? params.value ?? 2);
+        async setScale(params = {}) {
+            const scale = Number(params.scale ?? params.value ?? 2);
+            if (!ALLOWED_SCALES.has(scale)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "scale must be one of 1, 1.5, 2, 2.5, 3, 3.5, or 4");
+            }
+            state.scale = scale;
             ui.scaleSelect.value = String(state.scale);
             applyScaleRotation();
             return { scale: state.scale };
         },
 
-        async setRotation(params) {
-            state.rotation = Number(params.rotation ?? params.value ?? 0);
+        async setRotation(params = {}) {
+            const rotation = Number(params.rotation ?? params.value ?? 0);
+            if (!ALLOWED_ROTATIONS.has(rotation)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "rotation must be 0, 90, 180, or 270");
+            }
+            state.rotation = rotation;
             ui.rotationSelect.value = String(state.rotation);
             applyScaleRotation();
             return { rotation: state.rotation };

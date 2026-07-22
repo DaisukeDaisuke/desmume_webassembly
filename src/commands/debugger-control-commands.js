@@ -1,4 +1,5 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
+import { nonNegativeNumber, positiveInteger } from "../validation.js";
 
 export function createDebuggerControlCommands(context) {
     const {
@@ -13,7 +14,6 @@ export function createDebuggerControlCommands(context) {
         publicCallStackData,
         publicOtherCoroutines,
         readCallStackData,
-        refreshDebuggerViews,
         renderBreakpoints,
         renderCallStack,
         resume,
@@ -75,7 +75,6 @@ export function createDebuggerControlCommands(context) {
             });
             if (origin === "user") state.breakpoints.push(breakpoint);
             renderBreakpoints();
-            refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message));
             return { id: breakpoint.id, breakpoints: state.breakpoints };
         },
 
@@ -135,7 +134,6 @@ export function createDebuggerControlCommands(context) {
             breakpointOwners.removeOwner(id);
             state.breakpoints = state.breakpoints.filter((item) => item.id !== id);
             renderBreakpoints();
-            refreshDebuggerViews({ keepHighlight: true }).catch((error) => log(error.message));
             return { ok: true, removed: breakpoint, breakpoints: state.breakpoints };
         },
 
@@ -197,7 +195,7 @@ export function createDebuggerControlCommands(context) {
             renderCallStack(callStack);
             return {
                 callStack: publicCallStackData(callStack, params),
-                text: native.stackTrace(params.cpu, Number(params.words ?? 32))
+                text: native.stackTrace(params.cpu, positiveInteger(params.words ?? 32, "words", 1000000))
             };
         },
 
@@ -270,7 +268,7 @@ export function createDebuggerControlCommands(context) {
         },
 
         async wait(params = {}) {
-            const ms = Math.max(0, Math.min(600000, Number(params.ms ?? params.waitMs ?? 0)));
+            const ms = nonNegativeNumber(params.ms ?? params.waitMs ?? 0, "ms", 600000);
             await new Promise((resolve) => setTimeout(resolve, ms));
             return status();
         },

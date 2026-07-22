@@ -1,4 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
+import { positiveInteger } from "./validation.js";
 
 export function createDebuggerService({
     ANALYSIS_BASELINE_SLOT_PREFIX,
@@ -215,10 +216,20 @@ export function createDebuggerService({
             disassembly: String(disassembly.text || "").split("\n").map((line) => line.trim()).filter(Boolean)
         };
     }
+
+    async function stepPastCurrentExecBreakpoint(cpu, operation) {
+        return withCurrentExecBreakpointSuspended(cpu, async () => {
+            native.clearBreakStatus();
+            return operation();
+        });
+    }
     
     async function runDebuggerInstruction(kind, params = {}) {
         ensureRomLoaded("debugger step requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
+        const stepCount = kind === "step" || kind === "smartStep"
+            ? positiveInteger(params.count ?? 1, "count", 1000000)
+            : 1;
         const pcBefore = getPc(cpu);
         let result = { kind, count: 0 };
         state.breakRefreshKey = "";
@@ -233,13 +244,16 @@ export function createDebuggerService({
         } else {
             try {
                 if (kind === "step") {
-                    result.count = await withCurrentExecBreakpointSuspended(
+                    result.count = await stepPastCurrentExecBreakpoint(
                         cpu,
-                        () => native.step(cpu, Number(params.count ?? 1))
+                        () => native.step(cpu, stepCount)
                     );
                 }
                 else if (kind === "stepOver") {
-                    result.count = native.stepOver(cpu);
+                    result.count = await stepPastCurrentExecBreakpoint(
+                        cpu,
+                        () => native.stepOver(cpu)
+                    );
                     result.ret = result.count;
                 } else throw new Error(`unsupported debugger step: ${kind}`);
             } catch (error) {
@@ -261,8 +275,9 @@ export function createDebuggerService({
         ensureRomLoaded("next branch/return requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
-        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
-        const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
+        const deadline = performance.now() + timeoutMs;
         let steps = 0;
         state.breakRefreshKey = "";
         native.clearBreakStatus();
@@ -270,54 +285,49 @@ export function createDebuggerService({
             const info = await getCurrentInstructionInfo(cpu);
             if (info.isReturn || info.isBranch) {
                 const result = { kind: "stepNextBranchOrReturn", ok: true, steps, stop: info.isReturn ? "return" : "branch", instruction: info };
-                await refreshDebuggerViews({ cpu, keepHighlight: true });
                 return attachDebuggerContext(result, cpu, pcBefore);
             }
             if (info.isCall) {
-                native.stepOver(cpu);
+                await stepPastCurrentExecBreakpoint(cpu, () => native.stepOver(cpu));
             } else {
-                native.step(cpu, 1);
+                await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
             }
             steps++;
             applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
-                await refreshDebuggerViews({ cpu, keepHighlight: true });
                 return attachDebuggerContext({ kind: "stepNextBranchOrReturn", ok: true, complete: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, nativeStatus);
             }
         }
-        await refreshDebuggerViews({ cpu, keepHighlight: true });
-        throw new Error(`stepNextBranchOrReturn timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
+        throw new Error(`stepNextBranchOrReturn timeout after ${timeoutMs}ms`);
     }
     
     async function runUntilTrueNextBranch(params = {}) {
         ensureRomLoaded("true next branch requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
-        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
-        const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
+        const deadline = performance.now() + timeoutMs;
         let steps = 0;
         state.breakRefreshKey = "";
         native.clearBreakStatus();
         while (performance.now() < deadline && steps < maxSteps) {
             const info = await getCurrentInstructionInfo(cpu);
             const sequentialPc = info.address == null ? null : (info.address + instructionWidthForMode("auto", cpu)) >>> 0;
-            await withCurrentExecBreakpointSuspended(cpu, async () => native.step(cpu, 1));
+            await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
             steps++;
             applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
             const pcAfter = getPc(cpu);
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
-                await refreshDebuggerViews({ cpu, keepHighlight: true });
                 return attachDebuggerContext({ kind: "trueNextBranch", ok: true, complete: false, stoppedByBreakpoint: true, steps, instruction: info }, cpu, pcBefore, nativeStatus);
             }
             if ((info.isBranch || info.isReturn || info.isCall) && sequentialPc !== null && pcAfter !== sequentialPc) {
-                await refreshDebuggerViews({ cpu, keepHighlight: true });
                 return attachDebuggerContext({ kind: "trueNextBranch", ok: true, steps, instruction: info, branchFrom: hex(info.address), branchTo: hex(pcAfter) }, cpu, pcBefore);
             }
         }
-        await refreshDebuggerViews({ cpu, keepHighlight: true });
-        throw new Error(`trueNextBranch timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
+        throw new Error(`trueNextBranch timeout after ${timeoutMs}ms`);
     }
     
     function renderDisassembly(text) {
@@ -444,34 +454,30 @@ export function createDebuggerService({
         ensureRomLoaded(`${label} requires a loaded ROM`);
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
         native.clearBreakStatus();
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
             await commands.setStackTracePrivilegeCheck({ enabled: true });
         }
         const startDepth = native.getTraceDepth();
-        const deadline = performance.now() + Math.max(1, Number(params.timeoutMs ?? 1000));
-        const maxSteps = Math.max(1, Number(params.maxSteps ?? 200000));
+        const deadline = performance.now() + timeoutMs;
         let steps = 0;
         while (performance.now() < deadline && steps < maxSteps) {
-            await withCurrentExecBreakpointSuspended(cpu, async () => {
-                native.step(cpu, 1);
-            });
+            await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
             steps++;
             const nativeStatus = syncNativeBreakStatus();
             const callStack = readCallStackData();
             const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
-                await refreshDebuggerViews({ cpu });
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
             if (shouldStop({ startDepth, depth, callStack })) {
-                await refreshDebuggerViews({ cpu });
                 return attachDebuggerContext({ kind: label, ok: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore);
             }
         }
-        await refreshDebuggerViews({ cpu });
-        throw new Error(`${label} timeout after ${Math.max(1, Number(params.timeoutMs ?? 1000))}ms`);
+        throw new Error(`${label} timeout after ${timeoutMs}ms`);
     }
     
     function renderMemoryDump(result) {

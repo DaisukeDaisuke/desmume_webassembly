@@ -1,5 +1,11 @@
 "use strict";
 
+(() => {
+const nativePostMessage = globalThis.postMessage.bind(globalThis);
+const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const channelToken = globalThis.crypto.randomUUID();
+const send = (message) => nativePostMessage({ ...message, channelToken });
+
 const fetch = undefined;
 const XMLHttpRequest = undefined;
 const WebSocket = undefined;
@@ -14,7 +20,8 @@ let asyncMode = false;
 let activeEventId = 0;
 
 for (const name of [
-    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function"
+    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
+    "postMessage", "BroadcastChannel", "WebTransport", "indexedDB", "caches"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -31,7 +38,7 @@ function ask(type, data = {}) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
         replies.set(id, { resolve, reject });
-        postMessage({ type, id, ...data });
+        send({ type, id, ...data });
     });
 }
 
@@ -43,7 +50,7 @@ const mcp = {
     })
 };
 const webmcp = mcp;
-const print = (...values) => postMessage({ type: "print", values });
+const print = (...values) => send({ type: "print", values });
 const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\d*)x|%[sd]/g, (match, width) => {
     const value = values.shift();
     if (match.endsWith("x")) {
@@ -54,6 +61,26 @@ const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\d*)x
 const printhex = (label, value) => print(
     label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0"))
 );
+
+function unwrapLegacyScalar(result, command) {
+    if (result?.ok === false) {
+        const error = new Error(result.error?.message || `${command} failed`);
+        error.code = result.error?.code;
+        error.details = result.error?.details;
+        throw error;
+    }
+    if (result?.ok === true && Object.prototype.hasOwnProperty.call(result, "value")) {
+        return result.value;
+    }
+    if (result == null || ["number", "string", "boolean"].includes(typeof result)) {
+        return result;
+    }
+    throw new TypeError(`${command} did not return a scalar result`);
+}
+
+async function callLegacyScalar(command, params) {
+    return unwrapLegacyScalar(await mcp.call(command, params), command);
+}
 
 async function register(kind, address, callback, options = {}) {
     if (typeof address === "function") {
@@ -73,11 +100,11 @@ async function register(kind, address, callback, options = {}) {
 }
 
 const memory = {
-    getregister: (registerName, cpu) => mcp.call("memoryGetRegister", { register: registerName, cpu }),
+    getregister: (registerName, cpu) => callLegacyScalar("memoryGetRegister", { register: registerName, cpu }),
     setregister: (registerName, value, cpu) => mcp.call("memorySetRegister", { register: registerName, value, cpu }),
-    readbyte: (address, cpu) => mcp.call("memoryReadByte", { address, cpu }),
-    readword: (address, cpu) => mcp.call("memoryReadWord", { address, cpu }),
-    readdword: (address, cpu) => mcp.call("memoryReadDword", { address, cpu }),
+    readbyte: (address, cpu) => callLegacyScalar("memoryReadByte", { address, cpu }),
+    readword: (address, cpu) => callLegacyScalar("memoryReadWord", { address, cpu }),
+    readdword: (address, cpu) => callLegacyScalar("memoryReadDword", { address, cpu }),
     writebyte: (address, value, cpu) => mcp.call("memoryWriteByte", { address, value, cpu }),
     writeword: (address, value, cpu) => mcp.call("memoryWriteWord", { address, value, cpu }),
     writedword: (address, value, cpu) => mcp.call("memoryWriteDword", { address, value, cpu }),
@@ -118,7 +145,7 @@ function installShortcuts(definitions) {
 }
 
 function fail(error, phase = "runtime") {
-    postMessage({
+    send({
         type: "failed",
         phase,
         error: {
@@ -144,7 +171,7 @@ async function runEvent(message) {
         }
     } finally {
         activeEventId = previousEventId;
-        if (message.eventId) postMessage({
+        if (message.eventId) send({
             type: "eventDone",
             eventId: message.eventId,
             callbackId: message.callbackId,
@@ -153,7 +180,7 @@ async function runEvent(message) {
     }
 }
 
-onmessage = async (event) => {
+nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
     if (message.replyId) {
         const pending = replies.get(message.replyId);
@@ -170,10 +197,10 @@ onmessage = async (event) => {
             if (/\bimport\s*\(/.test(message.code)) {
                 throw new SyntaxError("dynamic import is unavailable in isolated scripts");
             }
-            const run = (0, eval)(`(async () => {\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
-            postMessage({ type: "compiled" });
-            postMessage({ type: "started" });
-            await run();
+            const run = (0, eval)(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick) => {\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
+            send({ type: "compiled" });
+            send({ type: "started" });
+            await run(mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick);
         } catch (error) {
             fail(error, error?.name === "SyntaxError" ? "compile" : "runtime");
         }
@@ -186,6 +213,7 @@ onmessage = async (event) => {
         return;
     }
     fail(new Error(`unknown message type: ${String(message.type)}`), "protocol");
-};
+});
 
-postMessage({ type: "ready" });
+send({ type: "ready" });
+})();

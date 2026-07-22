@@ -1,4 +1,6 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
+import { ErrorCode } from "../error-codes.js";
+import { codedError, nonNegativeNumber } from "../validation.js";
 
 export function createStateCommands(context) {
     const {
@@ -53,8 +55,12 @@ export function createStateCommands(context) {
         },
 
         async loadState(params = {}) {
-            cancelOperation("state-load");
             ensureRomLoaded("state load requires a loaded ROM");
+            const saveFlushBlockMs = nonNegativeNumber(
+                params.saveFlushBlockMs ?? 30000,
+                "saveFlushBlockMs"
+            );
+            cancelOperation("state-load");
             if (isAnalysisBaselineSlot(params.slot)
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw new Error("analysis baseline slots are reserved");
@@ -67,11 +73,17 @@ export function createStateCommands(context) {
                 if (params.slot) bytes = await idbGet(String(params.slot));
                 if (params.slot && !bytes) throw new Error(`state slot not found: ${params.slot}`);
                 const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
-                if (ret !== 0) throw new Error(`state load failed (${ret})`);
+                if (ret !== 0) throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    `State load failed (${ret})`,
+                    { nativeCode: ret }
+                );
                 loaded = true;
                 state.frame = 0;
-                blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-                drawLoadedStateFrame();
+                blockSaveFlush(saveFlushBlockMs);
+                drawLoadedStateFrame({
+                    showResumeNotice: !(runState.running && !runState.paused)
+                });
                 dispatchScriptEvent("stateLoad", { slot: params.slot || null });
                 return { ok: true, paused: runState.paused, reset: false };
             } finally {
@@ -81,8 +93,12 @@ export function createStateCommands(context) {
         },
 
         async importStateFile(params = {}) {
-            cancelOperation("state-load");
             ensureRomLoaded("state import requires a loaded ROM");
+            const saveFlushBlockMs = nonNegativeNumber(
+                params.saveFlushBlockMs ?? 30000,
+                "saveFlushBlockMs"
+            );
+            cancelOperation("state-load");
             const selected = ui.stateFile.files && ui.stateFile.files[0]
                 ? await readFileFromInput(ui.stateFile)
                 : await openPicker(ui.stateFile);
@@ -91,11 +107,17 @@ export function createStateCommands(context) {
             let loaded = false;
             try {
                 const ret = native.loadStateFile(bytes);
-                if (ret !== 0) throw new Error(`state import failed (${ret})`);
+                if (ret !== 0) throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    `State import failed (${ret})`,
+                    { nativeCode: ret }
+                );
                 loaded = true;
                 state.frame = 0;
-                blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-                drawLoadedStateFrame();
+                blockSaveFlush(saveFlushBlockMs);
+                drawLoadedStateFrame({
+                    showResumeNotice: !(runState.running && !runState.paused)
+                });
                 await recordRecentFile("state", file.name, bytes);
                 log(`state imported: ${file.name}`);
                 return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
@@ -106,18 +128,28 @@ export function createStateCommands(context) {
         },
 
         async loadStateBytes(params = {}) {
-            cancelOperation("state-load");
             ensureRomLoaded("state byte load requires a loaded ROM");
+            const saveFlushBlockMs = nonNegativeNumber(
+                params.saveFlushBlockMs ?? 30000,
+                "saveFlushBlockMs"
+            );
+            cancelOperation("state-load");
             const bytes = bytesFromParams(params);
             const runState = pauseForFileLoad();
             let loaded = false;
             try {
                 const ret = native.loadStateFile(bytes);
-                if (ret !== 0) throw new Error(`state byte load failed (${ret})`);
+                if (ret !== 0) throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    `State byte load failed (${ret})`,
+                    { nativeCode: ret }
+                );
                 loaded = true;
                 state.frame = 0;
-                blockSaveFlush(Number(params.saveFlushBlockMs ?? 30000));
-                drawLoadedStateFrame();
+                blockSaveFlush(saveFlushBlockMs);
+                drawLoadedStateFrame({
+                    showResumeNotice: !(runState.running && !runState.paused)
+                });
                 log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
                 return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
             } finally {

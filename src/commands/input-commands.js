@@ -1,4 +1,4 @@
-import { codedError, positiveInteger } from "../validation.js";
+import { codedError, nonNegativeNumber, positiveInteger } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
 
 export function createInputCommands({
@@ -11,12 +11,9 @@ export function createInputCommands({
     toButtonList,
     waitChecked
 }) {
-    function nonNegativeNumber(value, name, maximum = 600000) {
-        const number = Number(value);
-        if (!Number.isFinite(number) || number < 0 || number > maximum) {
-            throw codedError(ErrorCode.INVALID_ARGUMENT, `${name} must be between 0 and ${maximum}`);
-        }
-        return number;
+    function inputDeadline(params) {
+        if (params.timeoutMs === undefined) return 0;
+        return performance.now() + positiveInteger(params.timeoutMs, "timeoutMs", 600000);
     }
 
     async function setInput(params) {
@@ -29,17 +26,17 @@ export function createInputCommands({
         ensureRomLoaded("input hold requires a loaded ROM");
         const buttons = toButtonList(params);
         const durationMs = nonNegativeNumber(params.durationMs ?? params.holdMs ?? 0, "durationMs");
-        const deadline = params.timeoutMs
-            ? performance.now() + Math.max(1, Number(params.timeoutMs))
-            : 0;
-        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runInputHold");
+        const waitBeforeMs = nonNegativeNumber(params.waitBeforeMs ?? 0, "waitBeforeMs", 600000);
+        const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", 600000);
+        const deadline = inputDeadline(params);
+        await waitChecked(waitBeforeMs, deadline, "runInputHold");
         buttons.forEach((button) => setKey(button, true));
         try {
             await waitChecked(durationMs, deadline, "runInputHold");
         } finally {
             buttons.forEach((button) => setKey(button, false));
         }
-        await waitChecked(params.waitAfterMs ?? 0, deadline, "runInputHold");
+        await waitChecked(waitAfterMs, deadline, "runInputHold");
         return { ok: true, buttons, durationMs };
     }
 
@@ -49,10 +46,10 @@ export function createInputCommands({
         const repeat = positiveInteger(params.repeat ?? params.count ?? 1, "repeat", 10000);
         const holdMs = nonNegativeNumber(params.holdMs ?? params.pressMs ?? 50, "holdMs");
         const gapMs = nonNegativeNumber(params.gapMs ?? params.waitMs ?? 50, "gapMs");
-        const deadline = params.timeoutMs
-            ? performance.now() + Math.max(1, Number(params.timeoutMs))
-            : 0;
-        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runInputTap");
+        const waitBeforeMs = nonNegativeNumber(params.waitBeforeMs ?? 0, "waitBeforeMs", 600000);
+        const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", 600000);
+        const deadline = inputDeadline(params);
+        await waitChecked(waitBeforeMs, deadline, "runInputTap");
         for (let index = 0; index < repeat; index++) {
             buttons.forEach((button) => setKey(button, true));
             try {
@@ -62,7 +59,7 @@ export function createInputCommands({
             }
             if (index < repeat - 1) await waitChecked(gapMs, deadline, "runInputTap");
         }
-        await waitChecked(params.waitAfterMs ?? 0, deadline, "runInputTap");
+        await waitChecked(waitAfterMs, deadline, "runInputTap");
         return { ok: true, buttons, repeat, holdMs, gapMs };
     }
 
@@ -74,17 +71,17 @@ export function createInputCommands({
             throw codedError(ErrorCode.INVALID_ARGUMENT, "x must be 0..255 and y must be 0..191 integers");
         }
         const durationMs = nonNegativeNumber(params.durationMs ?? params.holdMs ?? 0, "durationMs");
-        const deadline = params.timeoutMs
-            ? performance.now() + Math.max(1, Number(params.timeoutMs))
-            : 0;
-        await waitChecked(params.waitBeforeMs ?? 0, deadline, "runTouchHold");
+        const waitBeforeMs = nonNegativeNumber(params.waitBeforeMs ?? 0, "waitBeforeMs", 600000);
+        const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", 600000);
+        const deadline = inputDeadline(params);
+        await waitChecked(waitBeforeMs, deadline, "runTouchHold");
         setTouchState(true, x, y);
         try {
             await waitChecked(durationMs, deadline, "runTouchHold");
         } finally {
             setTouchState(false, x, y);
         }
-        await waitChecked(params.waitAfterMs ?? 0, deadline, "runTouchHold");
+        await waitChecked(waitAfterMs, deadline, "runTouchHold");
         return { ok: true, x, y, durationMs };
     }
 

@@ -1,5 +1,5 @@
 import { ErrorCode } from "../error-codes.js";
-import { codedError } from "../validation.js";
+import { codedError, finiteNumber } from "../validation.js";
 
 export function createScreenshotCommands(context) {
     const { requireValidScreen, state, ui } = context;
@@ -8,7 +8,7 @@ export function createScreenshotCommands(context) {
         async takeScreenshot(params = {}) {
             const screenError = requireValidScreen();
             if (screenError) return screenError;
-            const cooldownMs = Math.max(250, Number(params.cooldownMs ?? 1200));
+            const cooldownMs = finiteNumber(params.cooldownMs ?? 1200, "cooldownMs", 250, 600000);
             if (performance.now() < state.screenshotCooldownUntil) {
                 throw codedError(ErrorCode.BUSY, "screenshot cooldown active", {
                     remainingMs: Math.ceil(state.screenshotCooldownUntil - performance.now())

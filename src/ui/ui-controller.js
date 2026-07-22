@@ -41,11 +41,11 @@ export function bindUi(context) {
     ui.romFile.addEventListener("change", () => runCommand("loadRomFile").catch((e) => log(e.message)));
     ui.saveFile.addEventListener("change", () => runCommand("importSaveFile").catch((e) => log(e.message)));
     ui.stateFile.addEventListener("change", () => runCommand("importStateFile").catch((e) => log(e.message)));
-    ui.pauseBtn.addEventListener("click", () => runCommand("pause").then(() => hasLoadedRom() ? refreshDebuggerViews({ keepHighlight: true }) : null).catch((e) => log(e.message)));
+    ui.pauseBtn.addEventListener("click", () => runCommand("pause").catch((e) => log(e.message)));
     ui.resumeBtn.addEventListener("click", () => runCommand("resume").catch((e) => log(e.message)));
     ui.resetBtn.addEventListener("click", () => runCommand("reset").catch((e) => log(e.message)));
     ui.romReloadBtn.addEventListener("click", () => runCommand("reloadRom", { waitMs: Number(ui.romWaitMs.value), resume: !ui.resetHoldToggle.checked }).catch((e) => log(e.message)));
-    ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.stepFrameBtn.addEventListener("click", () => runCommand("stepFrames", { frames: 1 }).catch((e) => log(e.message)));
     ui.stepNBtn.addEventListener("click", () => runCommand("stepFrames", { frames: Number(ui.framesInput.value) }).catch((e) => log(e.message)));
     ui.speedSelect.addEventListener("change", () => runCommand("setSpeed", { speed: Number(ui.speedSelect.value) }).catch((e) => log(e.message)));
     ui.scaleSelect.addEventListener("change", () => runCommand("setScale", { scale: Number(ui.scaleSelect.value) }).catch((e) => log(e.message)));
@@ -63,16 +63,16 @@ export function bindUi(context) {
         state.highlightedCallstackCpsr = null;
         refreshDebuggerViews({ address: "pc", keepHighlight: true }).catch((e) => log(e.message));
     });
-    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuNextBranchReturnBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuTrueNextBranchBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
-    ui.cpuTrueNextBranchDebugBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).then(() => refreshDebuggerViews({ keepHighlight: true })).catch((e) => log(e.message)));
+    ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).catch((e) => log(e.message)));
+    ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").catch((e) => log(e.message)));
+    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").catch((e) => log(e.message)));
+    ui.cpuNextBranchReturnBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.cpuTrueNextBranchBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).catch((e) => log(e.message)));
+    ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").catch((e) => log(e.message)));
+    ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").catch((e) => log(e.message)));
+    ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.cpuTrueNextBranchDebugBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
@@ -207,7 +207,6 @@ export function bindUi(context) {
                 return;
             }
             runCommand("setRegister", { register, value, cpu: state.selectedCpu })
-                .then(() => refreshDebuggerViews({ keepHighlight: true }))
                 .catch((error) => {
                     log(error.message);
                     renderRegisters();

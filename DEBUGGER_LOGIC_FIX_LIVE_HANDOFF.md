@@ -187,3 +187,62 @@ The complete review intake is already done. Do **not** reread `releaseblocker.md
 ## New-turn entry point
 
 Read this file, `DEBUGGER_LOGIC_FIX_LIVE_HANDOFF.md`, from the newest checkpoint sections first. Do not reread the 2,025-line `releaseblocker.md` or the historical refactor handoff to reconstruct completed work. The requested logical fixes, added deterministic tests, Codespace checks/build, generated bundle/notice recovery, cache bust, and cleanup are complete. The only optional next action is Chrome **DevTools MCP** acceptance if those tools are actually exposed in the new turn; do not use Browser Use as a substitute. A later, separate optimization requested by the user is to compact excessively repetitive successful JSON payloads for analysis-AI token efficiency while preserving all error information.
+
+## Checkpoint 8 — post-review release blockers reopened
+
+- A newer `releaseblocker.md` review identified six P0 regressions plus remaining P1/P2 work. Current source inspection confirmed the issues; the earlier 43/43 result is retained only as a baseline, not as completion evidence.
+- P0 implementation in progress:
+  - input-sequence pause/resume now uses WeakMap-backed internal command metadata;
+  - legacy `window.memory` and persistent-script scalar reads unwrap normalized `{ok,value}` responses while preserving structured `mcp.call`;
+  - State invalidation now distinguishes prior running/paused state and owns its resume notice;
+  - running/manual frame paths share frame-completion accounting before draw, with notice clearing;
+  - duplicate UI/service debugger refresh calls are being removed while all original commands and controls remain available through the dispatcher-owned refresh path;
+  - step, stepOver, smartStep-selected stepOver, branch stepping, and trace stepping share current-exec-breakpoint suspension.
+- P1/P2 implementation in progress:
+  - predictable State/Save native failures are becoming typed `NATIVE_ERROR` results;
+  - speed/scale/rotation and custom memory-search length are allowlisted/validated;
+  - framebuffer length and canvas/shell invariants are checked without clearing, hiding, or recreating the canvas;
+  - script source receives lexical dynamic-import validation, and a supervisor/sandbox Worker split is being implemented so user code does not share the main Worker protocol global.
+- Existing first-party tests still pass 43/43 after the first P0 edits. This is an interim regression check only. New deterministic coverage is required for every new blocker and sandbox boundary before completion.
+- User instruction: preserve every feature exposed by the prior `app.js`; refresh ownership changes must remove only duplicate rendering, never commands or controls. Add as comprehensive a new test suite as practical, and update this handoff incrementally rather than only at the end.
+
+## Checkpoint 9 — release-blocker behavior suite and sandbox boundary
+
+- Added `tests/release-blockers.test.mjs`; its current 20 tests pass independently. Coverage is behavioral and includes:
+  - paused input-sequence completion without self-cancellation;
+  - numeric legacy `window.memory` and persistent-script reads, while `DesmumeMCP.call` remains structured;
+  - running/paused State invalidation notice policy and first-manual-frame draw ordering;
+  - typed State/Save native failures;
+  - speed/scale/rotation/search validation, framebuffer preservation, and canvas diagnostics;
+  - one dispatcher refresh per cycle and register highlight persistence until the next cycle;
+  - native-like stepOver/smartStep escape from the current exec breakpoint;
+  - dynamic-import comment bypasses and template-expression detection;
+  - sandbox denial of `https://example.com/` fetch before network invocation, DOM/Window/sub-Worker denial, constructor-chain denial, and raw-message forgery denial;
+  - authenticated eval/persistent supervisor forwarding and forged child-message rejection.
+- Added broad NaN/state-integrity checks. Invalid numeric values now reject before mutating runtime audio/auto-update/frame state, input/touch state, State-load cancellation/native state, screenshot cooldown, or debugger break-refresh/PC state. Invalid command names including `NaN`, `undefined`, `null`, empty, and unknown strings return `UNKNOWN_COMMAND` without state changes; undefined params still normalize to `{}`.
+- Worker execution is now split into supervisor and sandbox layers. User code runs only in the inner Worker; main RPC/event protocol runs in the outer Worker. Inner outbound messages carry a closure-held token, raw `postMessage` is disabled, and supervisors strip/validate the token before forwarding.
+- During testing, the persistent scalar test initially stalled because IIFE isolation also hid the compatibility API from indirect eval. The implementation now passes `mcp`, `memory`, print helpers, and emulation helpers as explicit user-function arguments. The test wait is bounded and reports observed message types instead of looping indefinitely.
+- Combined test run reached 62/63. The only failure was an older static assertion that required literal `postMessage({type:"ready"})`; the authenticated sandbox correctly uses `send(...)`. That assertion has been updated to cover both supervisors and sandboxes. A fresh combined run is still required.
+
+## Checkpoint 10 — 67-test and production-build checkpoint
+
+- Expanded the new suite further:
+  - State notice ownership protects later save/state status text;
+  - next-branch logic covers both native step and stepOver paths at a current exec breakpoint;
+  - the eval command rejects `import/**/(...)` before constructing any Worker;
+  - the real `scripts/dq9/Ctable_jp.js` runs in the sandbox harness, registers at least 20 exec hooks, prints nonzero numeric seed values without `[object Object]`, runs an exec callback, and requests `resume` before `eventDone`.
+- Host dependency-free checks pass: every `src/**/*.js` passes `node --check`; the combined first-party suite passes 67/67; `git diff --check` reports no whitespace errors. Local `npm run check:js` remains intentionally unavailable because host dependencies are not installed, and no host installation was attempted.
+- Codespace `upgraded-xylophone-697q7wgrq5535xpr` was started and received the current `src/` and `tests/` trees. Codespace verification passed:
+  - `npm test`: 67/67;
+  - `npm run check:js`: pass;
+  - `npm run check:licenses`: pass;
+  - `npm run build:notices`: pass;
+  - `npm run build:js`: pass, production `public/app.js` is 211.0 KB.
+- Generated `public/app.js` and `public/THIRD_PARTY_NOTICES.txt` were copied back locally. `public/index.html` now uses cache key `app.js?v=20260722-releaseblocker` and still needs to be synced to the Codespace.
+- No C++/WASM source changed, so safe-heap native rebuild is not required. Chrome DevTools MCP acceptance remains intentionally pending user permission; Browser Use must not be used.
+
+## Checkpoint 11 — final automated rerun before browser permission
+
+- Added rejection for the classic-script HTML-comment split `import<!-- comment\n(...)`, then resynced the policy and test to the Codespace.
+- Final Codespace rerun passes 67/67, `npm run check:js`, and `npm run build:js`. The final production bundle is 211.1 KB and has been copied back to local `public/app.js`.
+- Automated source/test/build work is complete. Remaining acceptance is the explicitly permission-gated Chrome DevTools MCP run against the local production bundle. Do not use Browser Use as a substitute.

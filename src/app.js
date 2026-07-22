@@ -32,10 +32,14 @@ import { createRuntimeTools } from "./runtime-tools.js";
 import { createNativeFaultHandler } from "./native-fault-handler.js";
 import { createCommandDispatcher } from "./command-dispatcher.js";
 import { createScriptPauseService } from "./script-pause-service.js";
-import evalWorkerSource from "./workers/eval.worker.js";
+import { withInternalMetadata } from "./internal-command-metadata.js";
+import { createScreenInvalidNotice } from "./screen-invalid-notice.js";
+import evalSupervisorWorkerSource from "./workers/eval-supervisor.worker.js";
+import evalSandboxWorkerSource from "./workers/eval.worker.js";
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
 const DESMUME_SCRIPT_URL = "desmume.js?v=20260619-immediate-memory-break";
 const state = createAppState();
+const screenInvalidNotice = createScreenInvalidNotice(ui.storageStatus);
 const runCommand = (name, params = {}) => commandDispatcher.run(name, params);
 const runtimeTools = createRuntimeTools({
     state,
@@ -95,7 +99,8 @@ const mcpResponder = createMcpResponder({
     }
 });
 const scriptRunner = createScriptRunner({
-    source: evalWorkerSource,
+    source: evalSupervisorWorkerSource,
+    sandboxSource: evalSandboxWorkerSource,
     responder: mcpResponder,
     callCommand: (command, params) => runCommand(command, params),
     getShortcuts: () => Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [
@@ -246,6 +251,7 @@ const emulationLoop = createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
+    onScreenValid: screenInvalidNotice.clear,
     updateStatus,
     log
 });
@@ -279,8 +285,9 @@ const stateService = createStateService({
     state,
     native: nativeBridge,
     frameService,
-    onScreenInvalid: () => {
-        ui.storageStatus.textContent = "画面を更新するには実行を再開してください。";
+    onScreenInvalid: ({ showResumeNotice }) => {
+        if (showResumeNotice) screenInvalidNotice.show();
+        else screenInvalidNotice.clear();
     },
     onStatusChange: updateStatus,
     onFault: handleNativeFault
@@ -393,6 +400,7 @@ const commands = createCommands({
     memorySearchRanges,
     modeNumber,
     native: nativeBridge,
+    onScreenValid: screenInvalidNotice.clear,
     opcodeWordsFromInput,
     openPicker,
     parseAddress,
@@ -470,8 +478,8 @@ const inputSequenceService = createInputSequenceService({
     touch: (active, x = 0, y = 0) => setTouchState(active, x, y),
     stepFrames: (frames) => commands.stepFrames({ frames, pauseWhenRunning: false }),
     getPaused: () => state.paused,
-    pause: () => commands.pause({ _operation: true }),
-    resume: () => commands.resume({ _operation: true })
+    pause: () => commands.pause(withInternalMetadata({}, { operation: true })),
+    resume: () => commands.resume(withInternalMetadata({}, { operation: true }))
 });
 const operationManager = createOperationManager({
     responder: mcpResponder,

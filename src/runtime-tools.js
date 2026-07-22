@@ -1,3 +1,5 @@
+import { nonNegativeNumber } from "./validation.js";
+
 export function createRuntimeTools({ state, getRomWaitMs }) {
     function sleep(milliseconds) {
         return new Promise((resolve) => {
@@ -15,14 +17,15 @@ export function createRuntimeTools({ state, getRomWaitMs }) {
     }
 
     function bootWaitMs(params = {}) {
-        return Math.max(0, Math.min(
-            10000,
-            Number(params.waitMs ?? params.romWaitMs ?? getRomWaitMs() ?? 600)
-        ));
+        return nonNegativeNumber(
+            params.waitMs ?? params.romWaitMs ?? getRomWaitMs() ?? 600,
+            "waitMs",
+            10000
+        );
     }
 
     function blockSaveFlush(milliseconds = 10000) {
-        const until = performance.now() + Math.max(0, Number(milliseconds) || 0);
+        const until = performance.now() + nonNegativeNumber(milliseconds, "saveFlushBlockMs");
         state.saveFlushBlockedUntil = Math.max(state.saveFlushBlockedUntil, until);
         state.lastSaveFlush = performance.now();
     }

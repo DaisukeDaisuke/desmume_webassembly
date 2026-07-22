@@ -32,6 +32,21 @@ export function memorySize(value, name = "size") {
     return size;
 }
 
+export function finiteNumber(value, name, minimum = -Number.MAX_VALUE, maximum = Number.MAX_VALUE) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < minimum || number > maximum) {
+        throw codedError(
+            ErrorCode.INVALID_ARGUMENT,
+            `${name} must be a finite number between ${minimum} and ${maximum}`
+        );
+    }
+    return number;
+}
+
+export function nonNegativeNumber(value, name, maximum = Number.MAX_SAFE_INTEGER) {
+    return finiteNumber(value, name, 0, maximum);
+}
+
 export function subscribeAbort(signal, onAbort) {
     if (!signal) return () => {};
     signal.addEventListener("abort", onAbort, { once: true });

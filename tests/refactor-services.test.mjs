@@ -594,16 +594,20 @@ test("input sequences release controls when aborted", async () => {
 
 test("worker sources are valid scripts covered by the esbuild text loader", async () => {
   const workerUrls = [
+    new URL("../src/workers/eval-supervisor.worker.js", import.meta.url),
     new URL("../src/workers/eval.worker.js", import.meta.url),
+    new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url),
     new URL("../src/workers/persistent-script.worker.js", import.meta.url)
   ];
   for (const workerUrl of workerUrls) {
     assert.match(fileURLToPath(workerUrl), /\.worker\.js$/);
     const source = await readFile(workerUrl, "utf8");
     assert.doesNotThrow(() => Function(source));
-    assert.match(source, /postMessage\(\{ type: "ready" \}\)/);
-    assert.match(source, /Object\.defineProperty\(globalThis/);
-    assert.match(source, /dynamic import is unavailable/);
+    assert.match(source, /(?:postMessage|send)\(\{ type: "ready" \}\)/);
+    if (!workerUrl.pathname.includes("supervisor")) {
+      assert.match(source, /Object\.defineProperty\(globalThis/);
+      assert.match(source, /dynamic import is unavailable/);
+    }
   }
 
   const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");

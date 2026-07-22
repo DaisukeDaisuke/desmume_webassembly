@@ -1,3 +1,5 @@
+import { positiveInteger } from "../validation.js";
+
 export function createViewService({
     state,
     ui,
@@ -260,7 +262,11 @@ export function createViewService({
         const full = params.all === true || params.full === true || String(rawAddress).trim().toLowerCase() === "all";
         if (full) return defaultMemorySearchRanges(params.cpu);
         const address = parseAddress(rawAddress, 0, params.cpu);
-        const length = Math.min(16 * 1024 * 1024, Number(params.length ?? ui.searchLength.value));
+        const length = positiveInteger(
+            params.length ?? ui.searchLength.value,
+            "length",
+            16 * 1024 * 1024
+        );
         return [{ name: "custom", address, length }];
     }
     
