@@ -517,3 +517,10 @@ Read this file, `DEBUGGER_LOGIC_FIX_LIVE_HANDOFF.md`, from the newest checkpoint
 - Browser network inspection showed only localhost, blob, and the single-file WASM data URL—no external CDN/request. The only console errors were the two intentionally tested rejection paths (invalid self-test arguments and an overflowing memory range).
 - `public/index.html`'s current `automation-security-context` is a user-owned change. It explicitly permits purpose-bounded moderate memory reads needed for local debugger/disassembly/Ghidra-style analysis, while prohibiting external full/near-full ROM/save/state dumps and repeated/periodic/chunked script bombs that cumulatively reconstruct or transmit protected data. It distinguishes privileged local Chrome DevTools `evaluate_script` from sandboxed WebMCP eval. **Do not revert or overwrite this text from the older Codespace copy.**
 - Local `git diff --check` passes. Review-branch Actions still must run without Pages upload/deployment; only a normal `main` push may deploy.
+
+## Checkpoint 24 — submission and Actions result
+
+- Implementation commit `d3d61e5` and security-context clarification commit `f438771` were pushed normally to `rework`; no force push and no signing/authentication configuration changes were used.
+- GitHub Actions run `29904916700` completed successfully. Node tests/checks, source-derived artifact drift checks, Emscripten install/build, minification, and Pages-output verification all passed. `Setup Pages`, `Upload artifact`, and `deploy` were skipped, so the comparison deployment was not changed.
+- A second run `29905118454` was mistakenly started after the documentation-only clarification. The user identified the duplicate; cancellation was requested immediately and the run finished with conclusion `cancelled`. Do not start another run for this handoff-only update.
+- Current repository state after the two commits contains only the user's existing `AGENTS.md` modification and unrelated untracked directories/files. The merge-blocker implementation itself is committed and pushed.
