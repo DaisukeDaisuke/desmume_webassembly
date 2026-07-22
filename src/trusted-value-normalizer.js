@@ -52,7 +52,8 @@ function hasOwn(value, key) {
 }
 
 function utf8Length(text) {
-    return callIntrinsic(nativeTextEncode, trustedTextEncoder, [text]).byteLength;
+    const encoded = callIntrinsic(nativeTextEncode, trustedTextEncoder, [text]);
+    return callIntrinsic(nativeTypedArrayByteLength, encoded, []);
 }
 
 function getSpecial(options, group, path) {

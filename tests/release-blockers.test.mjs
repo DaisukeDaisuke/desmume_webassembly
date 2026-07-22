@@ -30,6 +30,7 @@ import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "../src/script-rpc-policy.js";
 import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../src/worker-rpc-value.js";
+import { createBinaryTools } from "../src/binary-tools.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -80,10 +81,11 @@ async function runEvalSandbox(code) {
     const listeners = new Map();
     let networkCalls = 0;
     let storageCalls = 0;
+    const ContextTextEncoder = class extends TextEncoder {};
     const context = vm.createContext({
         console,
         crypto: testCrypto(),
-        TextEncoder,
+        TextEncoder: ContextTextEncoder,
         postMessage: (message) => messages.push(message),
         addEventListener: (type, listener) => listeners.set(type, listener),
         removeEventListener: () => {},
@@ -1203,28 +1205,90 @@ test("Worker RPC values are bounded before the sandbox first postMessage", async
     }
 });
 
+test("captured intrinsics prevent sandbox RPC limit bypasses", async () => {
+    const mutations = [
+        "Array.prototype.map = () => new Array(8 * 1024 * 1024).fill(1);",
+        "Array.isArray = () => false;",
+        "ArrayBuffer.isView = () => false;",
+        "Object.getPrototypeOf = () => Object.prototype;",
+        "Object.getOwnPropertyDescriptors = () => ({});",
+        "Object.keys = () => [];",
+        "Number.isFinite = () => true; Number.isInteger = () => true;"
+    ];
+    for (const mutation of mutations) {
+        const result = await runEvalSandbox(`
+            ${mutation}
+            await mcp.call("status", { payload: new Array(2048).fill("oversized") });
+            return "unexpected";
+        `);
+        assert.equal(result.messages.filter((message) => message.type === "call").length, 0, mutation);
+        assert.ok(result.messages.some((message) => message.type === "error"), mutation);
+    }
+});
+
+test("captured TextEncoder and Uint8Array copying enforce result and byte boundaries", async () => {
+    const oversizedResult = await runEvalSandbox(`
+        TextEncoder.prototype.encode = () => new Uint8Array(0);
+        return "x".repeat(8 * 1024 * 1024);
+    `);
+    assert.equal(oversizedResult.messages.some((message) => message.type === "done"), false);
+    assert.ok(oversizedResult.messages.some((message) => message.type === "error"));
+
+    const boundedBytes = await runEvalSandbox(`
+        Uint8Array.prototype.slice = () => new Uint8Array(8 * 1024 * 1024);
+        void mcp.call("injectBytes", { address: 0x02000000, bytes: new Uint8Array([1, 2, 3]) });
+        return "queued";
+    `);
+    const call = boundedBytes.messages.find((message) => message.type === "call");
+    assert.equal(call.command, "injectBytes");
+    assert.deepEqual(Array.from(call.params.bytes), [1, 2, 3]);
+});
+
 test("Worker RPC policy preserves normal debugger calls and bounded byte injection", () => {
-    assert.deepEqual(normalizeWorkerRpcParams("status", { verbose: true }), { verbose: true });
-    assert.deepEqual(normalizeWorkerRpcParams("dumpMemory", {
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerRpcParams("status", { verbose: true }))), { verbose: true });
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerRpcParams("dumpMemory", {
         cpu: "arm9", address: 0x02000000, length: 64
-    }), { cpu: "arm9", address: 0x02000000, length: 64 });
-    assert.deepEqual(normalizeWorkerRpcParams("disassemble", {
+    }))), { cpu: "arm9", address: 0x02000000, length: 64 });
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerRpcParams("disassemble", {
         cpu: "arm9", address: 0x02000000, count: 8, mode: "auto"
-    }), { cpu: "arm9", address: 0x02000000, count: 8, mode: "auto" });
+    }))), { cpu: "arm9", address: 0x02000000, count: 8, mode: "auto" });
     const bytes = new Uint8Array([0, 1, 2, 255]);
     const normalized = normalizeWorkerRpcParams("injectBytes", { address: 0x02000000, bytes });
     assert.deepEqual(Array.from(normalized.bytes), [0, 1, 2, 255]);
     assert.notEqual(normalized.bytes, bytes);
-    assert.deepEqual(normalizeWorkerTrigger({ kind: "exec", address: 0x02000000, callbackId: 1 }), {
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerTrigger({ kind: "exec", address: 0x02000000, callbackId: 1 }))), {
         kind: "exec", address: 0x02000000, callbackId: 1
     });
     const seen = new Set();
-    assert.deepEqual(validateWorkerRpc({
+    assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
         id: "rpc-1", command: "status", params: { concise: true }
-    }, EVAL_RPC_ALLOWLIST, seen), { command: "status", params: { concise: true } });
+    }, EVAL_RPC_ALLOWLIST, seen))), { command: "status", params: { concise: true } });
     assert.throws(() => validateWorkerRpc({
         id: "rpc-2", command: "status", params: { payload: new Uint8Array(8 * 1024 * 1024) }
-    }, EVAL_RPC_ALLOWLIST, seen), /binary Worker RPC values|byte budget/);
+    }, EVAL_RPC_ALLOWLIST, seen), /binary structured values|byte budget/);
+});
+
+test("byte command aliases share decoded-size enforcement", () => {
+    const tools = createBinaryTools({ getPc: () => 0, getSelectedCpu: () => "arm9" });
+    for (const params of [
+        { base64: "AQID" },
+        { hex: "01 02 03" },
+        { input: "010203" },
+        { text: "01,02,03" }
+    ]) {
+        assert.deepEqual(Array.from(tools.bytesFromFlexibleParams(params, 3)), [1, 2, 3]);
+        assert.throws(() => tools.bytesFromFlexibleParams(params, 2), /exceeds 2 decoded bytes/);
+    }
+    assert.deepEqual(tools.opcodeWordsFromInput({ words: [1, 2] }, 2), [1, 2]);
+    assert.deepEqual(tools.opcodeWordsFromInput({ opcodes: [1, 2] }, 2), [1, 2]);
+    assert.throws(() => tools.opcodeWordsFromInput({ words: [1, 2, 3] }, 2), /exceeds 2 words/);
+    assert.throws(() => tools.opcodeWordsFromInput({ opcodes: [1, 2, 3] }, 2), /exceeds 2 words/);
+    assert.throws(() => normalizeWorkerRpcParams("injectBytes", {
+        base64: "A".repeat(1398108)
+    }), /field budget/);
+    assert.throws(() => normalizeWorkerRpcParams("disassembleBytes", {
+        words: new Array(16385).fill(0)
+    }), /item budget/);
 });
 
 test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-chain escape", async () => {
@@ -1313,10 +1377,11 @@ async function runPersistentScalarSandbox(
     const listeners = new Map();
     let networkCalls = 0;
     let storageCalls = 0;
+    const ContextTextEncoder = class extends TextEncoder {};
     const context = vm.createContext({
         console,
         crypto: testCrypto(),
-        TextEncoder,
+        TextEncoder: ContextTextEncoder,
         postMessage: (message) => messages.push(message),
         addEventListener: (type, listener) => listeners.set(type, listener),
         removeEventListener: () => {},
@@ -1382,6 +1447,15 @@ test("persistent sandbox accepts harmless dynamic-import text", async () => {
     assert.ok(messages.some((message) => message.type === "started"));
     assert.ok(messages.some((message) => message.type === "print" && message.values[0] === "import("));
     assert.equal(messages.some((message) => message.type === "failed"), false);
+});
+
+test("persistent print remains bounded after TextEncoder mutation", async () => {
+    const { messages } = await runPersistentScalarSandbox(`
+        TextEncoder.prototype.encode = () => new Uint8Array(0);
+        print("x".repeat(8 * 1024 * 1024));
+    `, []);
+    assert.equal(messages.some((message) => message.type === "print"), false);
+    assert.ok(messages.some((message) => message.type === "failed"));
 });
 
 test("persistent-script legacy memory reads remain numeric", async () => {
@@ -1628,10 +1702,11 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
     assert.equal(messages.some((message) => message.type === "failed"), false);
 });
 
-async function runEvalSupervisor(childMessage) {
-    const source = await readFile(new URL("../src/workers/eval-supervisor.worker.js", import.meta.url), "utf8");
+async function runEvalSupervisor(childMessage, { securityProbe = "" } = {}) {
+    const source = await bundledWorkerSource("../src/workers/eval-supervisor.worker.js");
     const messages = [];
     let listener;
+    let revoked = false;
     const workers = [];
     class FakeWorker {
         constructor() {
@@ -1644,15 +1719,18 @@ async function runEvalSupervisor(childMessage) {
     }
     const context = vm.createContext({
         postMessage: (message) => messages.push(message),
+        TextEncoder,
         Blob: class Blob {},
         Worker: FakeWorker,
-        URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => {} }
+        URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => { revoked = true; } }
     });
     context.onmessage = null;
     vm.runInContext(source, context, { filename: "eval-supervisor.worker.js" });
     listener = context.onmessage;
     const dependency = { source: "dependency", sha256: "dependency-hash" };
-    listener({ data: { type: "run", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: [] } });
+    listener({ data: {
+        type: "run", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: [], securityProbe
+    } });
     const child = workers[0];
     assert.deepEqual(JSON.parse(JSON.stringify(child.messages[0])), { type: "initialize", dependency });
     child.onmessage({ data: {
@@ -1660,7 +1738,7 @@ async function runEvalSupervisor(childMessage) {
         dependencyHash: dependency.sha256
     } });
     child.onmessage({ data: childMessage });
-    return { messages, child };
+    return { messages, child, listener, revoked: () => revoked };
 }
 
 test("eval supervisor accepts only authenticated sandbox protocol messages", async () => {
@@ -1668,9 +1746,15 @@ test("eval supervisor accepts only authenticated sandbox protocol messages", asy
     assert.ok(valid.messages.some((message) => message.type === "done" && message.result === 1));
     assert.equal(valid.messages.some((message) => "channelToken" in message), false);
 
-    const forged = await runEvalSupervisor({ type: "done", result: "forged", channelToken: "wrong" });
+    const forged = await runEvalSupervisor(
+        { type: "done", result: "forged", channelToken: "wrong" },
+        { securityProbe: "wrongToken" }
+    );
     assert.equal(forged.messages.some((message) => message.type === "done"), false);
-    assert.ok(forged.messages.some((message) => message.type === "protocolError"));
+    assert.ok(forged.messages.some((message) => message.type === "protocolError"
+        && message.code === "SECURITY_PROBE_REJECTED"
+        && message.phase === "child-auth"
+        && message.probeId === "wrongToken"));
     assert.equal(forged.child.terminated, true);
 
     const oversized = await runEvalSupervisor({
@@ -1678,12 +1762,29 @@ test("eval supervisor accepts only authenticated sandbox protocol messages", asy
         params: { payload: new Uint8Array(8 * 1024 * 1024) }, channelToken: "secret"
     });
     assert.equal(oversized.messages.some((message) => message.type === "call"), false);
-    assert.ok(oversized.messages.some((message) => message.type === "protocolError"));
+    assert.ok(oversized.messages.some((message) => message.type === "protocolError" && message.phase === "child-output"));
     assert.equal(oversized.child.terminated, true);
+
+    const hugeDone = await runEvalSupervisor({
+        type: "done", result: "x".repeat(8 * 1024 * 1024), channelToken: "secret"
+    });
+    assert.equal(hugeDone.messages.some((message) => message.type === "done"), false);
+    assert.ok(hugeDone.messages.some((message) => message.type === "protocolError"));
+
+    valid.listener({ data: { type: "shutdown", requestId: "cleanup-1" } });
+    const ack = valid.messages.find((message) => message.type === "shutdownAck");
+    assert.equal(ack.requestId, "cleanup-1");
+    assert.deepEqual(JSON.parse(JSON.stringify(ack.cleanup)), {
+        childWorkerTerminateCalled: true,
+        childBlobUrlRevokeCalled: true,
+        childHandlersCleared: true,
+        childPendingRpcAfter: 0
+    });
+    assert.equal(valid.revoked(), true);
 });
 
 test("persistent supervisor gates replies and rejects forged child messages", async () => {
-    const source = await readFile(new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url), "utf8");
+    const source = await bundledWorkerSource("../src/workers/persistent-script-supervisor.worker.js");
     const messages = [];
     const workers = [];
     class FakeWorker {
@@ -1693,6 +1794,7 @@ test("persistent supervisor gates replies and rejects forged child messages", as
     }
     const context = vm.createContext({
         postMessage: (message) => messages.push(message),
+        TextEncoder,
         Blob: class Blob {}, Worker: FakeWorker,
         URL: { createObjectURL: () => "blob:persistent", revokeObjectURL: () => {} }
     });
@@ -1708,35 +1810,42 @@ test("persistent supervisor gates replies and rejects forged child messages", as
         type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
         dependencyHash: dependency.sha256
     } });
+    const childOnMessage = child.onmessage;
     const validChildCall = vm.runInContext(`({
         type: "call", id: "request-1", command: "status", params: {}, channelToken: "secret"
     })`, context);
-    child.onmessage({ data: validChildCall });
+    childOnMessage({ data: validChildCall });
     assert.ok(messages.some((message) => message.type === "call" && message.id === "request-1"));
     context.onmessage({ data: { replyId: "request-1", result: { ok: true } } });
     assert.ok(child.messages.some((message) => message.replyId === "request-1"));
+
+    childOnMessage({ data: {
+        type: "print", values: ["x".repeat(8 * 1024 * 1024)], channelToken: "secret"
+    } });
+    assert.equal(messages.some((message) => message.type === "print"), false);
+    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "child-output"));
 
     const oversizedChildCall = vm.runInContext(`({
         type: "call", id: "oversized", command: "status",
         params: { payload: new Uint8Array(8 * 1024 * 1024) }, channelToken: "secret"
     })`, context);
-    child.onmessage({ data: oversizedChildCall });
+    childOnMessage({ data: oversizedChildCall });
     assert.equal(messages.some((message) => message.id === "oversized"), false);
-    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "protocol"));
+    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "child-output"));
     assert.equal(child.terminated, true);
 
-    child.onmessage({ data: { type: "print", values: ["forged"], channelToken: "wrong" } });
+    childOnMessage({ data: { type: "print", values: ["forged"], channelToken: "wrong" } });
     assert.equal(messages.some((message) => message.type === "print"), false);
-    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "protocol"));
+    assert.ok(messages.some((message) => message.type === "failed" && message.phase === "child-output"));
     assert.equal(child.terminated, true);
 });
 
-test("all supervisor and sandbox Worker sources parse as classic scripts", async () => {
+test("all bundled supervisor and sandbox Worker sources parse as classic scripts", async () => {
     for (const path of [
         "../src/workers/eval-supervisor.worker.js",
         "../src/workers/persistent-script-supervisor.worker.js"
     ]) {
-        const source = await readFile(new URL(path, import.meta.url), "utf8");
+        const source = await bundledWorkerSource(path);
         assert.doesNotThrow(() => Function(source), path);
     }
     for (const path of [

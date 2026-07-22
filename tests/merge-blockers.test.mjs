@@ -241,11 +241,11 @@ test("special breakpoint reconciliation clears a discarded owner after native di
 });
 
 test("structured Worker values reject cycles, exotic objects, and all configured limits", () => {
-    assert.deepEqual(normalizeBoundedValue({ ok: [1, "two", true] }).value, { ok: [1, "two", true] });
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeBoundedValue({ ok: [1, "two", true] }).value)), { ok: [1, "two", true] });
     const cyclic = {};
     cyclic.self = cyclic;
     assert.throws(() => normalizeBoundedValue(cyclic), /cyclic/);
-    assert.throws(() => normalizeBoundedValue(new Uint8Array([1])), /plain structured objects/);
+    assert.throws(() => normalizeBoundedValue(new Uint8Array([1])), /binary structured values/);
     assert.throws(() => normalizeBoundedValue([1, 2], { maxArray: 1 }), /item budget/);
     assert.throws(() => normalizeBoundedValue({ a: { b: 1 } }, { maxDepth: 1 }), /depth budget/);
     assert.throws(() => normalizeBoundedValue("four", { maxBytes: 3 }), /byte budget/);
@@ -331,7 +331,9 @@ test("sandbox boundary self-test uses production supervisors and contains no fix
     const dedicatedWorker = await readFile(new URL("../src/workers/security-boundary.worker.js", import.meta.url), "utf8");
     assert.match(selfTest, /eval-supervisor\.worker\.js/);
     assert.match(selfTest, /eval\.worker\.js/);
-    assert.match(selfTest, /pendingRpcBeforeDispose/);
+    assert.match(selfTest, /pendingRpcBeforeShutdown/);
+    assert.match(selfTest, /childWorkerTerminateCalled/);
+    assert.match(selfTest, /childBlobUrlRevokeCalled/);
     assert.match(selfTest, /host\.status\(\)/);
     assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /unauthenticatedMessageAccepted:\s*false/);
     assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /tokenPredictionAccepted:\s*false/);
@@ -354,7 +356,7 @@ test("automation security context preserves its boundary within the accessibilit
 });
 
 test("persistent supervisor bounds queued non-tick events and terminates on overflow", async () => {
-    const source = await readFile(new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url), "utf8");
+    const source = await bundle("../src/workers/persistent-script-supervisor.worker.js");
     const messages = [];
     const workers = [];
     class FakeWorker {
@@ -368,6 +370,7 @@ test("persistent supervisor bounds queued non-tick events and terminates on over
     }
     const context = vm.createContext({
         postMessage: (message) => messages.push(message),
+        TextEncoder,
         Blob: class Blob {},
         Worker: FakeWorker,
         URL: { createObjectURL: () => "blob:bounded", revokeObjectURL: () => {} }

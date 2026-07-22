@@ -591,7 +591,7 @@ test("input sequences release controls when aborted", async () => {
   assert.deepEqual(touchStates, [false]);
 });
 
-test("supervisors are classic scripts and sandbox Workers are prebundled", async () => {
+test("supervisors and sandbox Workers are prebundled with shared boundary code", async () => {
   const supervisorUrls = [
     new URL("../src/workers/eval-supervisor.worker.js", import.meta.url),
     new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url)
@@ -599,7 +599,7 @@ test("supervisors are classic scripts and sandbox Workers are prebundled", async
   for (const workerUrl of supervisorUrls) {
     assert.match(fileURLToPath(workerUrl), /\.worker\.js$/);
     const source = await readFile(workerUrl, "utf8");
-    assert.doesNotThrow(() => Function(source));
+    assert.match(source, /normalize(?:BoundedValue|WorkerRpcParams)/);
     assert.match(source, /type: "ready", hardened: true, layer: "supervisor"/);
   }
   for (const workerUrl of [
@@ -616,6 +616,8 @@ test("supervisors are classic scripts and sandbox Workers are prebundled", async
   const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
   assert.match(buildSource, /bundledWorkers/);
   assert.match(buildSource, /embedded-workers/);
+  assert.match(buildSource, /eval-supervisor\.worker\.js/);
+  assert.match(buildSource, /persistent-script-supervisor\.worker\.js/);
 });
 
 test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once", async () => {
