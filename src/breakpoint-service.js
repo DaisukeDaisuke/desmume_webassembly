@@ -42,7 +42,7 @@ export function createBreakpointService({ ownerStore }) {
                 type: String(hit.type),
                 address: Number(hit.address) >>> 0
             };
-            const classification = ownerStore.classifySite(site);
+            const classification = ownerStore.classifySite(hit.ownerSite || site);
             const event = { ...hit, ...classification, serial: ++serial, site };
             for (const listener of listeners) listener(event);
             return event;

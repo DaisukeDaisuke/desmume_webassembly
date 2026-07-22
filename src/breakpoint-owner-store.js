@@ -37,20 +37,18 @@ export function createBreakpointOwnerStore({ onFirstOwner = () => {}, onLastOwne
                 error.mcpDetails = { id: owner.id, existingSite: ids.get(owner.id), requestedSite: key };
                 throw error;
             }
-            let entry = sites.get(key);
-            if (!entry) {
-                entry = {
+            const existingEntry = sites.get(key);
+            const entry = existingEntry || {
                     ...site,
                     key,
                     address: Number(site.address) >>> 0,
                     owners: new Map()
                 };
-                sites.set(key, entry);
-            }
             const first = entry.owners.size === 0;
+            if (first) onFirstOwner(entry);
             entry.owners.set(owner.id, { enabled: true, ...owner });
             ids.set(owner.id, key);
-            if (first) onFirstOwner(entry);
+            if (!existingEntry) sites.set(key, entry);
             return entry;
         },
         removeOwner(ownerId) {
@@ -58,11 +56,12 @@ export function createBreakpointOwnerStore({ onFirstOwner = () => {}, onLastOwne
             const entry = key && sites.get(key);
             if (!entry) return null;
             const owner = entry.owners.get(ownerId);
+            const last = entry.owners.size === 1;
+            if (last) onLastOwner(entry);
             entry.owners.delete(ownerId);
             ids.delete(ownerId);
-            if (!entry.owners.size) {
+            if (last) {
                 sites.delete(key);
-                onLastOwner(entry);
             }
             return { entry, owner };
         },

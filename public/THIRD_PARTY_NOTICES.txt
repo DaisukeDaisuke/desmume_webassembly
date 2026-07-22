@@ -1,4 +1,4 @@
-/# Third-party notices
+# Third-party notices
 
 ## coi-serviceworker v0.1.7
 

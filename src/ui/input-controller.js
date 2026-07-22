@@ -1,19 +1,30 @@
-export function createInputController({ state, ui, native }) {
+import { codedError } from "../validation.js";
+import { ErrorCode } from "../error-codes.js";
+
+export function createInputController({ state, ui }) {
+    function normalizeButton(button) {
+        const name = String(button);
+        if (!Object.prototype.hasOwnProperty.call(state.buttons, name)) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `unknown button: ${name}`);
+        }
+        return name;
+    }
+
     function toButtonList(params = {}) {
         const buttons = Array.isArray(params.buttons)
             ? params.buttons
             : [params.button].filter(Boolean);
         if (!buttons.length) throw new Error("button or buttons is required");
-        return buttons.map((button) => String(button));
+        return buttons.map(normalizeButton);
     }
 
     function setKey(button, pressed) {
+        button = normalizeButton(button);
         const bit = state.buttons[button];
-        if (bit === undefined) return;
         if (pressed) state.keys |= 1 << bit;
         else state.keys &= ~(1 << bit);
-        document.querySelectorAll(`[data-button="${button}"]`).forEach((element) => {
-            element.dataset.down = pressed ? "true" : "false";
+        document.querySelectorAll("[data-button]").forEach((element) => {
+            if (element.dataset.button === button) element.dataset.down = pressed ? "true" : "false";
         });
     }
 
@@ -27,9 +38,6 @@ export function createInputController({ state, ui, native }) {
             x: Number(x) || 0,
             y: Number(y) || 0
         };
-        if (state.ready && state.touch.active) {
-            native.runFrame({ render: false, keys: state.keys, touch: state.touch });
-        }
     }
 
     function isTypingTarget(element = document.activeElement) {
@@ -72,9 +80,6 @@ export function createInputController({ state, ui, native }) {
             return;
         }
         state.touch = { active, x: position.x, y: position.y };
-        if (state.ready && active) {
-            native.runFrame({ render: false, keys: state.keys, touch: state.touch });
-        }
     }
 
     return Object.freeze({

@@ -66,9 +66,7 @@ export function createDebuggerCoordinator({
         ));
     }
 
-    async function finishPersistentScriptEvent(eventId) {
-        const pending = state.pendingScriptEvents.get(Number(eventId));
-        if (!pending || --pending.remaining > 0) return;
+    async function finishCompletedPersistentScriptEvent(eventId, pending) {
         state.pendingScriptEvents.delete(Number(eventId));
         if (pending.pauseSerial !== state.explicitPauseSerial || !native.hasLoadedRom()) return;
 
@@ -97,11 +95,48 @@ export function createDebuggerCoordinator({
         updateStatus();
     }
 
+    async function finishPersistentScriptEvent(eventId, identity = {}) {
+        const pending = state.pendingScriptEvents.get(Number(eventId));
+        const token = String(identity.callbackToken || "");
+        const callback = pending?.pendingCallbacks.get(token);
+        if (!pending || !callback) return false;
+        if (Number(identity.scriptId) !== callback.scriptId
+            || Number(identity.callbackId) !== callback.callbackId) {
+            return false;
+        }
+        pending.pendingCallbacks.delete(token);
+        if (pending.pendingCallbacks.size) return true;
+        await finishCompletedPersistentScriptEvent(eventId, pending);
+        return true;
+    }
+
+    async function settlePersistentScriptCallbacks(scriptId) {
+        const completions = [];
+        for (const [eventId, pending] of state.pendingScriptEvents) {
+            for (const [token, callback] of pending.pendingCallbacks) {
+                if (callback.scriptId === Number(scriptId)) pending.pendingCallbacks.delete(token);
+            }
+            if (!pending.pendingCallbacks.size) {
+                completions.push(finishCompletedPersistentScriptEvent(eventId, pending));
+            }
+        }
+        await Promise.all(completions);
+    }
+
     function dispatchScriptTriggers(triggers, breakpoint, type, autoResume) {
         const eventId = autoResume ? state.nextScriptEventId++ : 0;
+        const pendingCallbacks = new Map();
         if (autoResume) {
+            for (const trigger of triggers) {
+                const callbackToken = `${eventId}:${state.nextScriptCallbackToken++}`;
+                pendingCallbacks.set(callbackToken, {
+                    scriptId: Number(trigger.scriptId),
+                    callbackId: Number(trigger.callbackId)
+                });
+                trigger.callbackToken = callbackToken;
+            }
             state.pendingScriptEvents.set(eventId, {
-                remaining: triggers.length,
+                pendingCallbacks,
                 pauseSerial: state.explicitPauseSerial,
                 cpu: String(breakpoint.cpu),
                 type,
@@ -111,20 +146,34 @@ export function createDebuggerCoordinator({
         for (const trigger of triggers) {
             const script = state.scripts.get(trigger.scriptId);
             if (script?.running) {
-                script.worker.postMessage({
-                    type: "event",
-                    eventId,
-                    callbackId: trigger.callbackId,
-                    event: type,
-                    payload: {
-                        ...breakpoint,
-                        address: hex(breakpoint.address),
-                        pc: hex(breakpoint.pc),
-                        value: hex(breakpoint.value)
-                    }
-                });
+                try {
+                    script.worker.postMessage({
+                        type: "event",
+                        eventId,
+                        scriptId: trigger.scriptId,
+                        callbackId: trigger.callbackId,
+                        callbackToken: trigger.callbackToken,
+                        event: type,
+                        payload: {
+                            ...breakpoint,
+                            address: hex(breakpoint.address),
+                            pc: hex(breakpoint.pc),
+                            value: hex(breakpoint.value)
+                        }
+                    });
+                } catch {
+                    if (autoResume) void finishPersistentScriptEvent(eventId, {
+                        scriptId: trigger.scriptId,
+                        callbackId: trigger.callbackId,
+                        callbackToken: trigger.callbackToken
+                    });
+                }
             } else if (autoResume) {
-                void finishPersistentScriptEvent(eventId);
+                void finishPersistentScriptEvent(eventId, {
+                    scriptId: trigger.scriptId,
+                    callbackId: trigger.callbackId,
+                    callbackToken: trigger.callbackToken
+                });
             }
         }
     }
@@ -156,10 +205,14 @@ export function createDebuggerCoordinator({
             cpu: String(breakpoint.cpu),
             address: Number(breakpoint.address) >>> 0
         };
-        const classification = breakpointOwners.classifySite(site);
+        const ownerSite = ["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)
+            ? { cpu: "special", type, address: 0 }
+            : site;
+        const classification = breakpointOwners.classifySite(ownerSite);
         breakpointService.publish({
             ...breakpoint,
             ...site,
+            ownerSite,
             pc: Number(breakpoint.pc) >>> 0,
             value: Number(breakpoint.value) >>> 0
         });
@@ -191,6 +244,7 @@ export function createDebuggerCoordinator({
         finishPersistentScriptEvent,
         getNativeStatus,
         getRegisters,
+        settlePersistentScriptCallbacks,
         syncNativeBreakStatus,
         withCurrentExecBreakpointSuspended
     });

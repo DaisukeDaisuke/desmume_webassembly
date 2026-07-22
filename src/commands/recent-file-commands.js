@@ -1,3 +1,6 @@
+import { ErrorCode } from "../error-codes.js";
+import { codedError } from "../validation.js";
+
 export function createRecentFileCommands(context) {
     const {
         applySaveAndReloadRom,
@@ -48,8 +51,8 @@ export function createRecentFileCommands(context) {
                         { waitMs: bootWaitMs() }
                     );
                     const ret = saveLoad.ret;
+                    if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Recent Save load failed (${ret})`, { nativeCode: ret });
                     return {
-                        ok: ret === 0,
                         ret,
                         item,
                         size: bytes.length,

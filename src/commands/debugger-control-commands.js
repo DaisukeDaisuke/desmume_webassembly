@@ -81,20 +81,45 @@ export function createDebuggerControlCommands(context) {
 
         async setSpecialBreakpoint(params = {}) {
             ensureRomLoaded("special breakpoints require a loaded ROM");
-            const kindMap = {
-                dataAbort: 3,
-                prefetchAbort: 4,
-                undefinedInstruction: 5,
-                undefined: 5
-            };
-            const kind = kindMap[String(params.kind)] ?? Number(params.kind);
-            const ret = native.setSpecialBreakpoint(kind, params.enabled);
-            if (params.kind === "dataAbort") ui.bpDataAbortToggle.checked = !!params.enabled;
-            if (params.kind === "prefetchAbort") ui.bpPrefetchAbortToggle.checked = !!params.enabled;
-            if (params.kind === "undefinedInstruction" || params.kind === "undefined") {
-                ui.bpUndefinedToggle.checked = !!params.enabled;
+            const kindMap = new Map([
+                ["dataAbort", "dataAbort"], ["3", "dataAbort"],
+                ["prefetchAbort", "prefetchAbort"], ["4", "prefetchAbort"],
+                ["undefinedInstruction", "undefinedInstruction"], ["undefined", "undefinedInstruction"],
+                ["5", "undefinedInstruction"]
+            ]);
+            const kind = kindMap.get(String(params.kind));
+            if (!kind) {
+                const error = new Error("unknown special breakpoint kind");
+                error.mcpCode = "INVALID_ARGUMENT";
+                throw error;
             }
-            return { ok: ret === 0, kind, enabled: !!params.enabled };
+            const metadata = getInternalMetadata(params);
+            const origin = String(metadata.origin || "user");
+            const site = { cpu: "special", type: kind, address: 0 };
+            const matchingOwner = breakpointOwners.getOwners(site).find((owner) => (
+                owner.origin === origin
+                && (metadata.scriptId === undefined || owner.scriptId === metadata.scriptId)
+                && (metadata.triggerId === undefined || owner.triggerId === metadata.triggerId)
+                && (metadata.operationId === undefined || owner.operationId === metadata.operationId)
+            ));
+            let id = matchingOwner?.id;
+            if (params.enabled !== false && !matchingOwner) {
+                id = state.nextBreakpointId++;
+                breakpointOwners.addOwner(site, {
+                    id,
+                    origin,
+                    scriptId: metadata.scriptId,
+                    triggerId: metadata.triggerId,
+                    operationId: metadata.operationId
+                });
+            } else if (params.enabled === false && matchingOwner) {
+                breakpointOwners.removeOwner(matchingOwner.id);
+            }
+            const enabled = breakpointOwners.getOwners(site).some((owner) => owner.origin === "user");
+            if (kind === "dataAbort") ui.bpDataAbortToggle.checked = enabled;
+            if (kind === "prefetchAbort") ui.bpPrefetchAbortToggle.checked = enabled;
+            if (kind === "undefinedInstruction") ui.bpUndefinedToggle.checked = enabled;
+            return { id, kind, enabled: params.enabled !== false, userEnabled: enabled };
         },
 
         async listBreakpoints() {
@@ -102,7 +127,7 @@ export function createDebuggerControlCommands(context) {
         },
 
         async removeBreakpoint(params = {}) {
-            ensureRomLoaded("breakpoint removal requires a loaded ROM");
+            ensureReady();
             const id = Number(params.id ?? ui.bpIdSelect.value);
             const breakpoint = state.breakpoints.find((item) => item.id === id)
                 || breakpointOwners.findBreakpointById(id);

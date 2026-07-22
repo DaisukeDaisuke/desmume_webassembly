@@ -93,6 +93,24 @@ test("breakpoint owner IDs cannot be reused", () => {
   assert.equal(store.getOwners(store.list()[0]).length, 1);
 });
 
+test("breakpoint owner changes are transactional when native callbacks throw", () => {
+  const site = { cpu: "arm9", type: "exec", address: 0x02000000 };
+  const addFailure = createBreakpointOwnerStore({
+    onFirstOwner: () => { throw new Error("native add failed"); }
+  });
+  assert.throws(() => addFailure.addOwner(site, { id: 1, origin: "user" }), /native add failed/);
+  assert.equal(addFailure.list().length, 0);
+  assert.equal(addFailure.findBreakpointById(1), null);
+
+  const removeFailure = createBreakpointOwnerStore({
+    onLastOwner: () => { throw new Error("native remove failed"); }
+  });
+  removeFailure.addOwner(site, { id: 2, origin: "user" });
+  assert.throws(() => removeFailure.removeOwner(2), /native remove failed/);
+  assert.equal(removeFailure.list().length, 1);
+  assert.equal(removeFailure.getOwners(site)[0].id, 2);
+});
+
 test("frame algorithms use the supplied fixed baseline", async () => {
   const width = 256;
   const height = 384;
@@ -103,4 +121,24 @@ test("frame algorithms use the supplied fixed baseline", async () => {
   assert.ok(result.pct > 19 && result.pct < 21);
   const restored = await compareFramePixels({ baseline, current: new Uint32Array(baseline), width, height, algorithm: "px" });
   assert.equal(restored.pct, 0);
+});
+
+test("frame algorithms reject malformed regions and ignore rectangles consistently", async () => {
+  const pixels = new Uint32Array(256 * 384);
+  for (const args of [
+    { region: [0, 0, 10] },
+    { region: [0.5, 0, 10, 10] },
+    { ignoreRects: {} },
+    { ignoreRects: [[0, 0, 10]] },
+    { ignoreRects: [[0, 0, 300, 10]] }
+  ]) {
+    await assert.rejects(() => compareFramePixels({
+      baseline: pixels,
+      current: pixels,
+      width: 256,
+      height: 384,
+      algorithm: "px",
+      ...args
+    }));
+  }
 });

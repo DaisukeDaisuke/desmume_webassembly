@@ -4,6 +4,10 @@ export function normalizeArea({ width, height, screen = "both", region, ignoreRe
     if (!["top", "bottom", "both"].includes(screen)) {
         throw new Error("screen must be top, bottom, or both");
     }
+    if (region !== undefined && (!Array.isArray(region) || region.length !== 4)) {
+        throw new Error("region must contain four numbers");
+    }
+    if (!Array.isArray(ignoreRects)) throw new Error("ignoreRects must be an array");
     const box = region || [0, 0, 256, areaHeight];
     const [x, y, boxWidth, boxHeight] = box.map(Number);
     const invalidBox = ![x, y, boxWidth, boxHeight].every(Number.isInteger)
@@ -14,7 +18,12 @@ export function normalizeArea({ width, height, screen = "both", region, ignoreRe
         || x + boxWidth > width
         || y + boxHeight > areaHeight;
     if (invalidBox) throw new Error("region is outside the selected screen");
-    const ignored = ignoreRects.map((rect) => rect.map(Number));
+    const ignored = ignoreRects.map((rect) => {
+        if (!Array.isArray(rect) || rect.length !== 4) {
+            throw new Error("ignoreRects contains an invalid rectangle");
+        }
+        return rect.map(Number);
+    });
     const invalidIgnoredRect = ignored.some(([rectX, rectY, rectWidth, rectHeight]) => (
         ![rectX, rectY, rectWidth, rectHeight].every(Number.isInteger)
         || rectX < 0

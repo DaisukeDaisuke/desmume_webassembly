@@ -8,6 +8,20 @@ const importScripts = undefined;
 const Function = undefined;
 const replies = new Map();
 
+for (const name of [
+    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function"
+]) {
+    try {
+        Object.defineProperty(globalThis, name, {
+            value: undefined,
+            writable: false,
+            configurable: false
+        });
+    } catch {
+        try { globalThis[name] = undefined; } catch {}
+    }
+}
+
 function call(command, params = {}) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
@@ -65,6 +79,9 @@ onmessage = async (event) => {
     }
     installShortcuts(message.shortcuts);
     try {
+        if (/\bimport\s*\(/.test(message.code)) {
+            throw new SyntaxError("dynamic import is unavailable in isolated scripts");
+        }
         const script = `(async (mcp, webmcp) => {\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
         const result = await (0, eval)(script)(mcp, webmcp);
         postMessage({ type: "done", result });
@@ -73,3 +90,5 @@ onmessage = async (event) => {
         postMessage({ type: "error", error: describeError(error, message.code, phase) });
     }
 };
+
+postMessage({ type: "ready" });

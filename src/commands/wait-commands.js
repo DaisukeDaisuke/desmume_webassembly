@@ -1,5 +1,6 @@
 import { ErrorCode } from "../error-codes.js";
 import { withInternalMetadata } from "../internal-command-metadata.js";
+import { positiveInteger, subscribeAbort } from "../validation.js";
 
 export function registerWaitCommands({
     commands,
@@ -20,12 +21,12 @@ export function registerWaitCommands({
         const afterSerial = scriptPauseService.currentSerial();
         const controller = new AbortController();
         const abortFromOperation = () => controller.abort(operation.signal.reason);
-        operation.signal.addEventListener("abort", abortFromOperation, { once: true });
+        const unsubscribeOperationAbort = subscribeAbort(operation.signal, abortFromOperation);
         return new Promise((resolve, reject) => {
             let settled = false;
             const cleanup = () => {
                 unsubscribePause();
-                operation.signal.removeEventListener("abort", abortFromOperation);
+                unsubscribeOperationAbort();
                 if (!controller.signal.aborted) controller.abort("settled");
             };
             const settle = (method, value) => {
@@ -70,9 +71,11 @@ export function registerWaitCommands({
                 }));
                 const native = getNativeStatus();
                 if (native?.lastBreak?.hit && Number(native.lastBreak.kind) === 0) {
-                    await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
+                    const stepped = await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
+                    if (stepped?.ok === false) return stepped;
                 }
-                await commands.resume(withInternalMetadata({}, { operation: true }));
+                const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
+                if (resumed?.ok === false) return resumed;
                 const waited = await pending;
                 if (waited.scriptPause) return scriptPausedResult(waited.scriptPause);
                 const event = waited.value;
@@ -120,7 +123,7 @@ export function registerWaitCommands({
                     if (breakpointOwners.classifySite(site).scriptOnly && params.scriptBreakpoints !== "include") {
                         return responder.fail(ErrorCode.BREAKPOINT_NOT_WAITABLE, `Breakpoint is script-only: ${id}`);
                     }
-                    progress.expectedHits = Math.max(1, Number(params.hits ?? 1));
+                    progress.expectedHits = positiveInteger(params.hits ?? 1, "hits", 1000000);
                     predicate = (event) => event.owners.some((owner) => owner.id === id);
                 }
                 let afterSerial = breakpointService.currentSerial();
@@ -132,14 +135,18 @@ export function registerWaitCommands({
                             predicate,
                             signal
                         }));
-                        await commands.resume(withInternalMetadata({}, { operation: true }));
+                        const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
+                        if (resumed?.ok === false) return resumed;
                         const waited = await pending;
                         if (waited.scriptPause) return scriptPausedResult(waited.scriptPause);
                         const event = waited.value;
                         afterSerial = event.serial;
                         progress.hits++;
                         if (progress.hits < progress.expectedHits) {
-                            if (event.type === "exec") await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
+                            if (event.type === "exec") {
+                                const stepped = await commands.step(withInternalMetadata({ count: 1 }, { operation: true }));
+                                if (stepped?.ok === false) return stepped;
+                            }
                             continue;
                         }
                         await commands.pause(withInternalMetadata({}, { operation: true }));
@@ -176,61 +183,78 @@ export function registerWaitCommands({
             timeoutMs: Number(params.timeoutMs),
             timeoutDetails: () => ({ maxPct: progress.maxPct }),
             task: async (operation) => {
-                await commands.pause(withInternalMetadata({}, { operation: true }));
+                const initialPause = await commands.pause(withInternalMetadata({}, { operation: true }));
+                if (initialPause?.ok === false) return initialPause;
                 const baseline = frameService.captureCurrent();
                 if (!baseline.ok) return baseline;
-                const stableFrames = Math.max(1, Number(params.stableFrames ?? 1));
-                const sampleEvery = Math.max(1, Number(params.sampleEveryFrames ?? 1));
+                const stableFrames = positiveInteger(params.stableFrames ?? 1, "stableFrames", 1000000);
+                const sampleEvery = positiveInteger(params.sampleEveryFrames ?? 1, "sampleEveryFrames", 1000000);
                 let stable = 0;
                 let frames = 0;
                 let sampledFrames = 0;
                 let comparing = false;
-                return new Promise(async (resolve, reject) => {
+                let finishWait = () => {};
+                const waiting = new Promise((resolve, reject) => {
                     let finished = false;
+                    let unsubscribeFrame = () => {};
+                    let unsubscribeBreak = () => {};
+                    let unsubscribeScriptPause = () => {};
+                    let unsubscribeAbort = () => {};
                     const cleanup = () => {
                         unsubscribeFrame();
                         unsubscribeBreak();
                         unsubscribeScriptPause();
-                        operation.signal.removeEventListener("abort", aborted);
+                        unsubscribeAbort();
                     };
-                    const finish = async (result) => {
+                    const finish = (result) => {
                         if (finished) return;
                         finished = true;
                         cleanup();
-                        await commands.pause(withInternalMetadata({}, { operation: true }));
-                        resolve(result);
+                        Promise.resolve(commands.pause(withInternalMetadata({}, { operation: true }))).then(
+                            (paused) => resolve(paused?.ok === false ? paused : result),
+                            reject
+                        );
                     };
+                    finishWait = finish;
                     const aborted = () => {
                         if (finished) return;
                         finished = true;
                         cleanup();
                         reject(new DOMException("aborted", "AbortError"));
                     };
-                    const unsubscribeFrame = frameService.subscribe(async () => {
+                    unsubscribeFrame = frameService.subscribe(async () => {
                         frames++;
                         if (finished || comparing || frames % sampleEvery) return;
                         comparing = true;
                         sampledFrames++;
-                        const result = await frameService.comparePixels(baseline.pixels, {
-                            ...params,
-                            signal: operation.signal
-                        });
-                        comparing = false;
-                        if (finished) return;
-                        if (!result.ok) return finish(result);
-                        progress.maxPct = Math.max(progress.maxPct, result.pct);
-                        stable = result.changed ? stable + 1 : 0;
-                        if (stable >= stableFrames) {
-                            return finish(responder.ok({
-                                changed: true,
-                                algorithm: params.algorithm,
-                                pct: result.pct,
-                                frames,
-                                ...(params.debug ? { sampledFrames } : {})
-                            }));
+                        try {
+                            const result = await frameService.comparePixels(baseline.pixels, {
+                                ...params,
+                                signal: operation.signal
+                            });
+                            if (finished) return;
+                            if (!result.ok) return finish(result);
+                            progress.maxPct = Math.max(progress.maxPct, result.pct);
+                            stable = result.changed ? stable + 1 : 0;
+                            if (stable >= stableFrames) {
+                                return finish(responder.ok({
+                                    changed: true,
+                                    algorithm: params.algorithm,
+                                    pct: result.pct,
+                                    frames,
+                                    ...(params.debug ? { sampledFrames } : {})
+                                }));
+                            }
+                        } catch (error) {
+                            finish(responder.fail(
+                                error?.mcpCode || ErrorCode.INTERNAL_ERROR,
+                                String(error?.message || error)
+                            ));
+                        } finally {
+                            comparing = false;
                         }
                     });
-                    const unsubscribeBreak = breakpointService.subscribe((event) => {
+                    unsubscribeBreak = breakpointService.subscribe((event) => {
                         if (event.scriptOnly) return;
                         const breakpointId = event.owners.find((owner) => owner.origin === "user")?.id;
                         void finish(responder.fail(
@@ -245,13 +269,16 @@ export function registerWaitCommands({
                         ));
                     });
                     const scriptPauseAfterSerial = scriptPauseService.currentSerial();
-                    const unsubscribeScriptPause = scriptPauseService.subscribe((event) => {
+                    unsubscribeScriptPause = scriptPauseService.subscribe((event) => {
                         if (event.serial <= scriptPauseAfterSerial) return;
                         void finish(scriptPausedResult(event));
                     });
-                    operation.signal.addEventListener("abort", aborted, { once: true });
-                    await commands.resume(withInternalMetadata({}, { operation: true }));
+                    unsubscribeAbort = subscribeAbort(operation.signal, aborted);
                 });
+                if (operation.signal.aborted) return waiting;
+                const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
+                if (resumed?.ok === false) finishWait(resumed);
+                return waiting;
             }
         });
     };

@@ -1,3 +1,6 @@
+import { codedError, memorySize, positiveInteger } from "../validation.js";
+import { ErrorCode } from "../error-codes.js";
+
 export function createMemoryCommands(context) {
     const {
         applyFreezes,
@@ -23,11 +26,23 @@ export function createMemoryCommands(context) {
         ui
     } = context;
 
+    function assertAddressRange(address, length) {
+        if (address + length > 0x100000000) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "memory range exceeds uint32 address space");
+        }
+    }
+
     const memoryCommands = {
+        async applyMemoryFreezes() {
+            applyFreezes();
+            return { applied: state.freezes.filter((item) => item.enabled !== false).length };
+        },
+
         async dumpMemory(params = {}) {
             ensureRomLoaded("memory dump requires a loaded ROM");
             const address = parseAddress(params.address ?? ui.memoryAddress.value, 0, params.cpu);
-            const length = Math.min(65536, Number(params.length ?? ui.memoryLength.value));
+            const length = positiveInteger(params.length ?? ui.memoryLength.value, "length", 65536);
+            assertAddressRange(address, length);
             const view = String(params.view ?? ui.memoryView?.value ?? "mixed");
             const bytes = [...native.dumpMemory(params.cpu, address, length)];
             const lines = [];
@@ -62,6 +77,7 @@ export function createMemoryCommands(context) {
                     ? await readFileFromInput(ui.memoryInjectFile)
                     : await openPicker(ui.memoryInjectFile);
             const { file, bytes } = selected;
+            assertAddressRange(address, bytes.length);
             for (let offset = 0; offset < bytes.length; offset += 1) {
                 native.writeMemory(params.cpu, address + offset, bytes[offset], 1);
             }
@@ -87,10 +103,11 @@ export function createMemoryCommands(context) {
             ensureRomLoaded("memory search requires a loaded ROM");
             const ranges = memorySearchRanges(params);
             const rangeKey = memorySearchRangeKey(ranges);
-            const size = Math.max(1, Math.min(4, Number(params.size ?? ui.searchSize.value)));
+            const size = memorySize(params.size ?? ui.searchSize.value);
             const condition = String(params.condition ?? ui.searchCondition.value);
             const value = parseNumber(params.value ?? ui.searchValue.value);
-            const limit = Math.max(1, Math.min(10000, Number(params.limit ?? ui.searchLimit.value)));
+            const limit = positiveInteger(params.limit ?? ui.searchLimit.value, "limit", 10000);
+            for (const range of ranges) assertAddressRange(range.address, range.length);
             const refine = params.refine !== false
                 && state.search.snapshot
                 && state.search.rangeKey === rangeKey
@@ -195,7 +212,8 @@ export function createMemoryCommands(context) {
             ensureRomLoaded("memory write requires a loaded ROM");
             const address = parseAddress(params.address, 0, params.cpu);
             const value = parseNumber(params.value);
-            const size = Number(params.size ?? 1);
+            const size = memorySize(params.size ?? 1);
+            assertAddressRange(address, size);
             native.writeMemory(params.cpu, address, value, size);
             return { ok: true };
         },
@@ -206,7 +224,7 @@ export function createMemoryCommands(context) {
                 cpu: String(params.cpu ?? state.selectedCpu),
                 address: parseAddress(params.address, 0, params.cpu),
                 value: parseNumber(params.value),
-                size: Number(params.size ?? 1),
+                size: memorySize(params.size ?? 1),
                 enabled: params.enabled !== false
             };
             state.freezes = state.freezes.filter((entry) => !(

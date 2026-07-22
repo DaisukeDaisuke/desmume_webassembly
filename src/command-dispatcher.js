@@ -1,4 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
+import { isPlainObject } from "./validation.js";
 
 const UI_REFRESH_COMMANDS = new Set([
     "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
@@ -66,6 +67,10 @@ export function createCommandDispatcher({
     }
 
     async function run(name, params = {}) {
+        if (params === undefined) params = {};
+        if (!isPlainObject(params)) {
+            return responder.fail(ErrorCode.INVALID_ARGUMENT, "Command params must be a plain object");
+        }
         const reservedField = RESERVED_PARAM_FIELDS.find((field) => (
             Object.prototype.hasOwnProperty.call(params, field)
         ));

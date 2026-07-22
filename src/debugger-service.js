@@ -232,7 +232,12 @@ export function createDebuggerService({
             return result;
         } else {
             try {
-                if (kind === "step") result.count = native.step(cpu, Number(params.count ?? 1));
+                if (kind === "step") {
+                    result.count = await withCurrentExecBreakpointSuspended(
+                        cpu,
+                        () => native.step(cpu, Number(params.count ?? 1))
+                    );
+                }
                 else if (kind === "stepOver") {
                     result.count = native.stepOver(cpu);
                     result.ret = result.count;

@@ -1,3 +1,6 @@
+import { ErrorCode } from "../error-codes.js";
+import { codedError } from "../validation.js";
+
 export function createSaveCommands({
     ui,
     native,
@@ -31,6 +34,7 @@ export function createSaveCommands({
                     waitMs: bootWaitMs()
                 });
                 const result = saveLoad.ret;
+                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save import failed (${result})`, { nativeCode: result });
                 if (result === 0) {
                     rememberSlot(ui.stateSlot.value);
                     await idbPut(`save:${ui.stateSlot.value}`, bytes);
@@ -39,7 +43,6 @@ export function createSaveCommands({
                 }
                 log(`save imported via ${saveLoad.path}: ${file.name}`);
                 return {
-                    ok: result === 0,
                     ret: result,
                     size: bytes.length,
                     reset: result === 0,
@@ -83,10 +86,10 @@ export function createSaveCommands({
                     waitMs: bootWaitMs()
                 });
                 const result = saveLoad.ret;
+                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save load failed (${result})`, { nativeCode: result });
                 ui.storageStatus.textContent = `save loaded ${slot}`;
                 await recordRecentFile("save", slot, bytes, slot);
                 return {
-                    ok: result === 0,
                     ret: result,
                     slot,
                     size: bytes.length,

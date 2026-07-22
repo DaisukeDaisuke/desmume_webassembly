@@ -2,20 +2,28 @@ import { ErrorCode } from "./error-codes.js";
 import { compareFramePixels } from "./frame-diff/index.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import algorithmWorkerSource from "./workers/algorithm.worker.js";
+import { normalizeArea } from "./frame-diff/common.js";
+import { isValidAlgorithmWorkerResult } from "./frame-comparator-result.js";
 
 export function createFrameComparator({
     responder,
     algorithmLoader,
+    createWorker = createEmbeddedWorker,
     workerStartupTimeoutMs = 3000,
     workerExecutionTimeoutMs = 10000
 }) {
     async function compare(args) {
         if (args.algorithm !== "ssim-trim") return compareFramePixels(args);
+        try {
+            normalizeArea(args);
+        } catch (error) {
+            return responder.fail(ErrorCode.INVALID_ARGUMENT, String(error?.message || error));
+        }
         const loaded = await algorithmLoader.load(args.algorithm, args.signal);
         if (!loaded.ok) return loaded;
         let host;
         try {
-            host = createEmbeddedWorker(algorithmWorkerSource);
+            host = createWorker(algorithmWorkerSource);
         } catch (error) {
             return responder.fail(ErrorCode.WORKER_START_FAILED, "Algorithm Worker could not be started", {
                 message: String(error?.message || error)
@@ -68,6 +76,13 @@ export function createFrameComparator({
                         ));
                     }
                 } else if (message.type === "done" && ready) {
+                    if (!isValidAlgorithmWorkerResult(message.result)) {
+                        finish(responder.fail(
+                            ErrorCode.WORKER_PROTOCOL_ERROR,
+                            "Algorithm Worker returned an invalid comparison result"
+                        ));
+                        return;
+                    }
                     finish({
                         ok: true,
                         pct: message.result.pct,

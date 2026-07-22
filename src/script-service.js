@@ -2,6 +2,7 @@ import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import persistentScriptWorkerSource from "./workers/persistent-script.worker.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
+import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
 
 export function createScriptService({
     state,
@@ -9,6 +10,7 @@ export function createScriptService({
     responder,
     ensureRomLoaded,
     finishPersistentScriptEvent,
+    settlePersistentScriptCallbacks,
     hex,
     parseAddress,
     rawOutputText,
@@ -100,7 +102,12 @@ export function createScriptService({
     
     function dispatchScriptEvent(type, payload = {}) {
         for (const script of state.scripts.values()) {
-            if (script.running) script.worker.postMessage({ type: "event", event: type, payload });
+            if (!script.running) continue;
+            try {
+                script.worker.postMessage({ type: "event", event: type, payload });
+            } catch (error) {
+                void failPersistentScript(script, error);
+            }
         }
     }
     
@@ -109,8 +116,8 @@ export function createScriptService({
             if (trigger.breakpointId) {
                 await commands.removeBreakpoint({ id: trigger.breakpointId });
             }
-            if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(trigger.type) && !state.scriptTriggers.some((item) => item.id !== trigger.id && item.type === trigger.type)) {
-                await commands.setSpecialBreakpoint({ kind: trigger.type, enabled: false });
+            if (trigger.specialBreakpointId) {
+                await commands.removeBreakpoint({ id: trigger.specialBreakpointId });
             }
             state.scriptTriggers = state.scriptTriggers.filter((item) => item.id !== trigger.id);
         }
@@ -128,7 +135,11 @@ export function createScriptService({
             ));
             item.breakpointId = result.id;
         } else if (["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)) {
-            await commands.setSpecialBreakpoint({ kind: type, enabled: true });
+            const result = await commands.setSpecialBreakpoint(withInternalMetadata(
+                { kind: type, enabled: true },
+                { origin: "script", scriptId: script.id, triggerId: item.id }
+            ));
+            item.specialBreakpointId = result.id;
         } else if (type !== "tick" && type !== "start" && type !== "stateLoad" && type !== "stateSave") {
             throw new Error(`unknown script trigger: ${type}`);
         }
@@ -214,6 +225,9 @@ export function createScriptService({
         state.scripts.set(script.id, script);
         state.activeScriptId = script.id;
         let startupSettled = false;
+        let ready = false;
+        let compiled = false;
+        const seenRequestIds = new Set();
         let resolveStartup;
         const startup = new Promise((resolve) => {
             resolveStartup = resolve;
@@ -240,40 +254,68 @@ export function createScriptService({
         worker.onmessage = async (event) => {
             const msg = event.data || {};
             try {
-                if (msg.type === "call") {
-                    if (typeof msg.id !== "string" || typeof msg.command !== "string") {
-                        await handleWorkerFailure(
-                            responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Persistent script sent a malformed RPC request"),
-                            "malformed Worker RPC request"
-                        );
-                        return;
-                    }
+                if (msg.type === "ready" && !ready) {
+                    ready = true;
                     worker.postMessage({
-                        replyId: msg.id,
-                        result: await queuePersistentScriptOperation(
-                            script,
-                            msg.command,
-                            msg.params || {},
-                            msg.eventId
-                        )
+                        type: "start",
+                        code,
+                        asyncMode,
+                        shortcuts: Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [
+                            shortcut,
+                            definition.command,
+                            definition.params,
+                            definition.defaults
+                        ])
                     });
+                } else if (msg.type === "call") {
+                    if (!ready) throw new Error("Persistent script sent RPC before ready");
+                    const request = validateWorkerRpc(msg, PERSISTENT_RPC_ALLOWLIST, seenRequestIds);
+                    try {
+                        const result = await queuePersistentScriptOperation(
+                            script,
+                            request.command,
+                            request.params,
+                            msg.eventId
+                        );
+                        worker.postMessage({ replyId: msg.id, result });
+                    } catch (error) {
+                        worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                    }
                 } else if (msg.type === "register") {
-                    if (typeof msg.id !== "string" || !msg.trigger || typeof msg.trigger !== "object") {
+                    if (!ready || typeof msg.id !== "string" || seenRequestIds.has(msg.id) || !msg.trigger || typeof msg.trigger !== "object") {
                         await handleWorkerFailure(
                             responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Persistent script sent a malformed trigger request"),
                             "malformed Worker trigger request"
                         );
                         return;
                     }
-                    worker.postMessage({
-                        replyId: msg.id,
-                        result: await queuePersistentScriptOperation(script, "register", msg.trigger)
-                    });
+                    seenRequestIds.add(msg.id);
+                    try {
+                        const result = await queuePersistentScriptOperation(script, "register", msg.trigger);
+                        worker.postMessage({ replyId: msg.id, result });
+                    } catch (error) {
+                        worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                    }
                 } else if (msg.type === "eventDone" && Number.isFinite(Number(msg.eventId))) {
-                void finishPersistentScriptEvent(msg.eventId);
+                    const accepted = await finishPersistentScriptEvent(msg.eventId, {
+                        scriptId: script.id,
+                        callbackId: msg.callbackId,
+                        callbackToken: msg.callbackToken
+                    });
+                    if (!accepted) {
+                        await handleWorkerFailure(
+                            responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Persistent script sent an invalid event completion"),
+                            "invalid Worker event completion"
+                        );
+                    }
                 } else if (msg.type === "print" && Array.isArray(msg.values)) {
                     scriptConsoleLine(script, msg.values);
+                } else if (msg.type === "compiled" && ready && !compiled) {
+                    compiled = true;
                 } else if (msg.type === "started") {
+                    if (!ready || !compiled) {
+                        throw new Error("Persistent script started before compile acknowledgement");
+                    }
                     settleStartup(scriptSummary(script, false));
                 } else if (msg.type === "failed") {
                     const result = scriptFailureResult(msg, code);
@@ -285,15 +327,16 @@ export function createScriptService({
                     );
                 }
             } catch (error) {
-                if (script.running && typeof msg.id === "string") {
-                    worker.postMessage({ replyId: msg.id, error: String(error.message || error) });
-                }
+                await handleWorkerFailure(
+                    responder.fail(error?.mcpCode || ErrorCode.WORKER_PROTOCOL_ERROR, String(error?.message || error)),
+                    String(error?.message || error)
+                );
             }
         };
         worker.onerror = (event) => {
             const message = String(event.message || event.error?.message || "Persistent script Worker crashed");
             void handleWorkerFailure(
-                responder.fail(ErrorCode.WORKER_CRASHED, "Persistent script Worker crashed", { message }),
+                responder.fail(ready ? ErrorCode.WORKER_CRASHED : ErrorCode.WORKER_START_FAILED, ready ? "Persistent script Worker crashed" : "Persistent script Worker failed during startup", { message }),
                 message
             );
         };
@@ -303,17 +346,6 @@ export function createScriptService({
                 "persistent script Worker protocol error"
             );
         };
-        worker.postMessage({
-            type: "start",
-            code,
-            asyncMode,
-            shortcuts: Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [
-                shortcut,
-                definition.command,
-                definition.params,
-                definition.defaults
-            ])
-        });
         renderScripts();
         return startup;
     }
@@ -323,6 +355,7 @@ export function createScriptService({
         const script = state.scripts.get(id);
         if (!script) throw new Error(`script not found: ${id}`);
         script.running = false;
+        await settlePersistentScriptCallbacks(script.id);
         try {
             await unregisterScriptTriggers(script);
         } finally {

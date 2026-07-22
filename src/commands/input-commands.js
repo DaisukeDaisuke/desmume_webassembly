@@ -1,3 +1,6 @@
+import { codedError, positiveInteger } from "../validation.js";
+import { ErrorCode } from "../error-codes.js";
+
 export function createInputCommands({
     state,
     ensureRomLoaded,
@@ -8,15 +11,24 @@ export function createInputCommands({
     toButtonList,
     waitChecked
 }) {
+    function nonNegativeNumber(value, name, maximum = 600000) {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 0 || number > maximum) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${name} must be between 0 and ${maximum}`);
+        }
+        return number;
+    }
+
     async function setInput(params) {
-        setKey(params.button, !!params.pressed);
+        const [button] = toButtonList(params);
+        setKey(button, !!params.pressed);
         return { keys: state.keys };
     }
 
     async function runInputHold(params = {}) {
         ensureRomLoaded("input hold requires a loaded ROM");
         const buttons = toButtonList(params);
-        const durationMs = Math.max(0, Number(params.durationMs ?? params.holdMs ?? 0));
+        const durationMs = nonNegativeNumber(params.durationMs ?? params.holdMs ?? 0, "durationMs");
         const deadline = params.timeoutMs
             ? performance.now() + Math.max(1, Number(params.timeoutMs))
             : 0;
@@ -34,9 +46,9 @@ export function createInputCommands({
     async function runInputTap(params = {}) {
         ensureRomLoaded("input tap requires a loaded ROM");
         const buttons = toButtonList(params);
-        const repeat = Math.max(1, Number(params.repeat ?? params.count ?? 1));
-        const holdMs = Math.max(0, Number(params.holdMs ?? params.pressMs ?? 50));
-        const gapMs = Math.max(0, Number(params.gapMs ?? params.waitMs ?? 50));
+        const repeat = positiveInteger(params.repeat ?? params.count ?? 1, "repeat", 10000);
+        const holdMs = nonNegativeNumber(params.holdMs ?? params.pressMs ?? 50, "holdMs");
+        const gapMs = nonNegativeNumber(params.gapMs ?? params.waitMs ?? 50, "gapMs");
         const deadline = params.timeoutMs
             ? performance.now() + Math.max(1, Number(params.timeoutMs))
             : 0;
@@ -56,10 +68,12 @@ export function createInputCommands({
 
     async function runTouchHold(params = {}) {
         ensureRomLoaded("touch hold requires a loaded ROM");
-        const x = Math.max(0, Math.min(255, Number(params.x)));
-        const y = Math.max(0, Math.min(191, Number(params.y)));
-        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y are required");
-        const durationMs = Math.max(0, Number(params.durationMs ?? params.holdMs ?? 0));
+        const x = Number(params.x);
+        const y = Number(params.y);
+        if (!Number.isInteger(x) || x < 0 || x > 255 || !Number.isInteger(y) || y < 0 || y > 191) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "x must be 0..255 and y must be 0..191 integers");
+        }
+        const durationMs = nonNegativeNumber(params.durationMs ?? params.holdMs ?? 0, "durationMs");
         const deadline = params.timeoutMs
             ? performance.now() + Math.max(1, Number(params.timeoutMs))
             : 0;
@@ -75,10 +89,9 @@ export function createInputCommands({
     }
 
     async function setKeyBinding(params) {
-        const button = String(params.button);
+        const [button] = toButtonList(params);
         const key = String(params.key || "").trim();
-        if (state.buttons[button] === undefined) throw new Error(`unknown button: ${button}`);
-        if (!key) throw new Error("key is required");
+        if (!key) throw codedError(ErrorCode.INVALID_ARGUMENT, "key is required");
         for (const [code, mapped] of Object.entries(state.keymap)) {
             if (mapped === button || code === key) delete state.keymap[code];
         }

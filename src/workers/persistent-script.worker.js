@@ -13,6 +13,20 @@ let eventQueue = Promise.resolve();
 let asyncMode = false;
 let activeEventId = 0;
 
+for (const name of [
+    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function"
+]) {
+    try {
+        Object.defineProperty(globalThis, name, {
+            value: undefined,
+            writable: false,
+            configurable: false
+        });
+    } catch {
+        try { globalThis[name] = undefined; } catch {}
+    }
+}
+
 function ask(type, data = {}) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
@@ -130,7 +144,12 @@ async function runEvent(message) {
         }
     } finally {
         activeEventId = previousEventId;
-        if (message.eventId) postMessage({ type: "eventDone", eventId: message.eventId });
+        if (message.eventId) postMessage({
+            type: "eventDone",
+            eventId: message.eventId,
+            callbackId: message.callbackId,
+            callbackToken: message.callbackToken
+        });
     }
 }
 
@@ -148,8 +167,13 @@ onmessage = async (event) => {
         asyncMode = !!message.asyncMode;
         installShortcuts(message.shortcuts);
         try {
-            await (0, eval)(`(async () => {\n${message.code}\n})()\n//# sourceURL=desmume-persistent-user.js`);
+            if (/\bimport\s*\(/.test(message.code)) {
+                throw new SyntaxError("dynamic import is unavailable in isolated scripts");
+            }
+            const run = (0, eval)(`(async () => {\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
+            postMessage({ type: "compiled" });
             postMessage({ type: "started" });
+            await run();
         } catch (error) {
             fail(error, error?.name === "SyntaxError" ? "compile" : "runtime");
         }
@@ -163,3 +187,5 @@ onmessage = async (event) => {
     }
     fail(new Error(`unknown message type: ${String(message.type)}`), "protocol");
 };
+
+postMessage({ type: "ready" });

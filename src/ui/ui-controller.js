@@ -1,7 +1,5 @@
 export function bindUi(context) {
     const {
-        applyFreezes,
-        commands,
         copyText,
         disasmRefreshParams,
         hasLoadedRom,
@@ -266,12 +264,24 @@ export function bindUi(context) {
     ui.screenShell.addEventListener("pointercancel", () => { state.touch.active = false; });
     ui.volumeRange.addEventListener("input", () => { if (state.audioContext) state.audioNextTime = state.audioContext.currentTime; });
     
-    setInterval(() => {
+    const maintenanceFailures = new Set();
+    const reportMaintenanceFailure = (kind, error) => {
+        if (maintenanceFailures.has(kind)) return;
+        maintenanceFailures.add(kind);
+        log(`${kind} background task failed: ${String(error?.message || error)}`);
+    };
+    const maintenanceTimer = setInterval(() => {
         if (state.ready && ui.memoryAuto.value === "1") runCommand("dumpMemory", {}).then(renderMemoryDump).catch(() => {});
-        applyFreezes();
+        if (state.ready) {
+            runCommand("applyMemoryFreezes", {}).then(() => maintenanceFailures.delete("freeze")).catch((error) => {
+                reportMaintenanceFailure("freeze", error);
+            });
+        }
         if (state.ready && state.running && !state.loadingFile && performance.now() >= state.saveFlushBlockedUntil && performance.now() - state.lastSaveFlush > 5000) {
             state.lastSaveFlush = performance.now();
-            commands.saveSaveSlot({ slot: ui.stateSlot.value }).catch(() => {});
+            runCommand("saveSaveSlot", { slot: ui.stateSlot.value }).then(() => maintenanceFailures.delete("save")).catch((error) => {
+                reportMaintenanceFailure("save", error);
+            });
         }
     }, 750);
     
@@ -295,5 +305,5 @@ export function bindUi(context) {
     renderStateSlotOptions(ui.stateSlot.value);
     renderHotkey();
     updateStatus();
+    return Object.freeze({ dispose: () => clearInterval(maintenanceTimer) });
 }
-

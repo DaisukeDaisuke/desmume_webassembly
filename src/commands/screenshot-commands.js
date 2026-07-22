@@ -1,3 +1,6 @@
+import { ErrorCode } from "../error-codes.js";
+import { codedError } from "../validation.js";
+
 export function createScreenshotCommands(context) {
     const { requireValidScreen, state, ui } = context;
 
@@ -7,7 +10,9 @@ export function createScreenshotCommands(context) {
             if (screenError) return screenError;
             const cooldownMs = Math.max(250, Number(params.cooldownMs ?? 1200));
             if (performance.now() < state.screenshotCooldownUntil) {
-                throw new Error("screenshot cooldown active");
+                throw codedError(ErrorCode.BUSY, "screenshot cooldown active", {
+                    remainingMs: Math.ceil(state.screenshotCooldownUntil - performance.now())
+                });
             }
             state.screenshotCooldownUntil = performance.now() + cooldownMs;
             const type = "image/png";

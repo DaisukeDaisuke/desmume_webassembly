@@ -108,12 +108,22 @@ const scriptRunner = createScriptRunner({
 
 const breakpointOwners = createBreakpointOwnerStore({
     onFirstOwner: (site) => {
-        if (!state.ready) return;
-        nativeBridge.setBreakpoint(site.cpu, site.type, site.address, true);
+        if (!state.ready || !nativeBridge.hasLoadedRom()) return;
+        if (site.cpu === "special") {
+            const kind = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5 }[site.type];
+            nativeBridge.setSpecialBreakpoint(kind, true);
+        } else {
+            nativeBridge.setBreakpoint(site.cpu, site.type, site.address, true);
+        }
     },
     onLastOwner: (site) => {
-        if (!state.ready) return;
-        nativeBridge.setBreakpoint(site.cpu, site.type, site.address, false);
+        if (!state.ready || !nativeBridge.hasLoadedRom()) return;
+        if (site.cpu === "special") {
+            const kind = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5 }[site.type];
+            nativeBridge.setSpecialBreakpoint(kind, false);
+        } else {
+            nativeBridge.setBreakpoint(site.cpu, site.type, site.address, false);
+        }
     }
 });
 const breakpointService = createBreakpointService({ ownerStore: breakpointOwners });
@@ -133,7 +143,7 @@ const screenVisibility = createScreenVisibility({
     tryGetPc
 });
 const { applyScaleRotation, updateStatus } = screenVisibility;
-const inputController = createInputController({ state, ui, native: nativeBridge });
+const inputController = createInputController({ state, ui });
 const {
     isTypingTarget,
     releaseAllKeys,
@@ -200,6 +210,7 @@ const {
     finishPersistentScriptEvent,
     getNativeStatus,
     getRegisters,
+    settlePersistentScriptCallbacks,
     syncNativeBreakStatus,
     withCurrentExecBreakpointSuspended
 } = debuggerCoordinator;
@@ -209,6 +220,7 @@ const scriptService = createScriptService({
     responder: mcpResponder,
     ensureRomLoaded,
     finishPersistentScriptEvent,
+    settlePersistentScriptCallbacks,
     hex,
     parseAddress,
     rawOutputText,
@@ -234,7 +246,8 @@ const emulationLoop = createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
-    updateStatus
+    updateStatus,
+    log
 });
 const { drawFrame, pumpAudio, applyFreezes, tick, scheduleTick } = emulationLoop;
 
@@ -363,6 +376,7 @@ const commands = createCommands({
     ensureReady,
     ensureRomLoaded,
     ensureWasmReady,
+    frameService,
     formatDisassemblyText,
     getPc,
     getRegisters,
@@ -511,8 +525,6 @@ const webMcp = registerWebMcp({
 });
 
 bindUi({
-        applyFreezes,
-        commands,
         copyText,
         disasmRefreshParams,
         hasLoadedRom,

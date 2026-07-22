@@ -55,6 +55,7 @@ export function createAppState() {
         scriptTriggers: [],
         pendingScriptEvents: new Map(),
         nextScriptEventId: 1,
+        nextScriptCallbackToken: 1,
         explicitPauseSerial: 0,
         scriptStartGeneration: 0,
         analysisBaselines: new Map(),

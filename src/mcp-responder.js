@@ -54,6 +54,13 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
             return ErrorCode.STATE_NOT_LOADED;
         }
         if (text.includes("breakpoint not found")) return ErrorCode.BREAKPOINT_NOT_FOUND;
+        if (text.includes("script not found")
+            || text.includes("recent file not found")
+            || text.includes("recent bytes not found")
+            || text.includes("save slot not found")
+            || text.includes("analysis baseline not found")) {
+            return ErrorCode.STATE_NOT_LOADED;
+        }
         if (text.includes("timeout")) return ErrorCode.TIMEOUT;
         if (text.includes("unknown command")) return ErrorCode.UNKNOWN_COMMAND;
         if (text.includes("native fault")) return ErrorCode.NATIVE_FAULT;
@@ -62,6 +69,11 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
             || text.includes("must be")
             || text.includes("unknown button")
             || text.includes("unknown register")
+            || text.includes("unknown script trigger")
+            || text.includes("already exists")
+            || text.includes("header is all zero")
+            || text.includes("too small")
+            || text.includes("fetch failed")
             || text.includes("out of range")) {
             return ErrorCode.INVALID_ARGUMENT;
         }

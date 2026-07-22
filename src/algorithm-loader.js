@@ -1,5 +1,6 @@
 import { ErrorCode } from "./error-codes.js";
 import { ExternalAlgorithms } from "./external-algorithms.js";
+import { subscribeAbort } from "./validation.js";
 
 function bytesToHex(bytes) {
     return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -9,6 +10,9 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
     const cache = new Map();
 
     async function load(algorithm, signal) {
+        if (signal?.aborted) {
+            return responder.fail(ErrorCode.CANCELLED, "Algorithm loading was cancelled");
+        }
         const metadata = ExternalAlgorithms[algorithm];
         if (!metadata) {
             return responder.fail(ErrorCode.ALGORITHM_UNAVAILABLE, `Algorithm is unavailable: ${algorithm}`);
@@ -22,7 +26,7 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort("download-timeout"), downloadTimeoutMs);
         const abort = () => controller.abort(signal?.reason || "cancelled");
-        signal?.addEventListener("abort", abort, { once: true });
+        const unsubscribeAbort = subscribeAbort(signal, abort);
         try {
             const response = await fetch(metadata.url, {
                 cache: "force-cache",
@@ -49,6 +53,11 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
             cache.set(cacheKey, source);
             return { ok: true, metadata, source };
         } catch (error) {
+            if (signal?.aborted) {
+                return responder.fail(ErrorCode.CANCELLED, "Algorithm loading was cancelled", {
+                    reason: signal.reason
+                });
+            }
             return responder.fail(ErrorCode.ALGORITHM_UNAVAILABLE, `${algorithm} is unavailable`, {
                 algorithm,
                 version: metadata.version,
@@ -56,7 +65,7 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
             });
         } finally {
             clearTimeout(timeout);
-            signal?.removeEventListener("abort", abort);
+            unsubscribeAbort();
         }
     }
 

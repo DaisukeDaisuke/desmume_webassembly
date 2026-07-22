@@ -11,11 +11,26 @@ function normalizeArea({ width, screen = "both", region, ignoreRects = [] }) {
     const baseY = screen === "bottom" ? 192 : 0;
     const areaHeight = screen === "both" ? 384 : 192;
     if (!["top", "bottom", "both"].includes(screen)) throw new Error("invalid screen");
+    if (region !== undefined && (!Array.isArray(region) || region.length !== 4)) throw new Error("invalid region");
+    if (!Array.isArray(ignoreRects)) throw new Error("invalid ignoreRects");
     const [x, y, areaWidth, height] = (region || [0, 0, width, areaHeight]).map(Number);
-    if (x < 0 || y < 0 || areaWidth <= 0 || height <= 0 || x + areaWidth > width || y + height > areaHeight) {
+    if (![x, y, areaWidth, height].every(Number.isInteger)
+        || x < 0 || y < 0 || areaWidth <= 0 || height <= 0
+        || x + areaWidth > width || y + height > areaHeight) {
         throw new Error("invalid region");
     }
-    return { x, y: y + baseY, width: areaWidth, height, baseY, ignoreRects };
+    const ignored = ignoreRects.map((rect) => {
+        if (!Array.isArray(rect) || rect.length !== 4) throw new Error("invalid ignore rect");
+        const values = rect.map(Number);
+        const [rectX, rectY, rectWidth, rectHeight] = values;
+        if (!values.every(Number.isInteger)
+            || rectX < 0 || rectY < 0 || rectWidth <= 0 || rectHeight <= 0
+            || rectX + rectWidth > width || rectY + rectHeight > areaHeight) {
+            throw new Error("invalid ignore rect");
+        }
+        return values;
+    });
+    return { x, y: y + baseY, width: areaWidth, height, baseY, ignoreRects: ignored };
 }
 
 function isIgnored(x, y, area) {

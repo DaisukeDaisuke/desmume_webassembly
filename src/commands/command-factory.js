@@ -38,6 +38,7 @@ export function createCommands(context) {
         ensureReady,
         ensureRomLoaded,
         ensureWasmReady,
+        frameService,
         formatDisassemblyText,
         getPc,
         getRegisters,

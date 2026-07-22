@@ -1,4 +1,6 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
+import { ErrorCode } from "../error-codes.js";
+import { codedError, positiveInteger } from "../validation.js";
 
 export function createRuntimeCommands(context) {
     const {
@@ -59,7 +61,7 @@ export function createRuntimeCommands(context) {
                 state.running = false;
                 native.pause(true);
                 updateStatus();
-                return { ok: false, romLoaded: false, reason: "ROM is not loaded" };
+                throw codedError(ErrorCode.ROM_NOT_LOADED, "ROM is not loaded", { romLoaded: false });
             }
             state.breakLabel = "";
             state.breakRefreshKey = "";
@@ -82,6 +84,7 @@ export function createRuntimeCommands(context) {
                     waitMs: bootWaitMs(params),
                     resume: !hold && runState.running && !runState.paused
                 });
+                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reset failed (${result})`, { nativeCode: result });
                 if (result === 0) {
                     dispatchScriptEvent("start", {
                         generation: ++state.scriptStartGeneration,
@@ -89,9 +92,8 @@ export function createRuntimeCommands(context) {
                     });
                 }
                 return {
-                    ok: result === 0,
                     ret: result,
-                    reloaded: result === 0,
+                    reloaded: true,
                     held: !!hold,
                     waitMs: bootWaitMs(params),
                     romLoaded: native.isRomLoaded()
@@ -112,6 +114,7 @@ export function createRuntimeCommands(context) {
                     && !ui.resetHoldToggle.checked);
             try {
                 const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reload failed (${result})`, { nativeCode: result });
                 if (result === 0) {
                     dispatchScriptEvent("start", {
                         generation: ++state.scriptStartGeneration,
@@ -119,9 +122,8 @@ export function createRuntimeCommands(context) {
                     });
                 }
                 return {
-                    ok: result === 0,
                     ret: result,
-                    reloaded: result === 0,
+                    reloaded: true,
                     resumed: resume,
                     waitMs: bootWaitMs(params),
                     romLoaded: native.isRomLoaded()
@@ -143,7 +145,7 @@ export function createRuntimeCommands(context) {
             if (state.running && !state.paused && params.pauseWhenRunning !== false) {
                 return commands.pause();
             }
-            const frames = Math.max(1, Number(params.frames ?? 1));
+            const frames = positiveInteger(params.frames ?? 1, "frames", 1000000);
             const frameBefore = state.frame;
             const wasPaused = state.paused;
             native.pause(false);

@@ -8,7 +8,8 @@ export function createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
-    updateStatus
+    updateStatus,
+    log = () => {}
 }) {
     function drawFrame() {
         if (!state.ready || !state.render || !frameService.isValid()) return;
@@ -54,7 +55,8 @@ export function createEmulationLoop({
     }
 
     function tick(now) {
-        if (state.ready && state.running && !state.paused && !state.loadingFile) {
+        try {
+            if (state.ready && state.running && !state.paused && !state.loadingFile) {
             const elapsed = Math.min(250, now - state.lastTick);
             state.frameBudget += elapsed * 59.8261 * state.speed / 1000;
             const frames = Math.min(12, Math.floor(state.frameBudget));
@@ -86,11 +88,11 @@ export function createEmulationLoop({
                     if (error?.mcpCode === ErrorCode.NATIVE_ERROR
                         || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
                         handleNativeFault(error, "runFrame");
+                    } else {
+                        throw error;
                     }
                 }
                 if (frameFailed) {
-                    state.lastTick = now;
-                    scheduleTick();
                     return;
                 }
                 const nativeStatus = syncNativeBreakStatus();
@@ -114,13 +116,37 @@ export function createEmulationLoop({
                     });
                 }
                 applyFreezes();
-                drawFrame();
-                pumpAudio(ran);
-                updateStatus();
+                try {
+                    drawFrame();
+                } catch (error) {
+                    log(`frame draw failed: ${String(error?.message || error)}`);
+                }
+                try {
+                    pumpAudio(ran);
+                } catch (error) {
+                    state.audio = false;
+                    log(`audio stopped: ${String(error?.message || error)}`);
+                }
+                try {
+                    updateStatus();
+                } catch (error) {
+                    log(`status update failed: ${String(error?.message || error)}`);
+                }
             }
+            }
+        } catch (error) {
+            if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                handleNativeFault(error, "emulationLoop");
+            } else {
+                state.paused = true;
+                state.running = false;
+                log(`emulation loop paused: ${String(error?.message || error)}`);
+            }
+        } finally {
+            state.lastTick = now;
+            scheduleTick();
         }
-        state.lastTick = now;
-        scheduleTick();
     }
 
     function scheduleTick() {

@@ -110,7 +110,14 @@ export function createFrameService({
                     ...(params.debug ? result.debug : {})
                 });
             } catch (error) {
-                return responder.fail(ErrorCode.INVALID_ARGUMENT, error.message);
+                const code = error?.name === "AbortError"
+                    ? ErrorCode.CANCELLED
+                    : error?.mcpCode || (
+                        error instanceof TypeError || /required|invalid|outside|must be/i.test(String(error?.message || error))
+                            ? ErrorCode.INVALID_ARGUMENT
+                            : ErrorCode.INTERNAL_ERROR
+                    );
+                return responder.fail(code, String(error?.message || error));
             }
         },
         captureCurrent: capture

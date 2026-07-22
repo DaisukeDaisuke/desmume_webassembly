@@ -1,3 +1,6 @@
+import { ErrorCode } from "../error-codes.js";
+import { codedError, positiveInteger } from "../validation.js";
+
 export function createDisassemblyCommands(context) {
     const {
         bytesFromFlexibleParams,
@@ -33,8 +36,9 @@ export function createDisassemblyCommands(context) {
                 throw new Error(`unknown register: ${register}`);
             }
             const ret = native.setRegister(params.cpu, index, parseNumber(params.value));
+            if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Register write failed (${ret})`, { nativeCode: ret });
             renderRegisters();
-            return { ok: ret === 0, ret };
+            return { ret };
         },
 
         async disassemble(params = {}) {
@@ -48,7 +52,7 @@ export function createDisassemblyCommands(context) {
                 params.cpu
             );
             const address = (base - before * width) >>> 0;
-            const count = Number(params.count ?? ui.disasmCount.value);
+            const count = positiveInteger(params.count ?? ui.disasmCount.value, "count", 100000);
             const includeBytes = shouldIncludeDisassemblyBytes(params);
             const text = native.disassemble(params.cpu, address, count + before, modeNumber(mode));
             return {
@@ -104,7 +108,7 @@ export function createDisassemblyCommands(context) {
             }
             const hasUndefined = rows.some((row) => row.undefined);
             return {
-                ok: !hasUndefined && incompleteBytes === 0,
+                complete: !hasUndefined && incompleteBytes === 0,
                 error: hasUndefined || incompleteBytes > 0,
                 hasUndefined,
                 incompleteBytes,

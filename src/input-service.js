@@ -1,4 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
+import { subscribeAbort } from "./validation.js";
 
 const STORAGE_KEY = "desmume-input-sequences-v1";
 const BUTTONS = new Set(["A", "B", "X", "Y", "L", "R", "Start", "Select", "Up", "Down", "Left", "Right"]);
@@ -23,7 +24,8 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
         .map((button) => button.trim())
         .filter(Boolean);
     const wait = (ms, signal) => new Promise((resolve, reject) => {
-        const cleanup = () => signal?.removeEventListener("abort", aborted);
+        let unsubscribeAbort = () => {};
+        const cleanup = () => unsubscribeAbort();
         const complete = () => {
             cleanup();
             resolve();
@@ -34,7 +36,7 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
             cleanup();
             reject(new DOMException("aborted", "AbortError"));
         };
-        signal?.addEventListener("abort", aborted, { once: true });
+        unsubscribeAbort = subscribeAbort(signal, aborted);
     });
 
     function validate(sequence) {
