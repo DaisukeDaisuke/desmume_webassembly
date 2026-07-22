@@ -1,8 +1,9 @@
 "use strict";
 
+import { ssim } from "ssim.js";
+
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
-const nativeEval = globalThis.eval;
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 
@@ -140,10 +141,6 @@ function tileImage(pixels, sourceWidth, area, tileX, tileY, tileWidth, tileHeigh
 }
 
 function compare(message) {
-    nativeEval(message.librarySource);
-    if (!globalThis.ssim || typeof globalThis.ssim.ssim !== "function") {
-        throw new Error("ssim.js did not expose the expected API");
-    }
     const area = normalizeArea(message);
     const tileSize = Math.max(8, Math.min(64, Number(message.options?.tileSize ?? 16)));
     const threshold = Number(message.options?.tileThresholdPct ?? 12);
@@ -164,7 +161,7 @@ function compare(message) {
                 height,
                 message.baseline
             );
-            const result = globalThis.ssim.ssim(baseline, current, { ssim: "fast" });
+            const result = ssim(baseline, current, { ssim: "fast" });
             scores.push((1 - Number(result.mssim)) * 100);
         }
     }
@@ -200,5 +197,5 @@ onmessage = (event) => {
     }
 };
 
-nativePostMessage({ type: "ready" });
+nativePostMessage({ type: "ready", hardened: true, layer: "sandbox" });
 })();

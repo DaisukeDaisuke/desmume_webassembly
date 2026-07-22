@@ -1,8 +1,11 @@
 "use strict";
 
+import { assertSandboxSource } from "./sandbox-source-policy.js";
+
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const nativeEval = globalThis.eval;
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -19,7 +22,7 @@ const replies = new Map();
 let callbackSerial = 1;
 let eventQueue = Promise.resolve();
 let asyncMode = false;
-let activeEventId = 0;
+let activeEvent = null;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
@@ -104,7 +107,9 @@ const mcp = {
     call: (command, params = {}) => ask("call", {
         command,
         params,
-        eventId: activeEventId
+        eventId: activeEvent?.eventId || 0,
+        callbackId: activeEvent?.callbackId,
+        callbackToken: activeEvent?.callbackToken
     })
 };
 const webmcp = mcp;
@@ -214,9 +219,15 @@ function fail(error, phase = "runtime") {
     });
 }
 
+lockDownRuntimeCodeGeneration();
+
 async function runEvent(message) {
-    const previousEventId = activeEventId;
-    activeEventId = Number(message.eventId) || 0;
+    const previousEvent = activeEvent;
+    activeEvent = {
+        eventId: Number(message.eventId) || 0,
+        callbackId: Number(message.callbackId),
+        callbackToken: String(message.callbackToken || "")
+    };
     try {
         for (const [id, entry] of callbacks) {
             if (message.callbackId ? id !== message.callbackId : entry.kind !== message.event) continue;
@@ -228,7 +239,7 @@ async function runEvent(message) {
             }
         }
     } finally {
-        activeEventId = previousEventId;
+        activeEvent = previousEvent;
         if (message.eventId) send({
             type: "eventDone",
             eventId: message.eventId,
@@ -252,8 +263,8 @@ nativeAddEventListener("message", async (event) => {
         asyncMode = !!message.asyncMode;
         installShortcuts(message.shortcuts);
         try {
-            const run = (0, eval)(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
-            lockDownRuntimeCodeGeneration();
+            assertSandboxSource(message.code);
+            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             send({ type: "started" });
             await run(mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick);
@@ -271,5 +282,5 @@ nativeAddEventListener("message", async (event) => {
     fail(new Error(`unknown message type: ${String(message.type)}`), "protocol");
 });
 
-send({ type: "ready" });
+send({ type: "ready", hardened: true, layer: "sandbox" });
 })();

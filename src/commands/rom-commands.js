@@ -13,6 +13,7 @@ export function createRomCommands({
     openPicker,
     pauseForFileLoad,
     restoreAfterFileLoad,
+    stopAfterFailedLoad,
     writeRomFile,
     reloadCurrentRom,
     bootWaitMs,
@@ -27,10 +28,12 @@ export function createRomCommands({
             const { file, bytes } = selection;
             await ensureWasmReady();
             pauseForFileLoad();
+            let loaded = false;
             try {
                 writeRomFile(file.name, bytes);
                 const result = await reloadCurrentRom({ waitMs: bootWaitMs(), resume: true });
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM load failed (${result})`, { nativeCode: result });
+                loaded = true;
                 log(`ROM loaded: ${file.name} (${bytes.length} bytes)`);
                 return {
                     ret: result,
@@ -40,7 +43,8 @@ export function createRomCommands({
                     romLoaded: native.isRomLoaded()
                 };
             } finally {
-                restoreAfterFileLoad({ running: true, paused: false });
+                if (loaded) restoreAfterFileLoad({ running: true, paused: false });
+                else stopAfterFailedLoad();
             }
         },
 
@@ -51,10 +55,12 @@ export function createRomCommands({
             pauseForFileLoad();
             const resume = params.resume !== false;
             const name = params.name || "mcp-rom.nds";
+            let loaded = false;
             try {
                 writeRomFile(name, bytes);
                 const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM load failed (${result})`, { nativeCode: result });
+                loaded = true;
                 log(`ROM loaded from MCP bytes: ${name} (${bytes.length} bytes)`);
                 return {
                     ret: result,
@@ -64,7 +70,8 @@ export function createRomCommands({
                     romLoaded: native.isRomLoaded()
                 };
             } finally {
-                restoreAfterFileLoad({ running: resume, paused: !resume });
+                if (loaded) restoreAfterFileLoad({ running: resume, paused: !resume });
+                else stopAfterFailedLoad();
             }
         },
 

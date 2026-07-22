@@ -4,7 +4,11 @@ export function breakpointSiteKey({ cpu, type, address }) {
     return `${cpu}:${type}:${Number(address) >>> 0}`;
 }
 
-export function createBreakpointOwnerStore({ onFirstOwner = () => {}, onLastOwner = () => {} } = {}) {
+export function createBreakpointOwnerStore({
+    onFirstOwner = () => {},
+    onLastOwner = () => {},
+    onClearNative = () => {}
+} = {}) {
     const sites = new Map();
     const ids = new Map();
 
@@ -64,6 +68,26 @@ export function createBreakpointOwnerStore({ onFirstOwner = () => {}, onLastOwne
                 sites.delete(key);
             }
             return { entry, owner };
+        },
+        discardOwner(ownerId) {
+            const key = ids.get(ownerId);
+            const entry = key && sites.get(key);
+            if (!entry) return null;
+            const owner = entry.owners.get(ownerId);
+            entry.owners.delete(ownerId);
+            ids.delete(ownerId);
+            if (!entry.owners.size) sites.delete(key);
+            return { entry, owner };
+        },
+        reconcileNativeBreakpoints() {
+            onClearNative();
+            let registered = 0;
+            for (const entry of sites.values()) {
+                if (![...entry.owners.values()].some((owner) => owner.enabled !== false)) continue;
+                onFirstOwner(entry);
+                registered++;
+            }
+            return { cleared: true, registered };
         },
         findBreakpointById(ownerId) {
             const key = ids.get(ownerId);

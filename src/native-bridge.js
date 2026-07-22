@@ -58,6 +58,7 @@ export function createNativeBridge({
     onScriptLoading = () => {},
     onNativeReady = () => {},
     onInitialized = () => {},
+    onReady = () => {},
     onFault = () => {}
 }) {
     function cpuIndex(cpu = state.selectedCpu) {
@@ -168,20 +169,36 @@ export function createNativeBridge({
     }
 
     async function initialize() {
-        if (state.ready) return state.module;
+        if (state.nativeInitState === "ready" && state.ready) return state.module;
         if (typeof CreateDesmumeModule !== "function") {
             throw new Error("desmume.js is not loaded");
         }
-        window.wasmReady = onNativeReady;
-        state.module = await CreateDesmumeModule({ noInitialRun: false });
-        wrapFunctions();
-        state.ready = true;
-        await onInitialized();
+        state.nativeInitState = "initializing";
+        state.ready = false;
+        try {
+            window.wasmReady = onNativeReady;
+            state.module = await CreateDesmumeModule({ noInitialRun: false });
+            wrapFunctions();
+            await onInitialized();
+            state.ready = true;
+            state.nativeInitState = "ready";
+        } catch (error) {
+            state.ready = false;
+            state.nativeInitState = "failed";
+            state.module = null;
+            state.fns = {};
+            throw error;
+        }
+        try {
+            await onReady();
+        } catch (error) {
+            onFault(error, "post-initialization");
+        }
         return state.module;
     }
 
     async function ensureInitialized() {
-        if (state.ready) return state.module;
+        if (state.nativeInitState === "ready" && state.ready) return state.module;
         if (!state.moduleInitPromise) {
             state.moduleInitPromise = (async () => {
                 await loadScript();

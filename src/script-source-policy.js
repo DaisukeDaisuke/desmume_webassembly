@@ -1,153 +1,56 @@
+import { parse } from "acorn";
 import { ErrorCode } from "./error-codes.js";
 import { codedError } from "./validation.js";
 
-const IDENTIFIER_START = /[A-Za-z_$]/;
-const IDENTIFIER_PART = /[A-Za-z0-9_$]/;
-const REGEX_PREFIX_TOKENS = new Set([
-    null, "(", "[", "{", "=", ",", ":", ";", "!", "?", "&", "|",
-    "+", "-", "*", "%", "^", "~", "<", ">", "return", "throw", "case",
-    "delete", "void", "typeof", "new", "in", "instanceof", "yield", "await"
-]);
+const WRAPPER_PREFIX = "async function __desmumeScript__(){\n";
+const WRAPPER_SUFFIX = "\n}";
 
-function skipQuoted(source, index, quote) {
-    for (let cursor = index + 1; cursor < source.length; cursor++) {
-        if (source[cursor] === "\\") cursor++;
-        else if (source[cursor] === quote) return cursor + 1;
-    }
-    return source.length;
+function parseScriptBody(source) {
+    return parse(`${WRAPPER_PREFIX}${String(source)}${WRAPPER_SUFFIX}`, {
+        ecmaVersion: "latest",
+        sourceType: "script"
+    });
 }
 
-function skipLineComment(source, index) {
-    const newline = source.indexOf("\n", index + 2);
-    return newline < 0 ? source.length : newline + 1;
-}
-
-function skipBlockComment(source, index) {
-    const end = source.indexOf("*/", index + 2);
-    return end < 0 ? source.length : end + 2;
-}
-
-function skipRegex(source, index) {
-    let inClass = false;
-    for (let cursor = index + 1; cursor < source.length; cursor++) {
-        const char = source[cursor];
-        if (char === "\\") cursor++;
-        else if (char === "[") inClass = true;
-        else if (char === "]") inClass = false;
-        else if (char === "/" && !inClass) {
-            cursor++;
-            while (IDENTIFIER_PART.test(source[cursor] || "")) cursor++;
-            return cursor;
-        } else if (char === "\n" || char === "\r") {
-            return cursor;
-        }
-    }
-    return source.length;
-}
-
-function skipTrivia(source, index) {
-    let cursor = index;
-    while (cursor < source.length) {
-        if (/\s/.test(source[cursor])) {
-            cursor++;
-        } else if (source.startsWith("//", cursor)) {
-            cursor = skipLineComment(source, cursor);
-        } else if (source.startsWith("/*", cursor)) {
-            cursor = skipBlockComment(source, cursor);
-        } else if (source.startsWith("<!--", cursor) || source.startsWith("-->", cursor)) {
-            cursor = skipLineComment(source, cursor);
-        } else {
-            break;
-        }
-    }
-    return cursor;
-}
-
-function scanTemplate(source, index) {
-    let cursor = index + 1;
-    while (cursor < source.length) {
-        if (source[cursor] === "\\") {
-            cursor += 2;
-        } else if (source[cursor] === "`") {
-            return { found: false, index: cursor + 1 };
-        } else if (source[cursor] === "$" && source[cursor + 1] === "{") {
-            const expression = scanCode(source, cursor + 2, true);
-            if (expression.found) return expression;
-            cursor = expression.index;
-        } else {
-            cursor++;
-        }
-    }
-    return { found: false, index: source.length };
-}
-
-function scanCode(source, index = 0, stopAtBrace = false) {
-    let cursor = index;
-    let braceDepth = stopAtBrace ? 1 : 0;
-    let previousToken = null;
-    while (cursor < source.length) {
-        const char = source[cursor];
-        if (/\s/.test(char)) {
-            cursor++;
-            continue;
-        }
-        if (source.startsWith("//", cursor)) {
-            cursor = skipLineComment(source, cursor);
-            continue;
-        }
-        if (source.startsWith("/*", cursor)) {
-            cursor = skipBlockComment(source, cursor);
-            continue;
-        }
-        if (char === "'" || char === '"') {
-            cursor = skipQuoted(source, cursor, char);
-            previousToken = "value";
-            continue;
-        }
-        if (char === "`") {
-            const template = scanTemplate(source, cursor);
-            if (template.found) return template;
-            cursor = template.index;
-            previousToken = "value";
-            continue;
-        }
-        if (char === "/" && REGEX_PREFIX_TOKENS.has(previousToken)) {
-            cursor = skipRegex(source, cursor);
-            previousToken = "value";
-            continue;
-        }
-        if (IDENTIFIER_START.test(char)) {
-            let end = cursor + 1;
-            while (IDENTIFIER_PART.test(source[end] || "")) end++;
-            const identifier = source.slice(cursor, end);
-            if (identifier === "import" && source[skipTrivia(source, end)] === "(") {
-                return { found: true, index: cursor };
+function astContainsImportExpression(ast) {
+    const pending = [ast];
+    const seen = new Set();
+    while (pending.length) {
+        const node = pending.pop();
+        if (!node || typeof node !== "object" || seen.has(node)) continue;
+        seen.add(node);
+        if (node.type === "ImportExpression") return true;
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) {
+                for (let index = value.length - 1; index >= 0; index--) pending.push(value[index]);
+            } else if (value && typeof value === "object") {
+                pending.push(value);
             }
-            previousToken = identifier;
-            cursor = end;
-            continue;
         }
-        if (stopAtBrace && char === "{") braceDepth++;
-        if (stopAtBrace && char === "}" && --braceDepth === 0) {
-            return { found: false, index: cursor + 1 };
-        }
-        previousToken = ")]".includes(char) || (char === "}" && !stopAtBrace)
-            ? "value"
-            : char;
-        cursor++;
     }
-    return { found: false, index: cursor };
+    return false;
 }
 
 export function containsDynamicImport(source) {
-    return scanCode(String(source)).found;
+    return astContainsImportExpression(parseScriptBody(source));
 }
 
 export function assertSafeScriptSource(source) {
-    if (containsDynamicImport(source)) {
+    let containsImport;
+    try {
+        containsImport = containsDynamicImport(source);
+    } catch (error) {
         throw codedError(
             ErrorCode.SCRIPT_SOURCE_INVALID,
-            "dynamic import is unavailable in isolated scripts"
+            `Script source could not be parsed: ${String(error?.message || error)}`,
+            { parser: "acorn", version: "8.17.0" }
+        );
+    }
+    if (containsImport) {
+        throw codedError(
+            ErrorCode.SCRIPT_SOURCE_INVALID,
+            "dynamic import is unavailable in isolated scripts",
+            { parser: "acorn", version: "8.17.0" }
         );
     }
 }

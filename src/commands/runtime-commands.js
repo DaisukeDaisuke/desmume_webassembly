@@ -27,6 +27,7 @@ export function createRuntimeCommands(context) {
         reloadCurrentRom,
         restoreAfterFileLoad,
         state,
+        stopAfterFailedLoad,
         stopAutoUpdateLoop,
         syncNativeBreakStatus,
         ui,
@@ -84,12 +85,14 @@ export function createRuntimeCommands(context) {
             ensureRomLoaded("reset requires a loaded ROM");
             const runState = pauseForFileLoad();
             const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
+            let loaded = false;
             try {
                 const result = await reloadCurrentRom({
                     waitMs: bootWaitMs(params),
                     resume: !hold && runState.running && !runState.paused
                 });
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reset failed (${result})`, { nativeCode: result });
+                loaded = true;
                 if (result === 0) {
                     dispatchScriptEvent("start", {
                         generation: ++state.scriptStartGeneration,
@@ -104,7 +107,8 @@ export function createRuntimeCommands(context) {
                     romLoaded: native.isRomLoaded()
                 };
             } finally {
-                restoreAfterFileLoad(hold ? { running: false, paused: true } : runState);
+                if (loaded) restoreAfterFileLoad(hold ? { running: false, paused: true } : runState);
+                else stopAfterFailedLoad();
             }
         },
 
@@ -117,9 +121,11 @@ export function createRuntimeCommands(context) {
                     && runState.running
                     && !runState.paused
                     && !ui.resetHoldToggle.checked);
+            let loaded = false;
             try {
                 const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reload failed (${result})`, { nativeCode: result });
+                loaded = true;
                 if (result === 0) {
                     dispatchScriptEvent("start", {
                         generation: ++state.scriptStartGeneration,
@@ -134,7 +140,8 @@ export function createRuntimeCommands(context) {
                     romLoaded: native.isRomLoaded()
                 };
             } finally {
-                restoreAfterFileLoad(resume ? runState : { running: false, paused: true });
+                if (loaded) restoreAfterFileLoad(resume ? runState : { running: false, paused: true });
+                else stopAfterFailedLoad();
             }
         },
 
@@ -158,6 +165,7 @@ export function createRuntimeCommands(context) {
             const frameBefore = state.frame;
             const wasPaused = state.paused;
             let ran = 0;
+            let completed = 0;
             let hitBreak = false;
             let result;
             let primaryError = null;
@@ -180,21 +188,21 @@ export function createRuntimeCommands(context) {
                 }
                 const nativeStatus = syncNativeBreakStatus();
                 hitBreak = !!nativeStatus?.lastBreak?.hit;
-                completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
+                completed = completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
                 applyFreezes();
                 drawFrame();
-                pumpAudio(ran);
-                for (let index = 0; index < ran; index++) {
+                if (completed > 0) pumpAudio(completed);
+                for (let index = 0; index < completed; index++) {
                     dispatchScriptEvent("tick", {
-                        frame: state.frame - ran + index + 1,
+                        frame: state.frame - completed + index + 1,
                         cpu: state.selectedCpu
                     });
                 }
-                result = { frames: ran, requested: frames };
+                result = { frames: completed, attempted: ran, requested: frames };
             } catch (error) {
                 primaryError = error;
             } finally {
-                const shouldPause = wasPaused || ran < frames || hitBreak || !!state.nativeFault;
+                const shouldPause = wasPaused || completed < frames || hitBreak || !!state.nativeFault;
                 try {
                     native.pause(shouldPause);
                 } catch (error) {

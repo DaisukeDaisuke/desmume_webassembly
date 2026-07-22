@@ -15,7 +15,6 @@ import { bindUi } from "./ui/ui-controller.js";
 import { registerWebMcp } from "./webmcp.js";
 import { registerWaitCommands } from "./commands/wait-commands.js";
 import { createEmulationLoop } from "./emulation-loop.js";
-import { createAlgorithmLoader } from "./algorithm-loader.js";
 import { createFrameComparator } from "./frame-comparator.js";
 import { createDebuggerService } from "./debugger-service.js";
 import { createViewService } from "./ui/view-service.js";
@@ -57,12 +56,18 @@ const nativeBridge = createNativeBridge({
     onInitialized: async () => {
         nativeBridge.setTraceEnabled(ui.traceToggle.checked);
         state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
+        applyScaleRotation();
+    },
+    onReady: async () => {
         ui.readyLed.className = "led ready";
         ui.readyText.textContent = "ready";
-        applyScaleRotation();
         updateStatus();
         scheduleTick();
-        await webMcp.registerBrowserTools();
+        try {
+            await webMcp.registerBrowserTools();
+        } catch (error) {
+            log(`optional WebMCP registration failed: ${String(error?.message || error)}`);
+        }
     }
 });
 const {
@@ -112,8 +117,11 @@ const scriptRunner = createScriptRunner({
 });
 
 const breakpointOwners = createBreakpointOwnerStore({
+    onClearNative: () => {
+        if (state.ready && nativeBridge.isRomLoaded()) nativeBridge.clearAllBreakpoints();
+    },
     onFirstOwner: (site) => {
-        if (!state.ready || !nativeBridge.hasLoadedRom()) return;
+        if (!state.ready || !nativeBridge.isRomLoaded()) return;
         if (site.cpu === "special") {
             const kind = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5 }[site.type];
             nativeBridge.setSpecialBreakpoint(kind, true);
@@ -122,7 +130,7 @@ const breakpointOwners = createBreakpointOwnerStore({
         }
     },
     onLastOwner: (site) => {
-        if (!state.ready || !nativeBridge.hasLoadedRom()) return;
+        if (!state.ready || !nativeBridge.isRomLoaded()) return;
         if (site.cpu === "special") {
             const kind = { dataAbort: 3, prefetchAbort: 4, undefinedInstruction: 5 }[site.type];
             nativeBridge.setSpecialBreakpoint(kind, false);
@@ -133,8 +141,7 @@ const breakpointOwners = createBreakpointOwnerStore({
 });
 const breakpointService = createBreakpointService({ ownerStore: breakpointOwners });
 const scriptPauseService = createScriptPauseService();
-const algorithmLoader = createAlgorithmLoader({ responder: mcpResponder });
-const frameComparator = createFrameComparator({ responder: mcpResponder, algorithmLoader });
+const frameComparator = createFrameComparator({ responder: mcpResponder });
 const frameService = createFrameService({
     responder: mcpResponder,
     getFrame: () => state.frame,
@@ -208,13 +215,16 @@ const debuggerCoordinator = createDebuggerCoordinator({
     getQueueBreakpointRefresh: () => queueBreakpointRefresh,
     log,
     hex,
-    updateStatus
+    updateStatus,
+    getStopPersistentScript: () => stopPersistentScript,
+    reconcileNativeBreakpoints: () => breakpointOwners.reconcileNativeBreakpoints()
 });
 const {
     breakpointKindName,
     finishPersistentScriptEvent,
     getNativeStatus,
     getRegisters,
+    requestPersistentScriptResume,
     settlePersistentScriptCallbacks,
     syncNativeBreakStatus,
     withCurrentExecBreakpointSuspended
@@ -223,8 +233,10 @@ const scriptService = createScriptService({
     state,
     ui,
     responder: mcpResponder,
+    breakpointOwners,
     ensureRomLoaded,
     finishPersistentScriptEvent,
+    requestPersistentScriptResume,
     settlePersistentScriptCallbacks,
     hex,
     parseAddress,
@@ -273,7 +285,8 @@ const romService = createRomService({
     native: nativeBridge,
     sleep,
     blockSaveFlush,
-    drawFrame
+    drawFrame,
+    reconcileNativeBreakpoints: () => breakpointOwners.reconcileNativeBreakpoints()
 });
 const {
     reload: reloadCurrentRom,

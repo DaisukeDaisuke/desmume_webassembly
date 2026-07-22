@@ -10,6 +10,10 @@
     "build:notices": "node scripts/build-third-party-notices.mjs",
     "check:licenses": "node scripts/check-licenses.mjs"
   },
+  "dependencies": {
+    "acorn": "8.17.0",
+    "ssim.js": "3.5.0"
+  },
   "devDependencies": {
     "esbuild": "0.25.6",
     "terser": "5.43.1"

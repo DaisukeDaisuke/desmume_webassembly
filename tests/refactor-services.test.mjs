@@ -18,7 +18,6 @@ import { createBreakpointOwnerStore } from "../src/breakpoint-owner-store.js";
 import { createDebuggerControlCommands } from "../src/commands/debugger-control-commands.js";
 import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { createScriptRunner } from "../src/script-runner.js";
-import { createAlgorithmLoader } from "../src/algorithm-loader.js";
 import { createMemoryCommands } from "../src/commands/memory-commands.js";
 import { createInputController } from "../src/ui/input-controller.js";
 import { createEmulationLoop } from "../src/emulation-loop.js";
@@ -592,29 +591,31 @@ test("input sequences release controls when aborted", async () => {
   assert.deepEqual(touchStates, [false]);
 });
 
-test("worker sources are valid scripts covered by the esbuild text loader", async () => {
-  const workerUrls = [
+test("supervisors are classic scripts and sandbox Workers are prebundled", async () => {
+  const supervisorUrls = [
     new URL("../src/workers/eval-supervisor.worker.js", import.meta.url),
-    new URL("../src/workers/eval.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script.worker.js", import.meta.url)
+    new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url)
   ];
-  for (const workerUrl of workerUrls) {
+  for (const workerUrl of supervisorUrls) {
     assert.match(fileURLToPath(workerUrl), /\.worker\.js$/);
     const source = await readFile(workerUrl, "utf8");
     assert.doesNotThrow(() => Function(source));
-    assert.match(source, /(?:postMessage|send)\(\{ type: "ready" \}\)/);
-    if (!workerUrl.pathname.includes("supervisor")) {
-      assert.match(source, /Object\.defineProperty\(globalThis/);
-      assert.match(source, /lockDownRuntimeCodeGeneration/);
-      assert.match(source, /"eval"/);
-      assert.match(source, /"close"/);
-      assert.doesNotMatch(source, /\/\\bimport\\s\*\\\(\/\.test/);
-    }
+    assert.match(source, /type: "ready", hardened: true, layer: "supervisor"/);
+  }
+  for (const workerUrl of [
+    new URL("../src/workers/eval.worker.js", import.meta.url),
+    new URL("../src/workers/persistent-script.worker.js", import.meta.url)
+  ]) {
+    const source = await readFile(workerUrl, "utf8");
+    assert.match(source, /assertSandboxSource/);
+    assert.match(source, /Object\.defineProperty\(globalThis/);
+    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
+    assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
   }
 
   const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
-  assert.match(buildSource, /loader\s*:\s*\{\s*["']\.worker\.js["']\s*:\s*["']text["']\s*\}/);
+  assert.match(buildSource, /bundledWorkers/);
+  assert.match(buildSource, /embedded-workers/);
 });
 
 test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once", async () => {
@@ -634,7 +635,7 @@ test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once
     });
     const running = runner.run("return 7", 1000);
     assert.equal(posted.length, 0);
-    await worker.onmessage({ data: { type: "ready" } });
+    await worker.onmessage({ data: { type: "ready", hardened: true, layer: "supervisor" } });
     assert.equal(posted[0].type, "run");
     await worker.onmessage({ data: { type: "done", result: 7 } });
     assert.equal((await running).value, 7);
@@ -648,7 +649,7 @@ test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once
         createWorker: () => ({ worker: secondWorker, dispose: () => {} })
     });
     const deniedRun = denied.run("return 1", 1000);
-    await secondWorker.onmessage({ data: { type: "ready" } });
+    await secondWorker.onmessage({ data: { type: "ready", hardened: true, layer: "supervisor" } });
     await secondWorker.onmessage({
         data: { type: "call", id: "1", command: "runPersistentScript", params: {} }
     });
@@ -718,10 +719,10 @@ test("pending script callbacks validate identity and clean up after script stop"
     }), false);
     await coordinator.settlePersistentScriptCallbacks(4);
     assert.equal(state.pendingScriptEvents.size, 0);
-    assert.equal(paused, false);
+    assert.equal(paused, true);
 });
 
-test("pending persistent callback timeout releases an auto-resume break", async () => {
+test("pending persistent callback timeout fails closed without auto-resume", async () => {
     const messages = [];
     const logs = [];
     const state = {
@@ -756,8 +757,9 @@ test("pending persistent callback timeout releases an auto-resume break", async 
     assert.equal(state.pendingScriptEvents.size, 1);
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(state.pendingScriptEvents.size, 0);
-    assert.equal(resumed, true);
-    assert.ok(logs.some((message) => message.includes("timed out")));
+    assert.equal(resumed, false);
+    assert.equal(state.lastScriptError.code, "SCRIPT_EVENT_FINALIZATION_FAILED");
+    assert.ok(logs.some((message) => message.includes("callback timeout")));
 });
 
 test("script-only special breakpoints dispatch and auto-resume through special ownership", async () => {
@@ -796,13 +798,9 @@ test("script-only special breakpoints dispatch and auto-resume through special o
     assert.equal(resumed, true);
 });
 
-test("algorithm loading and input waits honor pre-aborted signals", async () => {
+test("input waits honor pre-aborted signals", async () => {
     const controller = new AbortController();
     controller.abort("test");
-    const loader = createAlgorithmLoader({ responder });
-    const loaded = await loader.load("ssim-trim", controller.signal);
-    assert.equal(loaded.error.code, "CANCELLED");
-
     let released = 0;
     const input = createInputSequenceService({
         responder,

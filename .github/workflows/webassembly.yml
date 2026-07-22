@@ -26,6 +26,23 @@ jobs:
         with:
           submodules: recursive
           
+      - name: Install JavaScript dependencies
+        run: |
+          npm ci
+
+      - name: Test and verify first-party JavaScript
+        run: |
+          npm test
+          npm run check:js
+          npm run check:licenses
+
+      - name: Regenerate source-derived artifacts
+        run: |
+          npm run build:notices
+          npm run build:js
+          git diff --check
+          git diff --exit-code -- public/app.js public/THIRD_PARTY_NOTICES.txt
+
       - name: Install Emscripten
         run: |
           sudo apt-get update > /dev/null 2>&1
@@ -36,22 +53,6 @@ jobs:
           OUTPUT_DIR: ${{ github.workspace }}/public
         run: |
           bash webassembly/build.sh
-
-      - name: Install JavaScript dependencies
-        run: |
-          npm ci
-
-      - name: Verify third-party licenses
-        run: |
-          npm run check:licenses
-
-      - name: Bundle application JavaScript
-        run: |
-          npm run build:js
-
-      - name: Build third-party notices
-        run: |
-          npm run build:notices
 
       - name: Minify Emscripten JavaScript
         run: |

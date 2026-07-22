@@ -48,11 +48,8 @@ async function refreshSlots(forceLog = false) {
 }
 
 async function trace(callback) {
-  try {
-    await callback();
-  } finally {
-    await mcp.call("resume");
-  }
+  // The main breakpoint coordinator resumes only after every callback for this event settles.
+  await callback();
 }
 
 await memory.registerexec(0x020a36b8, () => trace(async () => {

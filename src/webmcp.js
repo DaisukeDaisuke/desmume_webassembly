@@ -1,7 +1,7 @@
 import { ErrorCode } from "./error-codes.js";
 import { unwrapLegacyScalar } from "./legacy-scalar.js";
 
-const LOCAL_SECURITY_CONTEXT = "Local-only security boundary: ROM, save, and state bytes are not uploaded; no third-party WebMCP script is loaded; cross-origin and opaque-origin message calls are ignored; injected JavaScript runs in network-, DOM-, and storage-disabled sandbox Workers. Optional SSIM CDN source is exact-version SHA-256 verified and executes in a network- and storage-disabled algorithm Worker.";
+const LOCAL_SECURITY_CONTEXT = "Local-only security boundary: ROM, save, and state bytes are not uploaded; no runtime CDN executable code or third-party WebMCP script is loaded; cross-origin and opaque-origin message calls are ignored; injected JavaScript runs in network-, DOM-, and storage-disabled sandbox Workers. Exact-version Acorn and SSIM dependencies are bundled locally; SSIM executes only in a network- and storage-disabled algorithm Worker.";
 
 export function registerWebMcp({ commands, descriptions, responder, runCommand, compact, installShortcuts, logger }) {
     const toContent = (result) => responder.toWebMcpContent(result, compact);

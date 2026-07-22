@@ -7,7 +7,6 @@ import { isValidAlgorithmWorkerResult } from "./frame-comparator-result.js";
 
 export function createFrameComparator({
     responder,
-    algorithmLoader,
     createWorker = createEmbeddedWorker,
     workerStartupTimeoutMs = 3000,
     workerExecutionTimeoutMs = 10000
@@ -19,8 +18,6 @@ export function createFrameComparator({
         } catch (error) {
             return responder.fail(ErrorCode.INVALID_ARGUMENT, String(error?.message || error));
         }
-        const loaded = await algorithmLoader.load(args.algorithm, args.signal);
-        if (!loaded.ok) return loaded;
         let host;
         try {
             host = createWorker(algorithmWorkerSource);
@@ -46,7 +43,8 @@ export function createFrameComparator({
             const aborted = () => finish(responder.fail(ErrorCode.CANCELLED, "Frame comparison was cancelled"));
             host.worker.onmessage = (event) => {
                 const message = event.data || {};
-                if (message.type === "ready" && !ready) {
+                if (message.type === "ready" && !ready
+                    && message.hardened === true && message.layer === "sandbox") {
                     ready = true;
                     clearTimeout(timer);
                     timer = setTimeout(() => finish(responder.fail(
@@ -65,8 +63,7 @@ export function createFrameComparator({
                             type: "compare",
                             ...cloneableArgs,
                             baseline,
-                            current,
-                            librarySource: loaded.source
+                            current
                         }, [baseline.buffer, current.buffer]);
                     } catch (error) {
                         finish(responder.fail(
@@ -89,8 +86,8 @@ export function createFrameComparator({
                         debug: {
                             ...message.result.debug,
                             algorithm: args.algorithm,
-                            externalLibraryVersion: loaded.metadata.version,
-                            externalLibraryHash: loaded.metadata.sha256
+                            libraryVersion: "3.5.0",
+                            bundled: true
                         }
                     });
                 } else if (message.type === "error" && ready) {

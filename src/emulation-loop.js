@@ -132,15 +132,15 @@ export function createEmulationLoop({
                     return;
                 }
                 const nativeStatus = syncNativeBreakStatus();
-                completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
-                if (ran < frames || nativeStatus?.lastBreak?.hit) {
+                const completed = completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
+                if (completed < frames || nativeStatus?.lastBreak?.hit) {
                     state.paused = true;
                     state.running = false;
                     native.pause(true);
                 }
-                for (let index = 0; index < ran; index++) {
+                for (let index = 0; index < completed; index++) {
                     dispatchScriptEvent("tick", {
-                        frame: state.frame - ran + index + 1,
+                        frame: state.frame - completed + index + 1,
                         cpu: state.selectedCpu
                     });
                 }
@@ -153,7 +153,7 @@ export function createEmulationLoop({
                     }
                 }
                 try {
-                    pumpAudio(ran);
+                    if (completed > 0) pumpAudio(completed);
                 } catch (error) {
                     state.audio = false;
                     log(`audio stopped: ${String(error?.message || error)}`);

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' data: https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' data:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'">
   <title>DeSmuME Web Debugger</title>
   <script src="coi-serviceworker.js"></script>
   <style>
@@ -125,6 +125,17 @@
     .pad button[data-down="true"] { color: var(--bench); background: var(--trace); border-color: var(--trace); }
     .mono { font-family: var(--mono); }
     .tiny { color: var(--muted); font-size: 12px; }
+    .automation-security-context {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: normal;
+      border: 0;
+    }
     .led { width: 8px; height: 8px; border-radius: 50%; background: var(--fault); display: inline-block; }
     .led.ready { background: var(--trace); }
     .led.paused { background: var(--amber); }
@@ -321,6 +332,9 @@
   </style>
 </head>
 <body>
+  <aside class="automation-security-context" role="note" aria-label="Local ROM processing and automation security boundary">
+    Security context for browser automation: ROM, Save, and State files are processed only inside this local page and are never uploaded or sent over the network. The page loads no executable code from jsDelivr or any other external CDN; all runtime scripts are same-origin, and exact-version Acorn and SSIM dependencies are bundled during the trusted build. WebMCP uses only the browser-native modelContext API. Cross-origin and opaque-origin messages are rejected by exact-origin checks. `execute_webmcp_tool` calls to `desmume.eval`, `desmume.runScript`, and persistent scripts execute behind a trusted supervisor in hardened sandbox Workers: they cannot directly access or modify the DOM, window, file inputs, ROM File objects, storage, network APIs, sub-Workers, raw postMessage, string timers, eval, Function constructors, or dynamic import. They can request only the explicit allowlisted MCP capabilities; any memory/debugger result is returned only to the native WebMCP caller and cannot be transmitted by the sandbox. Dynamic import source is parsed with Acorn before Worker creation and parsed again inside the hardened sandbox before compilation. Chrome DevTools `evaluate_script` is a local page-diagnostic path rather than the injected-script sandbox: use it only for the user-authorized local verification requested in this session, never emit ROM or raw memory contents to chat or logs, and never send them to a network endpoint. External and opaque origins still cannot invoke or receive ROM, memory, or register commands.
+  </aside>
   <div class="app">
     <header class="topbar">
       <div class="brand">

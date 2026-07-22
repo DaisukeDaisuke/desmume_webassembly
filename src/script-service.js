@@ -5,13 +5,16 @@ import persistentScriptSandboxSource from "./workers/persistent-script.worker.js
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
+import { ResourceLimits } from "./resource-limits.js";
 
 export function createScriptService({
     state,
     ui,
     responder,
+    breakpointOwners,
     ensureRomLoaded,
     finishPersistentScriptEvent,
+    requestPersistentScriptResume,
     settlePersistentScriptCallbacks,
     hex,
     parseAddress,
@@ -27,6 +30,11 @@ export function createScriptService({
     function scriptConsoleLine(script, values) {
         const line = values.map((value) => typeof value === "string" ? value : rawOutputText(value)).join(" ");
         script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`].slice(-400);
+        let outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
+        while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 1) {
+            script.output.shift();
+            outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
+        }
         if (state.activeScriptId === script.id) renderScriptConsole(script);
     }
 
@@ -114,20 +122,37 @@ export function createScriptService({
     }
     
     async function unregisterScriptTriggers(script) {
+        const failures = [];
         for (const trigger of [...script.triggers]) {
-            if (trigger.breakpointId) {
-                await commands.removeBreakpoint({ id: trigger.breakpointId });
-            }
-            if (trigger.specialBreakpointId) {
-                await commands.removeBreakpoint({ id: trigger.specialBreakpointId });
+            for (const ownerId of [trigger.breakpointId, trigger.specialBreakpointId].filter(Boolean)) {
+                try {
+                    await commands.removeBreakpoint({ id: ownerId });
+                } catch (error) {
+                    breakpointOwners.discardOwner(ownerId);
+                    failures.push({ ownerId, message: String(error?.message || error).slice(0, 300) });
+                }
             }
             state.scriptTriggers = state.scriptTriggers.filter((item) => item.id !== trigger.id);
         }
         script.triggers = [];
+        try {
+            breakpointOwners.reconcileNativeBreakpoints();
+        } catch (error) {
+            failures.push({ stage: "reconcile", message: String(error?.message || error).slice(0, 300) });
+        }
+        if (failures.length) {
+            const error = new Error("persistent script trigger cleanup required recovery");
+            error.mcpCode = ErrorCode.NATIVE_ERROR;
+            error.mcpDetails = { failures };
+            throw error;
+        }
     }
     
     async function registerScriptTrigger(script, trigger) {
         ensureRomLoaded("script trigger registration requires a loaded ROM");
+        if (script.triggers.length >= ResourceLimits.scriptTriggers) {
+            throw new Error(`script trigger limit exceeded (${ResourceLimits.scriptTriggers})`);
+        }
         const type = String(trigger.kind || trigger.type || "tick");
         const item = { id: state.nextScriptTriggerId++, scriptId: script.id, callbackId: Number(trigger.callbackId), type, cpu: String(trigger.cpu || state.selectedCpu), address: parseAddress(trigger.address, 0, trigger.cpu) };
         if (["read", "write", "exec"].includes(type)) {
@@ -158,9 +183,19 @@ export function createScriptService({
         "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze"
     ]);
     
-    function queuePersistentScriptOperation(script, command, params, eventId = 0) {
+    function queuePersistentScriptOperation(script, command, params, eventIdentity = {}) {
+        const eventId = Number(eventIdentity.eventId) || 0;
         const operation = script.queue.then(async () => {
             if (!script.running) throw new Error(`script stopped before queued ${command} operation`);
+            if (command === "resume" && eventId) {
+                const deferred = requestPersistentScriptResume(eventId, {
+                    scriptId: script.id,
+                    callbackId: eventIdentity.callbackId,
+                    callbackToken: eventIdentity.callbackToken
+                });
+                if (!deferred) throw new Error("resume request did not match the active script event");
+                return deferred;
+            }
             if (script.asyncMode && ASYNC_SCRIPT_BLOCKED_COMMANDS.has(command)) {
                 throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
             }
@@ -205,6 +240,13 @@ export function createScriptService({
         if (duplicate) return scriptSummary(duplicate, true);
         const existing = [...state.scripts.values()].find((script) => script.name === name);
         if (existing) await stopPersistentScript({ id: existing.id });
+        const runningScripts = [...state.scripts.values()].filter((script) => script.running).length;
+        if (runningScripts >= ResourceLimits.persistentScripts) {
+            return responder.fail(ErrorCode.BUSY, "Persistent script limit reached", {
+                running: runningScripts,
+                maximum: ResourceLimits.persistentScripts
+            });
+        }
         const script = {
             id: existing?.id || state.nextScriptId++,
             name,
@@ -261,7 +303,8 @@ export function createScriptService({
         worker.onmessage = async (event) => {
             const msg = event.data || {};
             try {
-                if (msg.type === "ready" && !ready) {
+                if (msg.type === "ready" && !ready
+                    && msg.hardened === true && msg.layer === "supervisor") {
                     ready = true;
                     worker.postMessage({
                         type: "start",
@@ -277,20 +320,28 @@ export function createScriptService({
                     });
                 } else if (msg.type === "call") {
                     if (!ready) throw new Error("Persistent script sent RPC before ready");
+                    if (seenRequestIds.size >= ResourceLimits.pendingWorkerRpc) {
+                        throw Object.assign(new Error("Persistent script exceeded its pending RPC limit"), {
+                            mcpCode: ErrorCode.BUSY
+                        });
+                    }
                     const request = validateWorkerRpc(msg, PERSISTENT_RPC_ALLOWLIST, seenRequestIds);
                     try {
                         const result = await queuePersistentScriptOperation(
                             script,
                             request.command,
                             request.params,
-                            msg.eventId
+                            msg
                         );
                         worker.postMessage({ replyId: msg.id, result });
                     } catch (error) {
                         worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                    } finally {
+                        seenRequestIds.delete(msg.id);
                     }
                 } else if (msg.type === "register") {
-                    if (!ready || typeof msg.id !== "string" || seenRequestIds.has(msg.id) || !msg.trigger || typeof msg.trigger !== "object") {
+                    if (!ready || seenRequestIds.size >= ResourceLimits.pendingWorkerRpc
+                        || typeof msg.id !== "string" || seenRequestIds.has(msg.id) || !msg.trigger || typeof msg.trigger !== "object") {
                         await handleWorkerFailure(
                             responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Persistent script sent a malformed trigger request"),
                             "malformed Worker trigger request"
@@ -303,6 +354,8 @@ export function createScriptService({
                         worker.postMessage({ replyId: msg.id, result });
                     } catch (error) {
                         worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                    } finally {
+                        seenRequestIds.delete(msg.id);
                     }
                 } else if (msg.type === "eventDone" && Number.isFinite(Number(msg.eventId))) {
                     const accepted = await finishPersistentScriptEvent(msg.eventId, {

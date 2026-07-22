@@ -4,6 +4,8 @@ let sandbox = null;
 let sandboxUrl = "";
 let channelToken = "";
 let started = false;
+const pendingRequestIds = new Set();
+const MAX_PENDING_REQUESTS = 32;
 
 function protocolError(message) {
     postMessage({ type: "protocolError", message });
@@ -42,7 +44,10 @@ onmessage = (event) => {
         sandbox.onmessage = (sandboxEvent) => {
             const childMessage = sandboxEvent.data || {};
             if (!channelToken) {
-                if (childMessage.type !== "ready" || typeof childMessage.channelToken !== "string") {
+                if (childMessage.type !== "ready"
+                    || childMessage.hardened !== true
+                    || childMessage.layer !== "sandbox"
+                    || typeof childMessage.channelToken !== "string") {
                     protocolError("sandbox Worker did not provide a valid channel token");
                     disposeSandbox();
                     return;
@@ -57,6 +62,15 @@ onmessage = (event) => {
                 disposeSandbox();
                 return;
             }
+            if (childMessage.type === "call") {
+                if (typeof childMessage.id !== "string"
+                    || pendingRequestIds.size >= MAX_PENDING_REQUESTS) {
+                    protocolError(`sandbox exceeded ${MAX_PENDING_REQUESTS} pending requests`);
+                    disposeSandbox();
+                    return;
+                }
+                pendingRequestIds.add(childMessage.id);
+            }
             forwardSandboxMessage(childMessage);
             if (["done", "error", "protocolError"].includes(childMessage.type)) disposeSandbox();
         };
@@ -70,11 +84,12 @@ onmessage = (event) => {
         };
         return;
     }
-    if (message.replyId && sandbox && channelToken) {
+    if (message.replyId && sandbox && channelToken
+        && pendingRequestIds.delete(String(message.replyId))) {
         sandbox.postMessage(message);
         return;
     }
     protocolError("unknown supervisor message");
 };
 
-postMessage({ type: "ready" });
+postMessage({ type: "ready", hardened: true, layer: "supervisor" });

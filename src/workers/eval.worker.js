@@ -1,8 +1,11 @@
 "use strict";
 
+import { assertSandboxSource } from "./sandbox-source-policy.js";
+
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const nativeEval = globalThis.eval;
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -125,6 +128,8 @@ function describeError(error, code, phase) {
     return { name, message, details };
 }
 
+lockDownRuntimeCodeGeneration();
+
 nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
     if (message.replyId) {
@@ -144,9 +149,9 @@ nativeAddEventListener("message", async (event) => {
     }
     installShortcuts(message.shortcuts);
     try {
+        assertSandboxSource(message.code);
         const script = `(async (mcp, webmcp) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
-        const run = (0, eval)(script);
-        lockDownRuntimeCodeGeneration();
+        const run = nativeEval(script);
         const result = await run(mcp, webmcp);
         send({ type: "done", result });
     } catch (error) {
@@ -155,5 +160,5 @@ nativeAddEventListener("message", async (event) => {
     }
 });
 
-send({ type: "ready" });
+send({ type: "ready", hardened: true, layer: "sandbox" });
 })();

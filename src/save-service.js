@@ -1,21 +1,20 @@
 export function createSaveService({ native, romService }) {
-    function writeForRom(name, bytes) {
+    function savePath(name) {
         const path = String(name).toLowerCase().endsWith(".dsv") ? "rom.dsv" : "rom.sav";
-        native.unlinkFile("rom.dsv");
-        native.unlinkFile("rom.sav");
-        native.writeFile(path, bytes);
-        return { path, ret: 0 };
+        return path;
     }
 
     async function applyAndReload(name, bytes, options = {}) {
-        const saveLoad = writeForRom(name, bytes);
-        const result = await romService.reload(options);
-        return { ...saveLoad, ret: result };
+        const result = await romService.reload({
+            ...options,
+            candidateSave: { name, bytes: new Uint8Array(bytes) }
+        });
+        return { path: savePath(name), ret: result };
     }
 
     function exportBytes() {
         return native.exportSaveBytes();
     }
 
-    return Object.freeze({ applyAndReload, exportBytes, writeForRom });
+    return Object.freeze({ applyAndReload, exportBytes });
 }

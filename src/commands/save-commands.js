@@ -11,6 +11,7 @@ export function createSaveCommands({
     openPicker,
     pauseForFileLoad,
     restoreAfterFileLoad,
+    stopAfterFailedLoad,
     applySaveAndReloadRom,
     bootWaitMs,
     rememberSlot,
@@ -29,12 +30,14 @@ export function createSaveCommands({
                 : await openPicker(ui.saveFile);
             const { file, bytes } = selection;
             const runState = pauseForFileLoad();
+            let loaded = false;
             try {
                 const saveLoad = await applySaveAndReloadRom(file.name, bytes, {
                     waitMs: bootWaitMs()
                 });
                 const result = saveLoad.ret;
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save import failed (${result})`, { nativeCode: result });
+                loaded = true;
                 if (result === 0) {
                     rememberSlot(ui.stateSlot.value);
                     await idbPut(`save:${ui.stateSlot.value}`, bytes);
@@ -50,7 +53,8 @@ export function createSaveCommands({
                     path: saveLoad.path
                 };
             } finally {
-                restoreAfterFileLoad(runState);
+                if (loaded) restoreAfterFileLoad(runState);
+                else stopAfterFailedLoad();
             }
         },
 
@@ -90,12 +94,14 @@ export function createSaveCommands({
             const bytes = await idbGet(`save:${slot}`);
             if (!bytes) throw new Error(`save slot not found: ${slot}`);
             const runState = pauseForFileLoad();
+            let loaded = false;
             try {
                 const saveLoad = await applySaveAndReloadRom(slot, bytes, {
                     waitMs: bootWaitMs()
                 });
                 const result = saveLoad.ret;
                 if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save load failed (${result})`, { nativeCode: result });
+                loaded = true;
                 ui.storageStatus.textContent = `save loaded ${slot}`;
                 await recordRecentFile("save", slot, bytes, slot);
                 return {
@@ -108,7 +114,8 @@ export function createSaveCommands({
                     path: saveLoad.path
                 };
             } finally {
-                restoreAfterFileLoad(runState);
+                if (loaded) restoreAfterFileLoad(runState);
+                else stopAfterFailedLoad();
             }
         }
     });

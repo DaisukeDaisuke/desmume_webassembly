@@ -1,5 +1,6 @@
 import { ErrorCode } from "../error-codes.js";
 import { codedError, isPlainObject } from "../validation.js";
+import { ResourceLimits } from "../resource-limits.js";
 
 export function createScriptCommands({
     state,
@@ -36,15 +37,20 @@ export function createScriptCommands({
         const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
         if (!script) throw new Error("script not found");
         const pattern = params.pattern ?? params.regex;
-        if (!pattern) return { id: script.id, name: script.name, code: script.code };
-        const regex = new RegExp(String(pattern), String(params.flags ?? "g"));
+        if (pattern != null || params.flags != null) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                "getScript regular-expression search is unavailable; retrieve the bounded source instead"
+            );
+        }
+        const originalChars = script.code.length;
+        const code = script.code.slice(0, ResourceLimits.scriptSourceOutputChars);
         return {
             id: script.id,
             name: script.name,
-            matches: [...script.code.matchAll(regex)].map((match) => ({
-                index: match.index,
-                text: match[0]
-            }))
+            code,
+            truncated: code.length !== originalChars,
+            originalChars
         };
     }
 
@@ -96,6 +102,13 @@ export function createScriptCommands({
                 "batch requires { commands: [...] } with at least one command"
             );
         }
+        if (items.length > ResourceLimits.batchCommands) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                `batch supports at most ${ResourceLimits.batchCommands} commands`,
+                { maximum: ResourceLimits.batchCommands, received: items.length }
+            );
+        }
         const results = [];
         for (const item of items) {
             if (!isPlainObject(item)) {
@@ -105,7 +118,18 @@ export function createScriptCommands({
             if (!command) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "batch item is missing command");
             }
+            if (command === "batch") {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "nested batch commands are unavailable");
+            }
             results.push({ command, result: await runCommand(command, item.params || {}) });
+            const resultBytes = new TextEncoder().encode(JSON.stringify(results)).byteLength;
+            if (resultBytes > ResourceLimits.batchResultBytes) {
+                throw codedError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    `batch results exceed ${ResourceLimits.batchResultBytes} bytes`,
+                    { maximumBytes: ResourceLimits.batchResultBytes, completedCommands: results.length }
+                );
+            }
         }
         return { results };
     }

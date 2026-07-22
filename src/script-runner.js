@@ -2,6 +2,7 @@ import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
+import { ResourceLimits } from "./resource-limits.js";
 
 export function createScriptRunner({
     source,
@@ -12,6 +13,8 @@ export function createScriptRunner({
     createWorker = createEmbeddedWorker,
     startupTimeoutMs = 3000
 }) {
+    let activeWorkers = 0;
+
     async function run(code, timeoutMs = 3000) {
         if (typeof code !== "string" || !code.trim() || code.length > 262144) {
             return responder.fail(
@@ -28,6 +31,13 @@ export function createScriptRunner({
         if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600000) {
             return responder.fail(ErrorCode.INVALID_ARGUMENT, "timeoutMs must be between 1 and 600000");
         }
+        if (activeWorkers >= ResourceLimits.concurrentEvalWorkers) {
+            return responder.fail(ErrorCode.BUSY, "All isolated eval Worker slots are busy", {
+                active: activeWorkers,
+                maximum: ResourceLimits.concurrentEvalWorkers,
+                queueMaximum: 0
+            });
+        }
         let host;
         try {
             host = createWorker(source);
@@ -38,6 +48,7 @@ export function createScriptRunner({
             });
         }
         const { worker } = host;
+        activeWorkers++;
         return new Promise((resolve) => {
             let finished = false;
             let ready = false;
@@ -47,6 +58,7 @@ export function createScriptRunner({
                 finished = true;
                 clearTimeout(timer);
                 host.dispose();
+                activeWorkers--;
                 resolve(result);
             };
             let timer = setTimeout(() => finish(responder.fail(
@@ -56,7 +68,8 @@ export function createScriptRunner({
             )), startupTimeoutMs);
             worker.onmessage = async (event) => {
                 const message = event.data || {};
-                if (message.type === "ready" && !ready) {
+                if (message.type === "ready" && !ready
+                    && message.hardened === true && message.layer === "supervisor") {
                     ready = true;
                     clearTimeout(timer);
                     timer = setTimeout(() => finish(responder.fail(
@@ -84,9 +97,19 @@ export function createScriptRunner({
                         return;
                     }
                     try {
+                        if (seenRequestIds.size >= ResourceLimits.pendingWorkerRpc) {
+                            finish(responder.fail(ErrorCode.BUSY, "Script Worker exceeded its pending RPC limit", {
+                                maximum: ResourceLimits.pendingWorkerRpc
+                            }));
+                            return;
+                        }
                         const request = validateWorkerRpc(message, EVAL_RPC_ALLOWLIST, seenRequestIds);
-                        const result = await callCommand(request.command, request.params);
-                        if (!finished) worker.postMessage({ replyId: message.id, result });
+                        try {
+                            const result = await callCommand(request.command, request.params);
+                            if (!finished) worker.postMessage({ replyId: message.id, result });
+                        } finally {
+                            seenRequestIds.delete(message.id);
+                        }
                     } catch (error) {
                         finish(responder.fail(
                             error?.mcpCode || ErrorCode.WORKER_PROTOCOL_ERROR,

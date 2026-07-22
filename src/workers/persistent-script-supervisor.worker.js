@@ -5,6 +5,7 @@ let sandboxUrl = "";
 let channelToken = "";
 let started = false;
 const pendingRequestIds = new Set();
+const MAX_PENDING_REQUESTS = 32;
 
 function fail(error, phase = "protocol") {
     postMessage({
@@ -47,7 +48,10 @@ function startSandbox(message) {
     sandbox.onmessage = (event) => {
         const childMessage = event.data || {};
         if (!channelToken) {
-            if (childMessage.type !== "ready" || typeof childMessage.channelToken !== "string") {
+            if (childMessage.type !== "ready"
+                || childMessage.hardened !== true
+                || childMessage.layer !== "sandbox"
+                || typeof childMessage.channelToken !== "string") {
                 fail(new Error("sandbox Worker did not provide a valid channel token"));
                 disposeSandbox();
                 return;
@@ -69,6 +73,11 @@ function startSandbox(message) {
         }
         if ((childMessage.type === "call" || childMessage.type === "register")
             && typeof childMessage.id === "string") {
+            if (pendingRequestIds.size >= MAX_PENDING_REQUESTS) {
+                fail(new Error(`sandbox exceeded ${MAX_PENDING_REQUESTS} pending requests`));
+                disposeSandbox();
+                return;
+            }
             pendingRequestIds.add(childMessage.id);
         }
         forwardSandboxMessage(childMessage);
@@ -101,4 +110,4 @@ onmessage = (event) => {
     fail(new Error("unknown supervisor message"));
 };
 
-postMessage({ type: "ready" });
+postMessage({ type: "ready", hardened: true, layer: "supervisor" });

@@ -91,7 +91,7 @@ export function createApiDescriptions() {
         listScripts: "実行中・停止中の常駐スクリプト一覧とトリガー数を返します。",
         stopScript: "指定スクリプトを停止し、そのスクリプトのトリガーを全解除します。",
         restartScript: "指定スクリプトをログを消去して再起動します。",
-        getScript: "指定スクリプトのJavaScript本文または正規表現検索結果を返します。",
+        getScript: "指定スクリプトのJavaScript本文を上限付きで返します。truncatedとoriginalCharsで切り詰めを確認できます。",
         listScriptPrint: "常駐スクリプトのコンソール出力を最大max件返します。",
         clearScriptPrint: "指定スクリプトまたは全スクリプトのコンソール出力を消去します。",
         eval: "WebMCPから短いJavaScriptを隔離ワーカーで実行し、mcp.call()経由で複数コマンドをまとめて調査します。",

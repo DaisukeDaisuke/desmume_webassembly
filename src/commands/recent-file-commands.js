@@ -47,6 +47,7 @@ export function createRecentFileCommands(context) {
 
             if (item.kind === "save") {
                 const runState = pauseForFileLoad();
+                let loaded = false;
                 try {
                     const saveLoad = await applySaveAndReloadRom(
                         item.name || item.slot || "save.sav",
@@ -55,6 +56,7 @@ export function createRecentFileCommands(context) {
                     );
                     const ret = saveLoad.ret;
                     if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Recent Save load failed (${ret})`, { nativeCode: ret });
+                    loaded = true;
                     return {
                         ret,
                         item,
@@ -65,7 +67,8 @@ export function createRecentFileCommands(context) {
                         path: saveLoad.path
                     };
                 } finally {
-                    restoreAfterFileLoad(runState);
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedStateLoad();
                 }
             }
 

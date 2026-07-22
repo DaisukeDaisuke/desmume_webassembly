@@ -1,3 +1,5 @@
+import { ResourceLimits } from "./resource-limits.js";
+
 export function createDebuggerCoordinator({
     state,
     native,
@@ -7,6 +9,8 @@ export function createDebuggerCoordinator({
     log,
     hex,
     updateStatus,
+    getStopPersistentScript = () => null,
+    reconcileNativeBreakpoints = () => {},
     scriptCallbackTimeoutMs = 10000
 }) {
     function breakpointKindName(kind) {
@@ -70,7 +74,8 @@ export function createDebuggerCoordinator({
     async function finishCompletedPersistentScriptEvent(eventId, pending) {
         state.pendingScriptEvents.delete(Number(eventId));
         clearTimeout(pending.timeoutId);
-        if (pending.pauseSerial !== state.explicitPauseSerial || !native.hasLoadedRom()) return;
+        if (!pending.eligibleAutoResume || pending.failed
+            || pending.pauseSerial !== state.explicitPauseSerial || !native.hasLoadedRom()) return;
 
         // Exec hooks stop before the instruction. MMU read/write hooks have already
         // completed the access, so stepping those would duplicate the side effect.
@@ -97,6 +102,32 @@ export function createDebuggerCoordinator({
         updateStatus();
     }
 
+    async function failPersistentScriptEvent(eventId, pending, reason, error = null) {
+        if (state.pendingScriptEvents.get(Number(eventId)) === pending) {
+            state.pendingScriptEvents.delete(Number(eventId));
+        }
+        clearTimeout(pending.timeoutId);
+        pending.failed = true;
+        state.paused = true;
+        state.running = false;
+        try { native.pause(true); } catch {}
+        try { await reconcileNativeBreakpoints(); } catch (reconcileError) {
+            log(`breakpoint reconciliation failed after ${reason}: ${String(reconcileError?.message || reconcileError)}`);
+        }
+        const stopPersistentScript = getStopPersistentScript();
+        if (typeof stopPersistentScript === "function") {
+            await Promise.allSettled(pending.scriptIds.map((id) => stopPersistentScript({ id })));
+        }
+        state.lastScriptError = {
+            code: "SCRIPT_EVENT_FINALIZATION_FAILED",
+            eventId: Number(eventId),
+            reason,
+            message: String(error?.message || error || reason).slice(0, 500)
+        };
+        log(`persistent script event ${eventId} stopped safely: ${reason}`);
+        try { updateStatus(); } catch {}
+    }
+
     async function finishPersistentScriptEvent(eventId, identity = {}) {
         const pending = state.pendingScriptEvents.get(Number(eventId));
         const token = String(identity.callbackToken || "");
@@ -108,15 +139,39 @@ export function createDebuggerCoordinator({
         }
         pending.pendingCallbacks.delete(token);
         if (pending.pendingCallbacks.size) return true;
-        await finishCompletedPersistentScriptEvent(eventId, pending);
+        try {
+            await finishCompletedPersistentScriptEvent(eventId, pending);
+        } catch (error) {
+            await failPersistentScriptEvent(eventId, pending, "callback finalization failure", error);
+        }
         return true;
+    }
+
+    function requestPersistentScriptResume(eventId, identity = {}) {
+        const pending = state.pendingScriptEvents.get(Number(eventId));
+        const token = String(identity.callbackToken || "");
+        const callback = pending?.pendingCallbacks.get(token);
+        if (!pending || !callback
+            || Number(identity.scriptId) !== callback.scriptId
+            || Number(identity.callbackId) !== callback.callbackId) {
+            return null;
+        }
+        callback.resumeRequested = true;
+        return {
+            deferred: true,
+            eventId: Number(eventId),
+            eligible: pending.eligibleAutoResume
+        };
     }
 
     async function settlePersistentScriptCallbacks(scriptId) {
         const completions = [];
         for (const [eventId, pending] of state.pendingScriptEvents) {
             for (const [token, callback] of pending.pendingCallbacks) {
-                if (callback.scriptId === Number(scriptId)) pending.pendingCallbacks.delete(token);
+                if (callback.scriptId === Number(scriptId)) {
+                    pending.failed = true;
+                    pending.pendingCallbacks.delete(token);
+                }
             }
             if (!pending.pendingCallbacks.size) {
                 completions.push(finishCompletedPersistentScriptEvent(eventId, pending));
@@ -125,35 +180,47 @@ export function createDebuggerCoordinator({
         await Promise.all(completions);
     }
 
-    function dispatchScriptTriggers(triggers, breakpoint, type, autoResume) {
-        const eventId = autoResume ? state.nextScriptEventId++ : 0;
-        const pendingCallbacks = new Map();
-        if (autoResume) {
-            for (const trigger of triggers) {
-                const callbackToken = `${eventId}:${state.nextScriptCallbackToken++}`;
-                pendingCallbacks.set(callbackToken, {
-                    scriptId: Number(trigger.scriptId),
-                    callbackId: Number(trigger.callbackId)
-                });
-                trigger.callbackToken = callbackToken;
-            }
-            const pending = {
-                pendingCallbacks,
-                pauseSerial: state.explicitPauseSerial,
-                cpu: String(breakpoint.cpu),
-                type,
-                address: Number(breakpoint.address) >>> 0,
-                timeoutId: 0
+    function dispatchScriptTriggers(triggers, breakpoint, type, classification) {
+        if (!triggers.length) return;
+        if (state.pendingScriptEvents.size >= ResourceLimits.pendingScriptEvents) {
+            state.lastScriptError = {
+                code: "BUSY",
+                message: `pending script event limit reached (${ResourceLimits.pendingScriptEvents})`
             };
-            state.pendingScriptEvents.set(eventId, pending);
-            pending.timeoutId = setTimeout(() => {
-                if (state.pendingScriptEvents.get(eventId) !== pending) return;
-                log(`persistent script event ${eventId} timed out`);
-                pending.pendingCallbacks.clear();
-                void finishCompletedPersistentScriptEvent(eventId, pending);
-            }, scriptCallbackTimeoutMs);
+            log(state.lastScriptError.message);
+            return;
         }
+        const eventId = state.nextScriptEventId++;
+        const pendingCallbacks = new Map();
         for (const trigger of triggers) {
+            const callbackToken = `${eventId}:${state.nextScriptCallbackToken++}`;
+            pendingCallbacks.set(callbackToken, {
+                scriptId: Number(trigger.scriptId),
+                callbackId: Number(trigger.callbackId),
+                resumeRequested: false
+            });
+            trigger.callbackToken = callbackToken;
+        }
+        const pending = {
+            pendingCallbacks,
+            scriptIds: [...new Set(triggers.map((trigger) => Number(trigger.scriptId)))],
+            pauseSerial: state.explicitPauseSerial,
+            cpu: String(breakpoint.cpu),
+            type,
+            address: Number(breakpoint.address) >>> 0,
+            eligibleAutoResume: classification.scriptOnly === true,
+            ownerClassification: classification,
+            failed: false,
+            timeoutId: 0
+        };
+        state.pendingScriptEvents.set(eventId, pending);
+        pending.timeoutId = setTimeout(() => {
+            if (state.pendingScriptEvents.get(eventId) !== pending) return;
+            void failPersistentScriptEvent(eventId, pending, "callback timeout")
+                .catch((error) => log(`persistent script timeout recovery failed: ${String(error?.message || error)}`));
+        }, scriptCallbackTimeoutMs);
+        for (const trigger of triggers) {
+            if (pending.failed) break;
             const script = state.scripts.get(trigger.scriptId);
             if (script?.running) {
                 try {
@@ -171,19 +238,15 @@ export function createDebuggerCoordinator({
                             value: hex(breakpoint.value)
                         }
                     });
-                } catch {
-                    if (autoResume) void finishPersistentScriptEvent(eventId, {
-                        scriptId: trigger.scriptId,
-                        callbackId: trigger.callbackId,
-                        callbackToken: trigger.callbackToken
-                    });
+                } catch (error) {
+                    pending.failed = true;
+                    void failPersistentScriptEvent(eventId, pending, "event postMessage failure", error)
+                        .catch((failure) => log(`persistent script event recovery failed: ${String(failure?.message || failure)}`));
                 }
-            } else if (autoResume) {
-                void finishPersistentScriptEvent(eventId, {
-                    scriptId: trigger.scriptId,
-                    callbackId: trigger.callbackId,
-                    callbackToken: trigger.callbackToken
-                });
+            } else {
+                pending.failed = true;
+                void failPersistentScriptEvent(eventId, pending, "script stopped before event delivery")
+                    .catch((failure) => log(`persistent script event recovery failed: ${String(failure?.message || failure)}`));
             }
         }
     }
@@ -226,8 +289,7 @@ export function createDebuggerCoordinator({
             pc: Number(breakpoint.pc) >>> 0,
             value: Number(breakpoint.value) >>> 0
         });
-        const autoResume = triggers.length > 0 && classification.scriptOnly;
-        dispatchScriptTriggers(triggers, breakpoint, type, autoResume);
+        dispatchScriptTriggers(triggers, breakpoint, type, classification);
         return nativeStatus;
     }
 
@@ -254,6 +316,7 @@ export function createDebuggerCoordinator({
         finishPersistentScriptEvent,
         getNativeStatus,
         getRegisters,
+        requestPersistentScriptResume,
         settlePersistentScriptCallbacks,
         syncNativeBreakStatus,
         withCurrentExecBreakpointSuspended
