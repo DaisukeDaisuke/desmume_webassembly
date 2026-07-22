@@ -1,5 +1,6 @@
 import { ErrorCode } from "../error-codes.js";
 import { codedError, positiveInteger } from "../validation.js";
+import { WorkerByteLimits } from "../worker-rpc-value.js";
 
 export function createDisassemblyCommands(context) {
     const {
@@ -71,7 +72,7 @@ export function createDisassemblyCommands(context) {
             const start = parseAddress(params.address ?? params.base ?? 0, 0, params.cpu);
             const rows = [];
             let incompleteBytes = 0;
-            const words = opcodeWordsFromInput(params);
+            const words = opcodeWordsFromInput(params, WorkerByteLimits.disassembleBytes.opcodeWords);
             if (words) {
                 words.forEach((word, index) => {
                     const opcode = mode === "thumb" ? word & 0xffff : word >>> 0;
@@ -86,7 +87,7 @@ export function createDisassemblyCommands(context) {
                     });
                 });
             } else {
-                const bytes = bytesFromFlexibleParams(params);
+                const bytes = bytesFromFlexibleParams(params, WorkerByteLimits.disassembleBytes.decodedBytes);
                 const usable = bytes.length - (bytes.length % width);
                 incompleteBytes = bytes.length - usable;
                 for (let offset = 0; offset < usable; offset += width) {

@@ -1,90 +1,124 @@
 "use strict";
 
+import { normalizeBoundedValue } from "../bounded-value.js";
+import { normalizeWorkerRpcParams } from "../worker-rpc-value.js";
+
 let sandbox = null;
 let sandboxUrl = "";
 let channelToken = "";
 let started = false;
+let activeSecurityProbe = "";
+let childWorkerTerminateCalled = false;
+let childBlobUrlRevokeCalled = false;
+let childHandlersCleared = false;
 const pendingRequestIds = new Set();
 const MAX_PENDING_REQUESTS = 32;
 
-function assertBoundedRpc(message) {
-    if (!message || typeof message.command !== "string" || !message.params
-        || typeof message.params !== "object" || Array.isArray(message.params)) {
-        throw new TypeError("sandbox RPC shape is invalid");
-    }
-    const byteLimit = message.command === "injectBytes" ? 1024 * 1024
-        : message.command === "disassembleBytes" ? 64 * 1024 : 0;
-    const stack = [{ value: message.params, depth: 0, path: "" }];
-    const seen = new Set();
-    let nodes = 0;
-    let bytes = 0;
-    while (stack.length) {
-        const { value, depth, path } = stack.pop();
-        if (++nodes > (byteLimit || 4096) + 4096 || depth > 10) throw new RangeError("sandbox RPC exceeds structural limits");
-        if (value === null || typeof value === "boolean") { bytes += 4; continue; }
-        if (typeof value === "number") {
-            if (!Number.isFinite(value)) throw new TypeError("sandbox RPC number is invalid");
-            bytes += 16;
-            continue;
-        }
-        if (typeof value === "string") { bytes += value.length * 3; continue; }
-        if (typeof value !== "object" || seen.has(value)) throw new TypeError("sandbox RPC value is invalid");
-        if (value instanceof Uint8Array && path === "bytes" && byteLimit) {
-            if (value.byteLength > byteLimit) throw new RangeError("sandbox RPC byte input exceeds command budget");
-            bytes += value.byteLength;
-            if (bytes > byteLimit + 64 * 1024) throw new RangeError("sandbox RPC exceeds byte budget");
-            continue;
-        }
-        if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) throw new TypeError("sandbox RPC binary type is invalid");
-        seen.add(value);
-        const prototype = Object.getPrototypeOf(value);
-        if (Array.isArray(value)) {
-            const maximum = path === "bytes" && byteLimit ? byteLimit : 1024;
-            if (value.length > maximum) throw new RangeError("sandbox RPC array exceeds item budget");
-            if (path === "bytes" && byteLimit) {
-                for (const byte of value) {
-                    if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new TypeError("sandbox RPC byte array is invalid");
-                }
-                bytes += value.length;
-                if (bytes > byteLimit + 64 * 1024) throw new RangeError("sandbox RPC exceeds byte budget");
-                continue;
-            }
-            for (let index = 0; index < value.length; index++) {
-                stack.push({ value: value[index], depth: depth + 1, path: `${path}[${index}]` });
-            }
-        } else {
-            if (prototype !== Object.prototype && prototype !== null) throw new TypeError("sandbox RPC object is invalid");
-            const descriptors = Object.getOwnPropertyDescriptors(value);
-            const keys = Object.keys(descriptors);
-            if (keys.length > 128) throw new RangeError("sandbox RPC object exceeds property budget");
-            for (const key of keys) {
-                if (!("value" in descriptors[key])) throw new TypeError("sandbox RPC accessor is invalid");
-                bytes += key.length * 3;
-                stack.push({ value: descriptors[key].value, depth: depth + 1, path: path ? `${path}.${key}` : key });
-            }
-        }
-        if (bytes > (byteLimit ? byteLimit + 64 * 1024 : 256 * 1024)) throw new RangeError("sandbox RPC exceeds byte budget");
-    }
+function smallValue(value) {
+    return normalizeBoundedValue(value, {
+        maxBytes: 64 * 1024,
+        maxArray: 256,
+        maxNodes: 2048,
+        maxDepth: 10,
+        maxProperties: 128
+    }).value;
 }
 
-function protocolError(message) {
-    postMessage({ type: "protocolError", message });
+function protocolError(message, { code = "WORKER_PROTOCOL_ERROR", phase = "supervisor", probeId = "" } = {}) {
+    postMessage({
+        type: "protocolError",
+        message: String(message).slice(0, 2048),
+        code,
+        phase,
+        probeId: String(probeId || "").slice(0, 256)
+    });
 }
 
 function disposeSandbox() {
-    sandbox?.terminate();
-    sandbox = null;
-    if (sandboxUrl) URL.revokeObjectURL(sandboxUrl);
-    sandboxUrl = "";
+    if (sandbox) {
+        sandbox.onmessage = null;
+        sandbox.onerror = null;
+        sandbox.onmessageerror = null;
+        childHandlersCleared = true;
+        sandbox.terminate();
+        childWorkerTerminateCalled = true;
+        sandbox = null;
+    }
+    if (sandboxUrl) {
+        URL.revokeObjectURL(sandboxUrl);
+        childBlobUrlRevokeCalled = true;
+        sandboxUrl = "";
+    }
+    pendingRequestIds.clear();
 }
 
-function forwardSandboxMessage(message) {
-    const { channelToken: _channelToken, ...forwarded } = message;
-    postMessage(forwarded);
+function shutdown(requestId) {
+    disposeSandbox();
+    postMessage({
+        type: "shutdownAck",
+        requestId: String(requestId || ""),
+        cleanup: {
+            childWorkerTerminateCalled,
+            childBlobUrlRevokeCalled,
+            childHandlersCleared,
+            childPendingRpcAfter: pendingRequestIds.size
+        }
+    });
+}
+
+function rejectChild(message, options = {}) {
+    protocolError(message, activeSecurityProbe ? {
+        code: "SECURITY_PROBE_REJECTED",
+        phase: "child-auth",
+        probeId: activeSecurityProbe
+    } : options);
+    disposeSandbox();
+}
+
+function forwardAuthenticatedChildMessage(childMessage) {
+    if (childMessage.type === "call") {
+        if (typeof childMessage.command !== "string" || typeof childMessage.id !== "string"
+            || !childMessage.id || pendingRequestIds.has(childMessage.id)
+            || pendingRequestIds.size >= MAX_PENDING_REQUESTS) {
+            throw new TypeError(`sandbox exceeded ${MAX_PENDING_REQUESTS} pending requests`);
+        }
+        const params = normalizeWorkerRpcParams(childMessage.command, childMessage.params || {});
+        pendingRequestIds.add(childMessage.id);
+        postMessage({
+            type: "call",
+            id: childMessage.id,
+            command: childMessage.command,
+            params,
+            eventId: Number(childMessage.eventId) || 0,
+            callbackId: childMessage.callbackId,
+            callbackToken: typeof childMessage.callbackToken === "string" ? childMessage.callbackToken : ""
+        });
+        return false;
+    }
+    if (childMessage.type === "done") {
+        postMessage({ type: "done", result: normalizeBoundedValue(childMessage.result).value });
+        return true;
+    }
+    if (childMessage.type === "error") {
+        postMessage({ type: "error", error: smallValue(childMessage.error) });
+        return true;
+    }
+    postMessage({
+        type: "protocolError",
+        message: String(childMessage.message || "sandbox protocol error").slice(0, 2048),
+        code: String(childMessage.code || "WORKER_PROTOCOL_ERROR").slice(0, 128),
+        phase: String(childMessage.phase || "sandbox").slice(0, 128),
+        probeId: String(childMessage.probeId || "").slice(0, 256)
+    });
+    return true;
 }
 
 onmessage = (event) => {
     const message = event.data || {};
+    if (message.type === "shutdown") {
+        shutdown(message.requestId);
+        return;
+    }
     if (message.type === "run") {
         if (started
             || typeof message.code !== "string"
@@ -94,12 +128,13 @@ onmessage = (event) => {
             return;
         }
         started = true;
+        activeSecurityProbe = typeof message.securityProbe === "string" ? message.securityProbe : "";
         try {
             sandboxUrl = URL.createObjectURL(new Blob([message.sandboxSource], { type: "text/javascript" }));
             sandbox = new Worker(sandboxUrl);
             sandbox.postMessage({ type: "initialize", dependency: message.dependency });
         } catch (error) {
-            protocolError(`sandbox Worker could not be started: ${String(error?.message || error)}`);
+            protocolError(`sandbox Worker could not be started: ${String(error?.message || error)}`, { phase: "startup" });
             disposeSandbox();
             return;
         }
@@ -111,13 +146,12 @@ onmessage = (event) => {
                     || childMessage.layer !== "sandbox"
                     || typeof childMessage.channelToken !== "string"
                     || childMessage.dependencyHash !== message.dependency.sha256) {
-                    protocolError("sandbox Worker did not provide a valid channel token");
-                    disposeSandbox();
+                    rejectChild("sandbox Worker did not provide a valid channel token", { phase: "child-auth" });
                     return;
                 }
                 channelToken = childMessage.channelToken;
-                if (message.securityProbe) {
-                    sandbox.postMessage({ type: "securityProbe", probe: message.securityProbe });
+                if (activeSecurityProbe) {
+                    sandbox.postMessage({ type: "securityProbe", probe: activeSecurityProbe });
                     return;
                 }
                 sandbox.postMessage({ type: "run", code: message.code, shortcuts: message.shortcuts });
@@ -125,36 +159,22 @@ onmessage = (event) => {
             }
             if (childMessage.channelToken !== channelToken
                 || !["call", "done", "error", "protocolError"].includes(childMessage.type)) {
-                protocolError("sandbox Worker sent an invalid message");
-                disposeSandbox();
+                rejectChild("sandbox Worker sent an invalid message");
                 return;
             }
-            if (childMessage.type === "call") {
-                try {
-                    assertBoundedRpc(childMessage);
-                } catch (error) {
-                    protocolError(String(error?.message || error));
-                    disposeSandbox();
-                    return;
-                }
-                if (typeof childMessage.id !== "string" || !childMessage.id
-                    || pendingRequestIds.has(childMessage.id)
-                    || pendingRequestIds.size >= MAX_PENDING_REQUESTS) {
-                    protocolError(`sandbox exceeded ${MAX_PENDING_REQUESTS} pending requests`);
-                    disposeSandbox();
-                    return;
-                }
-                pendingRequestIds.add(childMessage.id);
+            try {
+                const terminal = forwardAuthenticatedChildMessage(childMessage);
+                if (terminal) disposeSandbox();
+            } catch (error) {
+                rejectChild(String(error?.message || error), { phase: "child-output" });
             }
-            forwardSandboxMessage(childMessage);
-            if (["done", "error", "protocolError"].includes(childMessage.type)) disposeSandbox();
         };
         sandbox.onerror = (sandboxEvent) => {
-            protocolError(String(sandboxEvent.message || "sandbox Worker crashed"));
+            protocolError(String(sandboxEvent.message || "sandbox Worker crashed"), { phase: "runtime" });
             disposeSandbox();
         };
         sandbox.onmessageerror = () => {
-            protocolError("sandbox Worker returned an unreadable message");
+            protocolError("sandbox Worker returned an unreadable message", { phase: "child-output" });
             disposeSandbox();
         };
         return;

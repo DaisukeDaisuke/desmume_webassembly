@@ -6,7 +6,9 @@ import { resolve } from "node:path";
 const bundledWorkers = new Map();
 for (const entryPoint of [
   "src/workers/eval.worker.js",
+  "src/workers/eval-supervisor.worker.js",
   "src/workers/persistent-script.worker.js",
+  "src/workers/persistent-script-supervisor.worker.js",
   "src/workers/algorithm.worker.js",
   "src/workers/security-boundary.worker.js"
 ]) {

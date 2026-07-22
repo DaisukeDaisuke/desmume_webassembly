@@ -46,27 +46,51 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
             const pendingRpc = new Set();
             let ready = false;
             let timerActive = true;
-            const timer = setTimeout(() => finish(reject, Object.assign(new Error("Sandbox boundary production session timed out"), {
-                mcpCode: ErrorCode.TIMEOUT
-            })), timeoutMs);
-            const finish = (callback, value) => {
+            let terminalValue;
+            let terminalError = null;
+            let pendingRpcBeforeShutdown = 0;
+            const shutdownRequestId = `boundary-shutdown-${Math.random().toString(36).slice(2)}`;
+            const timer = setTimeout(() => {
                 if (!timerActive) return;
                 clearTimeout(timer);
                 timerActive = false;
-                const pendingRpcBeforeDispose = pendingRpc.size;
+                pendingRpc.clear();
+                host.dispose();
+                activeWorkerHosts--;
+                reject(Object.assign(new Error("Sandbox boundary production session timed out"), {
+                    mcpCode: ErrorCode.TIMEOUT
+                }));
+            }, timeoutMs);
+            const requestShutdown = (value, error = null) => {
+                if (terminalValue !== undefined || terminalError) return;
+                terminalValue = value;
+                terminalError = error;
+                pendingRpcBeforeShutdown = pendingRpc.size;
+                host.worker.postMessage({ type: "shutdown", requestId: shutdownRequestId });
+            };
+            const finishAfterAck = (cleanup) => {
+                if (!timerActive) return;
+                clearTimeout(timer);
+                timerActive = false;
                 pendingRpc.clear();
                 host.dispose();
                 activeWorkerHosts--;
                 const hostStatus = typeof host.status === "function" ? host.status() : {};
-                callback({
-                    value,
-                    pendingRpcBeforeDispose,
+                const sample = {
+                    value: terminalValue,
+                    pendingRpcBeforeShutdown,
                     pendingRpcAfter: pendingRpc.size,
                     timerCleared: !timerActive,
-                    workerDisposed: hostStatus.disposed === true,
-                    workerTerminated: hostStatus.workerTerminated === true,
-                    blobUrlRevoked: hostStatus.blobUrlRevoked === true
-                });
+                    outerWorkerDisposed: hostStatus.disposed === true,
+                    outerWorkerTerminateCalled: hostStatus.workerTerminated === true,
+                    outerBlobUrlRevokeCalled: hostStatus.blobUrlRevoked === true,
+                    childWorkerTerminateCalled: cleanup.childWorkerTerminateCalled === true,
+                    childBlobUrlRevokeCalled: cleanup.childBlobUrlRevokeCalled === true,
+                    childHandlersCleared: cleanup.childHandlersCleared === true,
+                    childPendingRpcAfter: Number(cleanup.childPendingRpcAfter)
+                };
+                if (terminalError) reject(terminalError);
+                else resolve(sample);
             };
             host.worker.onmessage = (event) => {
                 const message = event.data || {};
@@ -85,25 +109,37 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                 }
                 if (message.type === "call" && holdRpc) {
                     pendingRpc.add(String(message.id));
-                    finish(resolve, { pendingObserved: true });
+                    requestShutdown({ pendingObserved: true });
                     return;
                 }
                 if (message.type === "done" && !securityProbe) {
-                    finish(resolve, normalizeBoundedValue(message.result, { maxBytes: 64 * 1024 }).value);
+                    requestShutdown(normalizeBoundedValue(message.result, { maxBytes: 64 * 1024 }).value);
                     return;
                 }
                 if (message.type === "protocolError" && securityProbe) {
-                    finish(resolve, { rejected: true, message: String(message.message || "") });
+                    requestShutdown({
+                        rejected: message.code === "SECURITY_PROBE_REJECTED"
+                            && message.phase === "child-auth"
+                            && message.probeId === securityProbe,
+                        code: String(message.code || ""),
+                        phase: String(message.phase || ""),
+                        probeId: String(message.probeId || "")
+                    });
                     return;
                 }
-                finish(reject, Object.assign(new Error(message.message || "Sandbox boundary production protocol failure"), {
+                if (message.type === "shutdownAck" && message.requestId === shutdownRequestId
+                    && message.cleanup && typeof message.cleanup === "object") {
+                    finishAfterAck(message.cleanup);
+                    return;
+                }
+                requestShutdown(undefined, Object.assign(new Error(message.message || "Sandbox boundary production protocol failure"), {
                     mcpCode: ErrorCode.WORKER_PROTOCOL_ERROR
                 }));
             };
-            host.worker.onerror = (event) => finish(reject, Object.assign(new Error(String(event.message || "Sandbox boundary Worker crashed")), {
+            host.worker.onerror = (event) => requestShutdown(undefined, Object.assign(new Error(String(event.message || "Sandbox boundary Worker crashed")), {
                 mcpCode: ErrorCode.WORKER_CRASHED
             }));
-            host.worker.onmessageerror = () => finish(reject, Object.assign(new Error("Sandbox boundary Worker returned unreadable data"), {
+            host.worker.onmessageerror = () => requestShutdown(undefined, Object.assign(new Error("Sandbox boundary Worker returned unreadable data"), {
                 mcpCode: ErrorCode.WORKER_PROTOCOL_ERROR
             }));
         });
@@ -132,29 +168,37 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
             const cleanup = {
                 activeWorkerHostsAfter: activeWorkerHosts,
                 pendingRpcAfter: pending.pendingRpcAfter,
-                allWorkerHostsDisposed: cleanupSamples.every((sample) => sample.workerDisposed),
-                allWorkersTerminated: cleanupSamples.every((sample) => sample.workerTerminated),
-                allBlobUrlsRevoked: cleanupSamples.every((sample) => sample.blobUrlRevoked),
+                childPendingRpcAfter: pending.childPendingRpcAfter,
+                allOuterWorkerHostsDisposed: cleanupSamples.every((sample) => sample.outerWorkerDisposed),
+                allOuterWorkersTerminated: cleanupSamples.every((sample) => sample.outerWorkerTerminateCalled),
+                allOuterBlobUrlsRevoked: cleanupSamples.every((sample) => sample.outerBlobUrlRevokeCalled),
+                allChildWorkersTerminated: cleanupSamples.every((sample) => sample.childWorkerTerminateCalled),
+                allChildBlobUrlsRevoked: cleanupSamples.every((sample) => sample.childBlobUrlRevokeCalled),
+                allChildHandlersCleared: cleanupSamples.every((sample) => sample.childHandlersCleared),
                 allTimersCleared: cleanupSamples.every((sample) => sample.timerCleared)
             };
             const preReady = boundary.value?.preReady || {};
             const passed = Object.keys(preReady).length > 0
                 && Object.values(preReady).every((value) => value === false)
                 && Object.values(probeResults).every((value) => value === true)
-                && pending.pendingRpcBeforeDispose === 1
+                && pending.pendingRpcBeforeShutdown === 1
                 && pending.value?.pendingObserved === true
                 && cleanup.pendingRpcAfter === 0
+                && cleanup.childPendingRpcAfter === 0
                 && cleanup.activeWorkerHostsAfter === 0
-                && cleanup.allWorkerHostsDisposed
-                && cleanup.allWorkersTerminated
-                && cleanup.allBlobUrlsRevoked
+                && cleanup.allOuterWorkerHostsDisposed
+                && cleanup.allOuterWorkersTerminated
+                && cleanup.allOuterBlobUrlsRevoked
+                && cleanup.allChildWorkersTerminated
+                && cleanup.allChildBlobUrlsRevoked
+                && cleanup.allChildHandlersCleared
                 && cleanup.allTimersCleared;
             return normalizeBoundedValue({
                 passed,
                 productionPath: ["eval-supervisor.worker", "eval.worker"],
                 preReady,
                 forgeryRejected: probeResults,
-                pendingRpcCreated: pending.pendingRpcBeforeDispose,
+                pendingRpcCreated: pending.pendingRpcBeforeShutdown,
                 cleanup
             }, { maxBytes: 64 * 1024 }).value;
         })().finally(() => { active = null; });

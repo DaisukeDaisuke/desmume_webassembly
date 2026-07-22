@@ -1,5 +1,6 @@
 import { codedError, memorySize, positiveInteger } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
+import { WorkerByteLimits } from "../worker-rpc-value.js";
 
 export function createMemoryCommands(context) {
     const {
@@ -91,7 +92,7 @@ export function createMemoryCommands(context) {
         },
 
         async injectBytes(params = {}) {
-            const bytes = bytesFromFlexibleParams(params);
+            const bytes = bytesFromFlexibleParams(params, WorkerByteLimits.injectBytes.decodedBytes);
             return memoryCommands.injectMemoryFile({
                 ...params,
                 bytes: [...bytes],

@@ -58,39 +58,63 @@ export function createBinaryTools({ getPc, getSelectedCpu }) {
         return parseInt(text, 16);
     }
 
-    function bytesFromFlexibleParams(params = {}) {
+    function bytesFromFlexibleParams(params = {}, maximum = Number.MAX_SAFE_INTEGER) {
         if (params.bytes) {
-            return new Uint8Array(params.bytes.map((value) => (
-                typeof value === "number" ? value & 0xff : parseHexToken(value) & 0xff
-            )));
+            if (params.bytes.length > maximum) throw new RangeError(`byte input exceeds ${maximum} decoded bytes`);
+            const bytes = new Uint8Array(params.bytes.length);
+            for (let index = 0; index < params.bytes.length; index++) {
+                const value = params.bytes[index];
+                bytes[index] = typeof value === "number" ? value & 0xff : parseHexToken(value) & 0xff;
+            }
+            return bytes;
         }
-        if (params.base64) return bytesFromParams(params);
+        if (params.base64) {
+            const encoded = String(params.base64);
+            if (encoded.length > 4 * Math.ceil(maximum / 3)) {
+                throw new RangeError(`base64 input exceeds ${maximum} decoded bytes`);
+            }
+            const bytes = bytesFromParams({ base64: encoded });
+            if (bytes.length > maximum) throw new RangeError(`base64 input exceeds ${maximum} decoded bytes`);
+            return bytes;
+        }
         const text = String(params.hex ?? params.input ?? params.text ?? "").trim();
         if (!text) throw new Error("bytes, base64, hex, input, or text is required");
+        if (text.length > maximum * 3) throw new RangeError(`hex input exceeds ${maximum} decoded bytes`);
         const clean = text.replace(/[,;\n\r\t]+/g, " ").trim();
         const tokens = clean ? clean.split(/\s+/) : [];
         if (tokens.length > 1) {
-            return new Uint8Array(tokens.map((token) => parseHexToken(token) & 0xff));
+            if (tokens.length > maximum) throw new RangeError(`hex input exceeds ${maximum} decoded bytes`);
+            const bytes = new Uint8Array(tokens.length);
+            for (let index = 0; index < tokens.length; index++) bytes[index] = parseHexToken(tokens[index]) & 0xff;
+            return bytes;
         }
         const one = tokens[0].replace(/^0x/i, "");
         if (!/^[0-9a-f]+$/i.test(one) || one.length % 2) {
             throw new Error("hex byte text must contain complete bytes");
         }
         const bytes = new Uint8Array(one.length / 2);
+        if (bytes.length > maximum) throw new RangeError(`hex input exceeds ${maximum} decoded bytes`);
         for (let index = 0; index < bytes.length; index++) {
             bytes[index] = parseInt(one.slice(index * 2, index * 2 + 2), 16);
         }
         return bytes;
     }
 
-    function opcodeWordsFromInput(params = {}) {
-        if (params.words) {
-            return params.words.map((value) => (
-                typeof value === "number" ? value >>> 0 : parseHexToken(value) >>> 0
-            ));
+    function opcodeWordsFromInput(params = {}, maximum = Number.MAX_SAFE_INTEGER) {
+        const suppliedWords = Array.isArray(params.words) ? params.words
+            : Array.isArray(params.opcodes) ? params.opcodes : null;
+        if (suppliedWords) {
+            if (suppliedWords.length > maximum) throw new RangeError(`opcode input exceeds ${maximum} words`);
+            const words = new Array(suppliedWords.length);
+            for (let index = 0; index < suppliedWords.length; index++) {
+                const value = suppliedWords[index];
+                words[index] = typeof value === "number" ? value >>> 0 : parseHexToken(value) >>> 0;
+            }
+            return words;
         }
         const text = String(params.input ?? params.text ?? params.opcodes ?? "").trim();
         if (!text) return null;
+        if (text.length > maximum * 12) throw new RangeError(`opcode input exceeds ${maximum} words`);
         const tokens = text.replace(/[,;\n\r\t]+/g, " ").trim().split(/\s+/).filter(Boolean);
         if (!tokens.length) return null;
         const explicitWords = params.inputMode === "words"
@@ -100,7 +124,11 @@ export function createBinaryTools({ getPc, getSelectedCpu }) {
                 const parsed = /^[0-9a-f]+$/i.test(raw) ? parseHexToken(token) : parseNumber(token);
                 return /^0x/i.test(token) && parsed > 0xff;
             });
-        return explicitWords ? tokens.map((token) => parseHexToken(token) >>> 0) : null;
+        if (!explicitWords) return null;
+        if (tokens.length > maximum) throw new RangeError(`opcode input exceeds ${maximum} words`);
+        const words = new Array(tokens.length);
+        for (let index = 0; index < tokens.length; index++) words[index] = parseHexToken(tokens[index]) >>> 0;
+        return words;
     }
 
     function u32FromBytes(bytes, offset, endian) {

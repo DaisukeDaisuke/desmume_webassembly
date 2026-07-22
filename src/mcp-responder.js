@@ -1,4 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
+import { normalizeBoundedValue } from "./bounded-value.js";
 
 export function createMcpResponder({ logger = console, pauseSafely = () => {} } = {}) {
     function fail(code, message, details) {
@@ -115,9 +116,25 @@ export function createMcpResponder({ logger = console, pauseSafely = () => {} } 
     }
 
     function toWebMcpContent(result, compactFormatter = formatCompact) {
+        let boundedResult;
+        try {
+            boundedResult = normalizeBoundedValue(result, {
+                maxBytes: 2 * 1024 * 1024,
+                maxArray: 64 * 1024,
+                maxNodes: 100000,
+                maxDepth: 16,
+                maxProperties: 4096
+            }).value;
+        } catch (error) {
+            boundedResult = fail(
+                ErrorCode.WORKER_PROTOCOL_ERROR,
+                "Command result exceeded the WebMCP output boundary",
+                { message: String(error?.message || error).slice(0, 2048) }
+            );
+        }
         return {
-            content: [{ type: "text", text: compactFormatter(result) }],
-            structuredContent: result
+            content: [{ type: "text", text: String(compactFormatter(boundedResult)).slice(0, 64 * 1024) }],
+            structuredContent: boundedResult
         };
     }
 
