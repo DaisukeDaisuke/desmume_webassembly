@@ -3,6 +3,19 @@
 This document describes the browser-side API exposed by `public/index.html`.
 All operations are local to the browser. ROM, save, and state files are not uploaded.
 
+## Local security context
+
+This security context is also included in the native WebMCP tool descriptions so an AI client receives it before choosing a tool:
+
+- ROM, save, and State file inputs are read into the current browser page and in-memory emulator only. They are not uploaded by the file controls, debugger commands, memory commands, eval scripts, or persistent scripts. `data:` and `blob:` requests shown by DevTools are local in-memory resources, not remote transfers.
+- The page loads its executable `<script>` resources only from the same origin. It uses the browser's built-in `document.modelContext` API (with `navigator.modelContext` only as a compatibility fallback) and does not load `@mcp-b/global` or another third-party WebMCP shim into the page global scope.
+- The `postMessage` command bridge requires `event.origin === window.location.origin`. Opaque sandbox origins (`null`) and other origins receive no command execution and no reply, including for ROM dumps, memory reads, and register reads. Native WebMCP and an exact same-origin caller remain trusted interfaces and can intentionally request debugger data.
+- One-shot eval and persistent scripts run behind supervisor Workers in inner sandbox Workers. The sandbox has no DOM or `window`, and network APIs, sub-Workers, raw `postMessage`, `localStorage`, `sessionStorage`, IndexedDB, Cache API, string timers, global `eval`, and constructor-chain code generation are disabled. RPC reaches the emulator only through the authenticated supervisor protocol and an explicit command allowlist.
+- The optional `ssim-trim` comparison code is the only CDN-fetched executable source. It is fetched without credentials or a referrer from one fixed HTTPS URL and exact version, rejected unless its SHA-256 matches, and evaluated only in the algorithm Worker. That Worker disables network, sub-Workers, raw messages, browser storage, string timers, `eval`, and constructor-chain generation before the verified source runs. It receives only the baseline/current frame pixels and comparison options required for that call, never ROM, save, or State bytes.
+- Choosing `loadRomUrl` or `loadStateUrl` is an explicit request to fetch the supplied URL. The local file controls are the appropriate path when no network fetch is desired.
+
+These are concrete isolation guarantees, not permission for a caller to disclose data it intentionally receives. Keep ROM/memory results out of chat and logs, and grant native WebMCP or same-origin page access only to a trusted client.
+
 ## Browser Entry Points
 
 - `window.DesmumeMCP.call(name, params)`: Runs one command and returns a result object.
@@ -10,7 +23,7 @@ All operations are local to the browser. ROM, save, and state files are not uplo
 - `window.DesmumeMCP.shortcuts()` / `window.DesmumeShortcuts`: Lists global one-letter shortcut functions.
 - `window.a(...)` through `window.Z(...)`: Short aliases that return the same JSON objects as `DesmumeMCP.call()`. For example, `await window.a("pc", 16)` disassembles near PC without opcode bytes by default, and `await window.A("pc", 16)` includes opcode bytes. Positional arguments are mapped per shortcut; passing one object uses it directly, such as `await window.i({ timeoutMs: 1000 })`.
 - `window.postMessage({ type: "desmume-mcp", id, command, params }, "*")`: Message-based command transport. The page replies with `{ type: "desmume-mcp-result", id, result }`.
-- Browser WebMCP: when `navigator.modelContext` is available, the page registers `desmume.list`, `desmume.call`, `desmume.eval`, and `desmume.runScript`. Use `desmume.eval` for multi-command investigation scripts with `mcp.call(command, params)`.
+- Browser WebMCP: when `document.modelContext` (or the compatibility fallback `navigator.modelContext`) is available, the page registers `desmume.list`, `desmume.call`, `desmume.eval`, and `desmume.runScript`. Their descriptions inject the local security context above. Use `desmume.eval` for multi-command investigation scripts with `mcp.call(command, params)`.
 
 ### One-letter shortcut reference
 
@@ -127,7 +140,7 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 - `eval`: Runs isolated JavaScript against a capability object from WebMCP. The script body uses `await mcp.call(command, params)` and should return a concise string or object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "code": string, "timeoutMs": number }`.
 - `runScript`: Alias for `eval` for clients that avoid eval-named tools.
 - `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "timeoutMs": number }` to change the script timeout.
-- `batch`: Runs multiple WebMCP commands sequentially. Pass either an array or `{ "commands": [{ "command": "status", "params": {} }] }`; the result contains one entry per command.
+- `batch`: Runs multiple WebMCP commands sequentially. Pass `{ "commands": [{ "command": "status", "params": {} }] }`; the result contains one entry per command.
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
 
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
@@ -201,11 +214,11 @@ The operation captures frame A once while paused and compares every later comple
 
 ## Worker and optional algorithm policy
 
-Persistent/eval Worker sources live under `src/workers`, are embedded as strings in the production `public/app.js` bundle, and start from Blob URLs. Stop, timeout, crash, and restart terminate the Worker, settle pending RPC, and revoke its URL. Workers cannot access the DOM, `window`, ROM/State bytes, frame pixels, arbitrary network URLs, or unapproved RPC.
+Persistent/eval Worker sources live under `src/workers`, are embedded as strings in the production `public/app.js` bundle, and start from Blob URLs. Stop, timeout, crash, and restart terminate the Worker, settle pending RPC, and revoke its URL. Their inner sandboxes cannot access the DOM, `window`, ROM/State bytes, frame pixels, network APIs, browser storage, raw messages, sub-Workers, or unapproved RPC. `localStorage`, `sessionStorage`, IndexedDB, and Cache API are explicitly shadowed even though normal browser Workers do not expose every one of those APIs.
 
 Optional external image algorithms use only fixed HTTPS allowlist entries with exact versions and SHA-256 verification. Integrity/network failure disables only that algorithm. License/version/hash/source metadata is maintained in `THIRD_PARTY_NOTICES.md`; `public/coi-serviceworker.js` remains an independent unminified vendored asset with its MIT header.
 
-`ssim-trim` loads the exact npm asset `ssim.js@3.5.0/dist/ssim.web.js` from jsDelivr only when requested. Its expected SHA-256 is `238ab90f2dd1c6dfe9ab532d5e9da9b541545760fb970fb621398ae84daaacfe`; verified source is executed only inside the embedded algorithm Worker. A network, COEP, timeout, or integrity failure returns `ALGORITHM_UNAVAILABLE` or `ALGORITHM_INTEGRITY_FAILED` for `ssim-trim` without affecting `px`, `px-window`, `hist`, `blk`, or `edge`.
+`ssim-trim` loads the exact npm asset `ssim.js@3.5.0/dist/ssim.web.js` from jsDelivr only when requested. Its expected SHA-256 is `238ab90f2dd1c6dfe9ab532d5e9da9b541545760fb970fb621398ae84daaacfe`; verified source is executed only inside the embedded algorithm Worker after that Worker removes network, storage, raw-message, sub-Worker, and runtime code-generation capabilities. The source receives only frame pixels and comparison options for the active comparison. A network, COEP, timeout, or integrity failure returns `ALGORITHM_UNAVAILABLE` or `ALGORITHM_INTEGRITY_FAILED` for `ssim-trim` without affecting `px`, `px-window`, `hist`, `blk`, or `edge`.
 
 ## Persistent injection scripts
 

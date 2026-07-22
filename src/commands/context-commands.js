@@ -1,5 +1,6 @@
 import { withInternalMetadata } from "../internal-command-metadata.js";
-import { nonNegativeNumber } from "../validation.js";
+import { ErrorCode } from "../error-codes.js";
+import { codedError, nonNegativeNumber } from "../validation.js";
 
 export function createContextCommands(context) {
     const {
@@ -57,7 +58,10 @@ export function createContextCommands(context) {
             const name = String(params.name || "default");
             const existing = readAnalysisBaseline(name);
             if (existing && params.replace !== true) {
-                throw new Error(`analysis baseline already exists: ${name}; pass replace:true to overwrite it`);
+                throw codedError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    `analysis baseline already exists: ${name}; pass replace:true to overwrite it`
+                );
             }
             const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`;
             const generation = state.romGeneration;
@@ -68,10 +72,15 @@ export function createContextCommands(context) {
                 { analysisBaselineSlotToken }
             ));
             if (generation !== state.romGeneration) {
-                throw new Error("ROM changed while saving analysis baseline");
+                throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
             }
             const stateBytes = await idbGet(slot);
-            if (!stateBytes) throw new Error("analysis baseline state was not stored");
+            if (!stateBytes) {
+                throw codedError(
+                    ErrorCode.STATE_NOT_LOADED,
+                    "analysis baseline state was not stored"
+                );
+            }
             const baseline = {
                 name,
                 slot,
@@ -99,18 +108,29 @@ export function createContextCommands(context) {
             ensureRomLoaded("analysis baseline restore requires a loaded ROM");
             const name = String(params.name || "default");
             const baseline = readAnalysisBaseline(name);
-            if (!baseline) throw new Error(`analysis baseline not found: ${name}`);
+            if (!baseline) {
+                throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
+            }
             const rom = await currentRomIdentity();
             for (const field of ["romName", "romSize", "romSha256", "stateFormatVersion"]) {
                 if (baseline[field] !== rom[field]) {
-                    throw new Error(`analysis baseline ROM mismatch: ${field}`);
+                    throw codedError(
+                        ErrorCode.STATE_INVALID,
+                        `analysis baseline ROM mismatch: ${field}`,
+                        { field }
+                    );
                 }
             }
             const stateBytes = await idbGet(baseline.slot);
             const invalidState = !stateBytes
                 || stateBytes.length !== baseline.stateSize
                 || await sha256Hex(stateBytes) !== baseline.stateSha256;
-            if (invalidState) throw new Error("analysis baseline state integrity check failed");
+            if (invalidState) {
+                throw codedError(
+                    ErrorCode.STATE_INVALID,
+                    "analysis baseline state integrity check failed"
+                );
+            }
             await call("loadState", withInternalMetadata({
                 slot: baseline.slot,
                 saveFlushBlockMs: params.saveFlushBlockMs

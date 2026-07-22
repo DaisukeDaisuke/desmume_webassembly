@@ -1,3 +1,6 @@
+import { ErrorCode } from "../error-codes.js";
+import { codedError, isPlainObject } from "../validation.js";
+
 export function createScriptCommands({
     state,
     ui,
@@ -86,14 +89,22 @@ export function createScriptCommands({
     }
 
     async function batch(params = {}) {
-        const items = Array.isArray(params)
-            ? params
-            : Array.isArray(params.commands) ? params.commands : [];
-        if (!items.length) throw new Error("batch requires an array or { commands: [...] }");
+        const items = Array.isArray(params.commands) ? params.commands : [];
+        if (!items.length) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                "batch requires { commands: [...] } with at least one command"
+            );
+        }
         const results = [];
         for (const item of items) {
+            if (!isPlainObject(item)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "batch items must be plain objects");
+            }
             const command = String(item.command ?? item.name ?? "");
-            if (!command) throw new Error("batch item is missing command");
+            if (!command) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "batch item is missing command");
+            }
             results.push({ command, result: await runCommand(command, item.params || {}) });
         }
         return { results };

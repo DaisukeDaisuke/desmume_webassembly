@@ -15,19 +15,41 @@ export function createEmulationLoop({
     updateStatus,
     log = () => {}
 }) {
+    let previousScreenDiagnostic = "ok";
+
+    function reportScreenDiagnostic(next, message = "") {
+        if (next === previousScreenDiagnostic) return;
+        if (next === "ok") {
+            log(`screen diagnostic recovered from ${previousScreenDiagnostic}`);
+        } else {
+            log(message);
+        }
+        previousScreenDiagnostic = next;
+    }
+
     function drawFrame() {
         if (!state.ready || !state.render || !frameService.isValid()) return;
-        if (!ui.screen.isConnected) log("screen canvas detached");
         const rect = ui.screenShell.getBoundingClientRect();
-        if (rect.width <= 0
+        const collapsed = rect.width <= 0
             || rect.height <= 0
             || !Number.isFinite(rect.width)
-            || !Number.isFinite(rect.height)) {
-            log(`screen shell collapsed: scale=${state.scale} rotation=${state.rotation} width=${rect.width} height=${rect.height}`);
-        }
+            || !Number.isFinite(rect.height);
         const bytes = native.getFrameBytes();
         if (!bytes || bytes.byteLength !== FRAMEBUFFER_BYTES) {
-            throw new Error("invalid framebuffer length");
+            reportScreenDiagnostic("invalid-framebuffer", "invalid framebuffer length");
+            const error = new Error("invalid framebuffer length");
+            error.screenDiagnosticLogged = true;
+            throw error;
+        }
+        if (!ui.screen.isConnected) {
+            reportScreenDiagnostic("detached", "screen canvas detached");
+        } else if (collapsed) {
+            reportScreenDiagnostic(
+                "collapsed",
+                `screen shell collapsed: scale=${state.scale} rotation=${state.rotation} width=${rect.width} height=${rect.height}`
+            );
+        } else {
+            reportScreenDiagnostic("ok");
         }
         state.imageData.data.set(bytes);
         ui.screen.getContext("2d").putImageData(state.imageData, 0, 0);
@@ -126,7 +148,9 @@ export function createEmulationLoop({
                 try {
                     drawFrame();
                 } catch (error) {
-                    log(`frame draw failed: ${String(error?.message || error)}`);
+                    if (!error?.screenDiagnosticLogged) {
+                        log(`frame draw failed: ${String(error?.message || error)}`);
+                    }
                 }
                 try {
                     pumpAudio(ran);

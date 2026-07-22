@@ -6,7 +6,12 @@ function bytesToHex(bytes) {
     return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
+export function createAlgorithmLoader({
+    responder,
+    downloadTimeoutMs = 5000,
+    fetchImpl = globalThis.fetch,
+    cryptoImpl = globalThis.crypto
+}) {
     const cache = new Map();
 
     async function load(algorithm, signal) {
@@ -28,7 +33,7 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
         const abort = () => controller.abort(signal?.reason || "cancelled");
         const unsubscribeAbort = subscribeAbort(signal, abort);
         try {
-            const response = await fetch(metadata.url, {
+            const response = await fetchImpl(metadata.url, {
                 cache: "force-cache",
                 credentials: "omit",
                 referrerPolicy: "no-referrer",
@@ -42,7 +47,7 @@ export function createAlgorithmLoader({ responder, downloadTimeoutMs = 5000 }) {
                 });
             }
             const bytes = await response.arrayBuffer();
-            const actualHash = bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+            const actualHash = bytesToHex(new Uint8Array(await cryptoImpl.subtle.digest("SHA-256", bytes)));
             if (actualHash !== metadata.sha256) {
                 return responder.fail(ErrorCode.ALGORITHM_INTEGRITY_FAILED, `${algorithm} integrity check failed`, {
                     algorithm,

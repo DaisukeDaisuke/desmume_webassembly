@@ -229,7 +229,9 @@ export function bindUi(context) {
     ui.mcpBatchRunBtn.addEventListener("click", () => {
         let items = [];
         try { items = JSON.parse(ui.mcpBatch.value || "[]"); } catch (e) { console.error(e); ui.mcpOutput.textContent = e.message; return; }
-        runCommand("batch", Array.isArray(items) ? items : { commands: items.commands || [] }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
+        runCommand("batch", {
+            commands: Array.isArray(items) ? items : items.commands || []
+        }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
     });
     ui.scriptRunBtn.addEventListener("click", () => runCommand("runPersistentScript", { name: ui.scriptName.value, code: ui.scriptCode.value, asyncMode: ui.scriptAsyncMode.checked }).then((result) => {
         try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}

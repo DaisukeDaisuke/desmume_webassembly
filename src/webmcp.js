@@ -1,6 +1,8 @@
 import { ErrorCode } from "./error-codes.js";
 import { unwrapLegacyScalar } from "./legacy-scalar.js";
 
+const LOCAL_SECURITY_CONTEXT = "Local-only security boundary: ROM, save, and state bytes are not uploaded; no third-party WebMCP script is loaded; cross-origin and opaque-origin message calls are ignored; injected JavaScript runs in network-, DOM-, and storage-disabled sandbox Workers. Optional SSIM CDN source is exact-version SHA-256 verified and executes in a network- and storage-disabled algorithm Worker.";
+
 export function registerWebMcp({ commands, descriptions, responder, runCommand, compact, installShortcuts, logger }) {
     const toContent = (result) => responder.toWebMcpContent(result, compact);
     const parseInput = (input) => {
@@ -50,20 +52,20 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
     window.memory.write32 = window.memory.writedword;
 
     async function registerBrowserTools() {
-        const modelContext = ("modelContext" in navigator && navigator.modelContext)
-            || ("modelContext" in document && document.modelContext);
+        const modelContext = ("modelContext" in document && document.modelContext)
+            || ("modelContext" in navigator && navigator.modelContext);
         if (!modelContext || typeof modelContext.registerTool !== "function") return false;
         const registrations = [{
             name: "desmume.list",
             title: "DeSmuME command list",
-            description: "Lists available DeSmuME Web Debugger commands and their short descriptions.",
+            description: `Lists available DeSmuME Web Debugger commands and their short descriptions. ${LOCAL_SECURITY_CONTEXT}`,
             inputSchema: { type: "object", additionalProperties: false },
             annotations: { readOnlyHint: true },
             execute: async () => toContent(window.DesmumeMCP.list())
         }, {
             name: "desmume.call",
             title: "DeSmuME command",
-            description: "Runs one DeSmuME Web Debugger command by name.",
+            description: "Runs one DeSmuME Web Debugger command locally by name. Memory and debugger results are returned only to the native WebMCP caller or the exact same-origin message caller.",
             inputSchema: {
                 type: "object",
                 required: ["command"],
@@ -80,7 +82,7 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
         }, {
             name: "desmume.eval",
             title: "DeSmuME eval",
-            description: "Runs isolated JavaScript with mcp.call(command, params).",
+            description: "Runs isolated JavaScript with mcp.call(command, params) in a Worker without network, DOM, sub-Worker, localStorage, sessionStorage, IndexedDB, Cache API, or raw postMessage access.",
             inputSchema: {
                 type: "object",
                 required: ["code"],
@@ -94,7 +96,7 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
         }, {
             name: "desmume.runScript",
             title: "DeSmuME run script",
-            description: "Alias for desmume.eval for clients that avoid eval-named tools.",
+            description: "Alias for desmume.eval with the same network-, DOM-, storage-, and raw-message-disabled Worker boundary.",
             inputSchema: {
                 type: "object",
                 required: ["code"],
@@ -112,7 +114,7 @@ export function registerWebMcp({ commands, descriptions, responder, runCommand, 
                 await modelContext.registerTool(tool);
                 registered++;
             } catch (error) {
-                if (String(error?.message || error).includes("already")) registered++;
+                if (/already|duplicate/i.test(String(error?.message || error))) registered++;
                 else console.warn("WebMCP register failed", tool.name, error);
             }
         }

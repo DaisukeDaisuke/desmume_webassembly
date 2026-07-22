@@ -1,11 +1,90 @@
 "use strict";
 
+(() => {
+const nativePostMessage = globalThis.postMessage.bind(globalThis);
+const nativeEval = globalThis.eval;
+const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
+const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
+
 const fetch = undefined;
 const XMLHttpRequest = undefined;
 const WebSocket = undefined;
 const EventSource = undefined;
 const importScripts = undefined;
 const Function = undefined;
+
+for (const name of [
+    "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
+    "postMessage", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "localStorage", "sessionStorage", "close",
+    "navigator"
+]) {
+    try {
+        Object.defineProperty(globalThis, name, {
+            value: undefined,
+            writable: false,
+            configurable: false
+        });
+    } catch {
+        try { globalThis[name] = undefined; } catch {}
+    }
+}
+
+function installSafeTimer(name, nativeTimer) {
+    if (!nativeTimer) return;
+    Object.defineProperty(globalThis, name, {
+        value: (callback, delay, ...args) => {
+            if (typeof callback !== "function") {
+                throw new TypeError(`${name} requires a function callback`);
+            }
+            return nativeTimer(callback, delay, ...args);
+        },
+        writable: false,
+        configurable: false
+    });
+}
+
+installSafeTimer("setTimeout", nativeSetTimeout);
+installSafeTimer("setInterval", nativeSetInterval);
+
+function lockDownRuntimeCodeGeneration() {
+    const prototypes = new Set();
+    const collectPrototypeChain = (value) => {
+        let current = value;
+        while (current && !prototypes.has(current)) {
+            prototypes.add(current);
+            current = Object.getPrototypeOf(current);
+        }
+    };
+    collectPrototypeChain(globalThis);
+    collectPrototypeChain(() => {});
+    collectPrototypeChain(async () => {});
+    collectPrototypeChain(function* () {});
+    collectPrototypeChain(async function* () {});
+    for (const prototype of prototypes) {
+        if (!Object.prototype.hasOwnProperty.call(prototype, "constructor")) continue;
+        try {
+            Object.defineProperty(prototype, "constructor", {
+                value: undefined,
+                writable: false,
+                configurable: false
+            });
+        } catch {
+            try { prototype.constructor = undefined; } catch {}
+        }
+    }
+    try {
+        Object.defineProperty(globalThis, "eval", {
+            value: undefined,
+            writable: false,
+            configurable: false
+        });
+    } catch {
+        try { globalThis.eval = undefined; } catch {}
+    }
+}
+
+lockDownRuntimeCodeGeneration();
 
 function normalizeArea({ width, screen = "both", region, ignoreRects = [] }) {
     const baseY = screen === "bottom" ? 192 : 0;
@@ -61,7 +140,7 @@ function tileImage(pixels, sourceWidth, area, tileX, tileY, tileWidth, tileHeigh
 }
 
 function compare(message) {
-    (0, eval)(message.librarySource);
+    nativeEval(message.librarySource);
     if (!globalThis.ssim || typeof globalThis.ssim.ssim !== "function") {
         throw new Error("ssim.js did not expose the expected API");
     }
@@ -107,13 +186,13 @@ function compare(message) {
 onmessage = (event) => {
     const message = event.data || {};
     if (message.type !== "compare") {
-        postMessage({ type: "protocolError", message: "unknown algorithm Worker message" });
+        nativePostMessage({ type: "protocolError", message: "unknown algorithm Worker message" });
         return;
     }
     try {
-        postMessage({ type: "done", result: compare(message) });
+        nativePostMessage({ type: "done", result: compare(message) });
     } catch (error) {
-        postMessage({
+        nativePostMessage({
             type: "error",
             message: String(error?.message || error),
             errorName: String(error?.name || "Error")
@@ -121,4 +200,5 @@ onmessage = (event) => {
     }
 };
 
-postMessage({ type: "ready" });
+nativePostMessage({ type: "ready" });
+})();

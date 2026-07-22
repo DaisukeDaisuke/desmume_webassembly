@@ -157,39 +157,60 @@ export function createRuntimeCommands(context) {
             const frames = positiveInteger(params.frames ?? 1, "frames", 1000000);
             const frameBefore = state.frame;
             const wasPaused = state.paused;
-            native.pause(false);
-            applyFreezes();
             let ran = 0;
-            if (state.touch.active) {
-                for (let index = 0; index < frames; index++) {
-                    const frameResult = native.runFrame({
-                        render: state.render && index === frames - 1,
-                        keys: state.keys,
-                        touch: state.touch
-                    });
-                    ran++;
-                    if (frameResult > 0) break;
+            let hitBreak = false;
+            let result;
+            let primaryError = null;
+            let cleanupError = null;
+            native.pause(false);
+            try {
+                applyFreezes();
+                if (state.touch.active) {
+                    for (let index = 0; index < frames; index++) {
+                        const frameResult = native.runFrame({
+                            render: state.render && index === frames - 1,
+                            keys: state.keys,
+                            touch: state.touch
+                        });
+                        ran++;
+                        if (frameResult > 0) break;
+                    }
+                } else {
+                    ran = native.runFrames(frames, { render: state.render, keys: state.keys });
                 }
-            } else {
-                ran = native.runFrames(frames, { render: state.render, keys: state.keys });
+                const nativeStatus = syncNativeBreakStatus();
+                hitBreak = !!nativeStatus?.lastBreak?.hit;
+                completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
+                applyFreezes();
+                drawFrame();
+                pumpAudio(ran);
+                for (let index = 0; index < ran; index++) {
+                    dispatchScriptEvent("tick", {
+                        frame: state.frame - ran + index + 1,
+                        cpu: state.selectedCpu
+                    });
+                }
+                result = { frames: ran, requested: frames };
+            } catch (error) {
+                primaryError = error;
+            } finally {
+                const shouldPause = wasPaused || ran < frames || hitBreak || !!state.nativeFault;
+                try {
+                    native.pause(shouldPause);
+                } catch (error) {
+                    cleanupError = error;
+                }
+                state.paused = shouldPause;
+                state.running = !shouldPause;
+                try {
+                    updateStatus();
+                } catch (error) {
+                    cleanupError ||= error;
+                }
             }
-            const nativeStatus = syncNativeBreakStatus();
-            completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
-            applyFreezes();
-            drawFrame();
-            pumpAudio(ran);
-            const hitBreak = !!nativeStatus?.lastBreak?.hit;
-            for (let index = 0; index < ran; index++) {
-                dispatchScriptEvent("tick", {
-                    frame: state.frame - ran + index + 1,
-                    cpu: state.selectedCpu
-                });
-            }
-            if (wasPaused || ran < frames || hitBreak) native.pause(true);
-            state.paused = wasPaused || ran < frames || hitBreak;
-            state.running = !state.paused;
-            updateStatus();
-            return { frames: ran, requested: frames, paused: state.paused };
+            if (primaryError) throw primaryError;
+            if (cleanupError) throw cleanupError;
+            return { ...result, paused: state.paused };
         },
 
         async setRenderEnabled(params) {

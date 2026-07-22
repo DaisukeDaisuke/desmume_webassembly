@@ -6,7 +6,8 @@ export function createDebuggerCoordinator({
     getQueueBreakpointRefresh,
     log,
     hex,
-    updateStatus
+    updateStatus,
+    scriptCallbackTimeoutMs = 10000
 }) {
     function breakpointKindName(kind) {
         return [
@@ -68,6 +69,7 @@ export function createDebuggerCoordinator({
 
     async function finishCompletedPersistentScriptEvent(eventId, pending) {
         state.pendingScriptEvents.delete(Number(eventId));
+        clearTimeout(pending.timeoutId);
         if (pending.pauseSerial !== state.explicitPauseSerial || !native.hasLoadedRom()) return;
 
         // Exec hooks stop before the instruction. MMU read/write hooks have already
@@ -135,13 +137,21 @@ export function createDebuggerCoordinator({
                 });
                 trigger.callbackToken = callbackToken;
             }
-            state.pendingScriptEvents.set(eventId, {
+            const pending = {
                 pendingCallbacks,
                 pauseSerial: state.explicitPauseSerial,
                 cpu: String(breakpoint.cpu),
                 type,
-                address: Number(breakpoint.address) >>> 0
-            });
+                address: Number(breakpoint.address) >>> 0,
+                timeoutId: 0
+            };
+            state.pendingScriptEvents.set(eventId, pending);
+            pending.timeoutId = setTimeout(() => {
+                if (state.pendingScriptEvents.get(eventId) !== pending) return;
+                log(`persistent script event ${eventId} timed out`);
+                pending.pendingCallbacks.clear();
+                void finishCompletedPersistentScriptEvent(eventId, pending);
+            }, scriptCallbackTimeoutMs);
         }
         for (const trigger of triggers) {
             const script = state.scripts.get(trigger.scriptId);

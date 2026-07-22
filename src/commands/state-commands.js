@@ -35,14 +35,17 @@ export function createStateCommands(context) {
             ensureRomLoaded("state save requires a loaded ROM");
             if (isAnalysisBaselineSlot(params.slot)
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
-                throw new Error("analysis baseline slots are reserved");
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "analysis baseline slots are reserved");
             }
             const bytes = native.saveStateBytes();
             const size = bytes.length;
             if (params.slot) {
                 if (!isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
                 if (bytes.length > 256 * 1024 * 1024) {
-                    throw new Error("state exceeds 256MB browser storage limit");
+                    throw codedError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        "state exceeds 256MB browser storage limit"
+                    );
                 }
                 await idbPut(String(params.slot), bytes);
                 if (!isAnalysisBaselineSlot(params.slot)) {
@@ -63,7 +66,7 @@ export function createStateCommands(context) {
             cancelOperation("state-load");
             if (isAnalysisBaselineSlot(params.slot)
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
-                throw new Error("analysis baseline slots are reserved");
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "analysis baseline slots are reserved");
             }
             const runState = pauseForFileLoad();
             let bytes = null;
@@ -71,7 +74,9 @@ export function createStateCommands(context) {
             try {
                 if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
                 if (params.slot) bytes = await idbGet(String(params.slot));
-                if (params.slot && !bytes) throw new Error(`state slot not found: ${params.slot}`);
+                if (params.slot && !bytes) {
+                    throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
+                }
                 const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
                 if (ret !== 0) throw codedError(
                     ErrorCode.NATIVE_ERROR,

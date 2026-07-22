@@ -606,7 +606,10 @@ test("worker sources are valid scripts covered by the esbuild text loader", asyn
     assert.match(source, /(?:postMessage|send)\(\{ type: "ready" \}\)/);
     if (!workerUrl.pathname.includes("supervisor")) {
       assert.match(source, /Object\.defineProperty\(globalThis/);
-      assert.match(source, /dynamic import is unavailable/);
+      assert.match(source, /lockDownRuntimeCodeGeneration/);
+      assert.match(source, /"eval"/);
+      assert.match(source, /"close"/);
+      assert.doesNotMatch(source, /\/\\bimport\\s\*\\\(\/\.test/);
     }
   }
 
@@ -716,6 +719,45 @@ test("pending script callbacks validate identity and clean up after script stop"
     await coordinator.settlePersistentScriptCallbacks(4);
     assert.equal(state.pendingScriptEvents.size, 0);
     assert.equal(paused, false);
+});
+
+test("pending persistent callback timeout releases an auto-resume break", async () => {
+    const messages = [];
+    const logs = [];
+    const state = {
+        ready: true, selectedCpu: "arm9", lastBreakKey: "", breakRefreshKey: "",
+        scriptTriggers: [{ id: 1, scriptId: 3, callbackId: 5, type: "dataAbort", cpu: "arm9", address: 0 }],
+        scripts: new Map([[3, { running: true, worker: { postMessage: (message) => messages.push(message) } }]]),
+        pendingScriptEvents: new Map(), nextScriptEventId: 1, nextScriptCallbackToken: 1,
+        explicitPauseSerial: 0, frame: 0
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
+        id: 1, origin: "script", scriptId: 3, triggerId: 1
+    });
+    let resumed = false;
+    const native = {
+        getStatus: () => ({ arm9: { pc: 0x02000000 }, lastBreak: { hit: false } }),
+        pause: (paused) => { if (!paused) resumed = true; },
+        clearBreakStatus: () => {},
+        hasLoadedRom: () => true
+    };
+    const coordinator = createDebuggerCoordinator({
+        state, native, breakpointOwners: owners,
+        breakpointService: createBreakpointService({ ownerStore: owners }),
+        getQueueBreakpointRefresh: () => () => {}, log: (message) => logs.push(message),
+        hex: String, updateStatus: () => {}, scriptCallbackTimeoutMs: 5
+    });
+    coordinator.syncNativeBreakStatus({
+        frame: 1, arm9: { pc: 0x02000000 },
+        lastBreak: { hit: true, cpu: "arm9", kind: 3, address: 0, pc: 0x02000000, value: 0 }
+    });
+    assert.equal(messages.length, 1);
+    assert.equal(state.pendingScriptEvents.size, 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(state.pendingScriptEvents.size, 0);
+    assert.equal(resumed, true);
+    assert.ok(logs.some((message) => message.includes("timed out")));
 });
 
 test("script-only special breakpoints dispatch and auto-resume through special ownership", async () => {

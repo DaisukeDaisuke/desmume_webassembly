@@ -3,6 +3,8 @@
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
+const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
 const send = (message) => nativePostMessage({ ...message, channelToken });
 
@@ -16,7 +18,9 @@ const replies = new Map();
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "BroadcastChannel", "WebTransport", "indexedDB", "caches"
+    "postMessage", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "localStorage", "sessionStorage", "close",
+    "navigator"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -26,6 +30,60 @@ for (const name of [
         });
     } catch {
         try { globalThis[name] = undefined; } catch {}
+    }
+}
+
+function installSafeTimer(name, nativeTimer) {
+    if (!nativeTimer) return;
+    Object.defineProperty(globalThis, name, {
+        value: (callback, delay, ...args) => {
+            if (typeof callback !== "function") {
+                throw new TypeError(`${name} requires a function callback`);
+            }
+            return nativeTimer(callback, delay, ...args);
+        },
+        writable: false,
+        configurable: false
+    });
+}
+
+installSafeTimer("setTimeout", nativeSetTimeout);
+installSafeTimer("setInterval", nativeSetInterval);
+
+function lockDownRuntimeCodeGeneration() {
+    const prototypes = new Set();
+    const collectPrototypeChain = (value) => {
+        let current = value;
+        while (current && !prototypes.has(current)) {
+            prototypes.add(current);
+            current = Object.getPrototypeOf(current);
+        }
+    };
+    collectPrototypeChain(globalThis);
+    collectPrototypeChain(() => {});
+    collectPrototypeChain(async () => {});
+    collectPrototypeChain(function* () {});
+    collectPrototypeChain(async function* () {});
+    for (const prototype of prototypes) {
+        if (!Object.prototype.hasOwnProperty.call(prototype, "constructor")) continue;
+        try {
+            Object.defineProperty(prototype, "constructor", {
+                value: undefined,
+                writable: false,
+                configurable: false
+            });
+        } catch {
+            try { prototype.constructor = undefined; } catch {}
+        }
+    }
+    try {
+        Object.defineProperty(globalThis, "eval", {
+            value: undefined,
+            writable: false,
+            configurable: false
+        });
+    } catch {
+        try { globalThis.eval = undefined; } catch {}
     }
 }
 
@@ -86,11 +144,10 @@ nativeAddEventListener("message", async (event) => {
     }
     installShortcuts(message.shortcuts);
     try {
-        if (/\bimport\s*\(/.test(message.code)) {
-            throw new SyntaxError("dynamic import is unavailable in isolated scripts");
-        }
-        const script = `(async (mcp, webmcp) => {\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
-        const result = await (0, eval)(script)(mcp, webmcp);
+        const script = `(async (mcp, webmcp) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
+        const run = (0, eval)(script);
+        lockDownRuntimeCodeGeneration();
+        const result = await run(mcp, webmcp);
         send({ type: "done", result });
     } catch (error) {
         const phase = error?.name === "SyntaxError" ? "compile" : "runtime";

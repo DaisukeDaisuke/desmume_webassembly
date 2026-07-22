@@ -3,17 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net/npm/@mcp-b/global@3.0.0/dist/index.iife.min.js; worker-src 'self' blob:; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' data: https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'">
   <title>DeSmuME Web Debugger</title>
   <script src="coi-serviceworker.js"></script>
-  <script>
-    window.__webModelContextOptions = {
-      autoInitialize: true,
-      transport: { tabServer: { allowedOrigins: [location.origin] } }
-    };
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/@mcp-b/global@3.0.0/dist/index.iife.min.js" defer></script>
-
   <style>
     :root {
       color-scheme: dark;
@@ -367,6 +359,7 @@
             <button id="state-export-btn" type="button">State Out</button>
             <button id="canvas-shot-btn" type="button">Screenshot</button>
           </div>
+          <p class="tiny">ROM・セーブ・Stateはこのページ内でローカル処理されます。WebMCPはブラウザ内蔵APIだけを使用し、外部CDNコードをグローバル空間へ読み込みません。</p>
         </div>
         <div class="section">
           <h2>Run Controls</h2>
@@ -651,6 +644,6 @@ memory.ontick(async ({ frame }) => {
     </main>
   </div>
 
-  <script src="app.js?v=20260722-releaseblocker" defer></script>
+  <script src="app.js?v=20260722-releaseblocker3" defer></script>
 </body>
 </html>
