@@ -6,6 +6,7 @@ import { withInternalMetadata } from "./internal-command-metadata.js";
 import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
 import { ResourceLimits } from "./resource-limits.js";
+import acornDependency from "./dependencies/acorn.dependency-source.js";
 
 export function createScriptService({
     state,
@@ -27,6 +28,24 @@ export function createScriptService({
         get: (_, command) => getCommands()[command]
     });
 
+    const scriptBytes = (script) => new TextEncoder().encode(`${script.code}\n${script.output.join("\n")}`).byteLength;
+
+    function pruneStoppedScripts(requiredBytes = 0) {
+        const stopped = [...state.scripts.values()]
+            .filter((script) => !script.running && script.id !== state.activeScriptId)
+            .sort((left, right) => Number(left.stoppedAt || 0) - Number(right.stoppedAt || 0));
+        const totalBytes = () => [...state.scripts.values()].reduce((sum, script) => sum + scriptBytes(script), 0);
+        while (stopped.length && (state.scripts.size >= ResourceLimits.totalScriptRecords
+            || totalBytes() + requiredBytes > ResourceLimits.totalScriptHistoryBytes)) {
+            const removed = stopped.shift();
+            state.scripts.delete(removed.id);
+        }
+        if (!state.scripts.has(state.activeScriptId)) {
+            state.activeScriptId = [...state.scripts.values()].at(-1)?.id || 0;
+        }
+        return totalBytes();
+    }
+
     function scriptConsoleLine(script, values) {
         const line = values.map((value) => typeof value === "string" ? value : rawOutputText(value)).join(" ");
         script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`].slice(-400);
@@ -35,6 +54,7 @@ export function createScriptService({
             script.output.shift();
             outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
         }
+        pruneStoppedScripts();
         if (state.activeScriptId === script.id) renderScriptConsole(script);
     }
 
@@ -113,11 +133,32 @@ export function createScriptService({
     function dispatchScriptEvent(type, payload = {}) {
         for (const script of state.scripts.values()) {
             if (!script.running) continue;
-            try {
-                script.worker.postMessage({ type: "event", event: type, payload });
-            } catch (error) {
-                void failPersistentScript(script, error);
+            const message = { type: "event", event: type, payload };
+            if (type === "tick") {
+                const index = script.eventQueue.findIndex((queued) => queued.event === "tick");
+                if (index >= 0) {
+                    script.eventQueue[index] = message;
+                    script.droppedEvents++;
+                    continue;
+                }
             }
+            if (script.eventQueue.length >= ResourceLimits.persistentEventQueue) {
+                void failPersistentScript(script, new Error(`main event queue exceeded ${ResourceLimits.persistentEventQueue}`));
+                continue;
+            }
+            script.eventQueue.push(message);
+            pumpScriptEvents(script);
+        }
+    }
+
+    function pumpScriptEvents(script) {
+        if (!script.running || script.eventBusy || !script.eventQueue.length) return;
+        script.eventBusy = true;
+        try {
+            script.worker.postMessage(script.eventQueue.shift());
+        } catch (error) {
+            script.eventBusy = false;
+            void failPersistentScript(script, error);
         }
     }
     
@@ -240,6 +281,16 @@ export function createScriptService({
         if (duplicate) return scriptSummary(duplicate, true);
         const existing = [...state.scripts.values()].find((script) => script.name === name);
         if (existing) await stopPersistentScript({ id: existing.id });
+        const sourceBytes = new TextEncoder().encode(source).byteLength;
+        const retainedBytes = pruneStoppedScripts(sourceBytes);
+        if (!existing && (state.scripts.size >= ResourceLimits.totalScriptRecords
+            || retainedBytes + sourceBytes > ResourceLimits.totalScriptHistoryBytes)) {
+            return responder.fail(ErrorCode.BUSY, "Persistent script history limit reached", {
+                records: state.scripts.size,
+                maximumRecords: ResourceLimits.totalScriptRecords,
+                maximumBytes: ResourceLimits.totalScriptHistoryBytes
+            });
+        }
         const runningScripts = [...state.scripts.values()].filter((script) => script.running).length;
         if (runningScripts >= ResourceLimits.persistentScripts) {
             return responder.fail(ErrorCode.BUSY, "Persistent script limit reached", {
@@ -257,7 +308,11 @@ export function createScriptService({
             workerHost: null,
             running: true,
             output: [],
-            triggers: []
+            triggers: [],
+            eventQueue: [],
+            eventBusy: false,
+            droppedEvents: 0,
+            createdAt: Date.now()
         };
         let workerHost;
         try {
@@ -311,6 +366,7 @@ export function createScriptService({
                         code,
                         asyncMode,
                         sandboxSource: persistentScriptSandboxSource,
+                        dependency: acornDependency,
                         shortcuts: Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [
                             shortcut,
                             definition.command,
@@ -371,6 +427,9 @@ export function createScriptService({
                     }
                 } else if (msg.type === "print" && Array.isArray(msg.values)) {
                     scriptConsoleLine(script, msg.values);
+                } else if (msg.type === "eventAck") {
+                    script.eventBusy = false;
+                    pumpScriptEvents(script);
                 } else if (msg.type === "compiled" && ready && !compiled) {
                     compiled = true;
                 } else if (msg.type === "started") {
@@ -416,6 +475,7 @@ export function createScriptService({
         const script = state.scripts.get(id);
         if (!script) throw new Error(`script not found: ${id}`);
         script.running = false;
+        script.stoppedAt = Date.now();
         await settlePersistentScriptCallbacks(script.id);
         try {
             await unregisterScriptTriggers(script);

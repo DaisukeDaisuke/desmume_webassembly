@@ -33,12 +33,14 @@ jobs:
           npm run check:js
           npm run check:licenses
 
-      - name: Regenerate source-derived artifacts
+      - name: Build and verify source-derived artifacts
         run: |
           npm run build:notices
           npm run build:js
           git diff --check
-          git diff --exit-code -- public/app.js public/THIRD_PARTY_NOTICES.txt
+          test -s public/app.js
+          git diff --exit-code -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256
+          test -z "$(git status --porcelain --untracked-files=all -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256)"
 
       - name: Install Emscripten
         run: |

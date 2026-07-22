@@ -1,11 +1,18 @@
 "use strict";
 
-import { ssim } from "ssim.js";
+import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
+const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
+const nativeEval = globalThis.eval;
+const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+const NativeTextEncoder = globalThis.TextEncoder;
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
+const channelToken = globalThis.crypto.randomUUID();
+const send = (message) => nativePostMessage({ ...message, channelToken });
+let ssim = null;
 
 const fetch = undefined;
 const XMLHttpRequest = undefined;
@@ -16,9 +23,9 @@ const Function = undefined;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
-    "navigator"
+    "navigator", "crypto"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -86,6 +93,7 @@ function lockDownRuntimeCodeGeneration() {
 }
 
 lockDownRuntimeCodeGeneration();
+assertLockedGlobals();
 
 function normalizeArea({ width, screen = "both", region, ignoreRects = [] }) {
     const baseY = screen === "bottom" ? 192 : 0;
@@ -180,22 +188,46 @@ function compare(message) {
     };
 }
 
-onmessage = (event) => {
+nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
+    if (!ssim) {
+        if (message.type !== "initialize") {
+            send({ type: "protocolError", message: "dependency initialization is required" });
+            return;
+        }
+        try {
+            const dependency = await initializeLockedDependency({
+                dependency: message.dependency,
+                nativeEval,
+                nativeDigest,
+                NativeTextEncoder
+            });
+            if (typeof dependency.ssim !== "function") throw new Error("SSIM export is unavailable");
+            ssim = dependency.ssim;
+            send({ type: "ready", hardened: true, layer: "sandbox", dependencyHash: message.dependency.sha256 });
+        } catch (error) {
+            send({ type: "protocolError", message: `dependency initialization failed: ${String(error?.message || error)}` });
+        }
+        return;
+    }
+    if (message.channelToken !== channelToken) {
+        send({ type: "protocolError", message: "algorithm Worker token mismatch" });
+        return;
+    }
     if (message.type !== "compare") {
-        nativePostMessage({ type: "protocolError", message: "unknown algorithm Worker message" });
+        send({ type: "protocolError", message: "unknown algorithm Worker message" });
         return;
     }
     try {
-        nativePostMessage({ type: "done", result: compare(message) });
+        send({ type: "done", result: compare(message) });
     } catch (error) {
-        nativePostMessage({
+        send({
             type: "error",
             message: String(error?.message || error),
             errorName: String(error?.name || "Error")
         });
     }
-};
+});
 
-nativePostMessage({ type: "ready", hardened: true, layer: "sandbox" });
+send({ type: "bootstrapReady", hardened: true, layer: "bootstrap" });
 })();

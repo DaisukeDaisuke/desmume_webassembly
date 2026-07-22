@@ -6,6 +6,9 @@ let channelToken = "";
 let started = false;
 const pendingRequestIds = new Set();
 const MAX_PENDING_REQUESTS = 32;
+const MAX_EVENT_QUEUE = 64;
+const eventQueue = [];
+let childEventBusy = false;
 
 function fail(error, phase = "protocol") {
     postMessage({
@@ -31,15 +34,40 @@ function forwardSandboxMessage(message) {
     postMessage(forwarded);
 }
 
+function pumpEventQueue() {
+    if (childEventBusy || !sandbox || !channelToken || !eventQueue.length) return;
+    childEventBusy = true;
+    sandbox.postMessage(eventQueue.shift());
+}
+
+function queueEvent(message) {
+    if (message.event === "tick" && !message.eventId) {
+        const index = eventQueue.findIndex((queued) => queued.event === "tick" && !queued.eventId);
+        if (index >= 0) {
+            eventQueue[index] = message;
+            return;
+        }
+    }
+    if (eventQueue.length >= MAX_EVENT_QUEUE) {
+        fail(new Error(`supervisor event queue exceeded ${MAX_EVENT_QUEUE}`), "resource");
+        disposeSandbox();
+        return;
+    }
+    eventQueue.push(message);
+    pumpEventQueue();
+}
+
 function startSandbox(message) {
-    if (started || typeof message.code !== "string" || typeof message.sandboxSource !== "string") {
-        fail(new Error("one start message with string code and sandbox source is required"));
+    if (started || typeof message.code !== "string" || typeof message.sandboxSource !== "string"
+        || typeof message.dependency?.source !== "string") {
+        fail(new Error("one start message with code, sandbox source, and fixed dependency is required"));
         return;
     }
     started = true;
     try {
         sandboxUrl = URL.createObjectURL(new Blob([message.sandboxSource], { type: "text/javascript" }));
         sandbox = new Worker(sandboxUrl);
+        sandbox.postMessage({ type: "initialize", dependency: message.dependency });
     } catch (error) {
         fail(error, "startup");
         disposeSandbox();
@@ -51,7 +79,8 @@ function startSandbox(message) {
             if (childMessage.type !== "ready"
                 || childMessage.hardened !== true
                 || childMessage.layer !== "sandbox"
-                || typeof childMessage.channelToken !== "string") {
+                || typeof childMessage.channelToken !== "string"
+                || childMessage.dependencyHash !== message.dependency.sha256) {
                 fail(new Error("sandbox Worker did not provide a valid channel token"));
                 disposeSandbox();
                 return;
@@ -66,9 +95,15 @@ function startSandbox(message) {
             return;
         }
         if (childMessage.channelToken !== channelToken
-            || !["call", "register", "eventDone", "print", "compiled", "started", "failed"].includes(childMessage.type)) {
+            || !["call", "register", "eventDone", "eventProcessed", "print", "compiled", "started", "failed"].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"));
             disposeSandbox();
+            return;
+        }
+        if (childMessage.type === "eventProcessed") {
+            childEventBusy = false;
+            postMessage({ type: "eventAck" });
+            pumpEventQueue();
             return;
         }
         if ((childMessage.type === "call" || childMessage.type === "register")
@@ -104,7 +139,7 @@ onmessage = (event) => {
         return;
     }
     if (message.type === "event" && sandbox && channelToken) {
-        sandbox.postMessage(message);
+        queueEvent(message);
         return;
     }
     fail(new Error("unknown supervisor message"));

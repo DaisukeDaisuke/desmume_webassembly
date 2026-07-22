@@ -730,7 +730,9 @@ test("pending persistent callback timeout fails closed without auto-resume", asy
         scriptTriggers: [{ id: 1, scriptId: 3, callbackId: 5, type: "dataAbort", cpu: "arm9", address: 0 }],
         scripts: new Map([[3, { running: true, worker: { postMessage: (message) => messages.push(message) } }]]),
         pendingScriptEvents: new Map(), nextScriptEventId: 1, nextScriptCallbackToken: 1,
-        explicitPauseSerial: 0, frame: 0
+        explicitPauseSerial: 0, frame: 0, romGeneration: 1,
+        fileTransactionSerial: 0, fileTransactionActive: false, loadingFile: false,
+        nativeBreakSerial: 0, breakpointsInSync: true
     };
     const owners = createBreakpointOwnerStore();
     owners.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
@@ -738,7 +740,10 @@ test("pending persistent callback timeout fails closed without auto-resume", asy
     });
     let resumed = false;
     const native = {
-        getStatus: () => ({ arm9: { pc: 0x02000000 }, lastBreak: { hit: false } }),
+        getStatus: () => ({
+            arm9: { pc: 0x02000000 },
+            lastBreak: { hit: true, cpu: "arm9", kind: 3, address: 0, pc: 0x02000000, value: 0 }
+        }),
         pause: (paused) => { if (!paused) resumed = true; },
         clearBreakStatus: () => {},
         hasLoadedRom: () => true
@@ -769,7 +774,9 @@ test("script-only special breakpoints dispatch and auto-resume through special o
         scriptTriggers: [{ id: 1, scriptId: 3, callbackId: 5, type: "dataAbort", cpu: "arm9", address: 0 }],
         scripts: new Map([[3, { running: true, worker: { postMessage: (message) => messages.push(message) } }]]),
         pendingScriptEvents: new Map(), nextScriptEventId: 1, nextScriptCallbackToken: 1,
-        explicitPauseSerial: 0, frame: 0
+        explicitPauseSerial: 0, frame: 0, romGeneration: 1,
+        fileTransactionSerial: 0, fileTransactionActive: false, loadingFile: false,
+        nativeBreakSerial: 0, breakpointsInSync: true
     };
     const owners = createBreakpointOwnerStore();
     owners.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
@@ -777,7 +784,10 @@ test("script-only special breakpoints dispatch and auto-resume through special o
     });
     let resumed = false;
     const native = {
-        getStatus: () => ({ arm9: { pc: 0x02000000 }, lastBreak: { hit: false } }),
+        getStatus: () => ({
+            arm9: { pc: 0x02000000 },
+            lastBreak: { hit: true, cpu: "arm9", kind: 3, address: 0, pc: 0x02000000, value: 0 }
+        }),
         pause: (paused) => { if (!paused) resumed = true; },
         clearBreakStatus: () => {},
         hasLoadedRom: () => true

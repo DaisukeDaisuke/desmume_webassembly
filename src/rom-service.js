@@ -11,6 +11,7 @@ export function createRomService({
     sleep,
     blockSaveFlush,
     drawFrame,
+    cancelPendingScriptEvents = async () => {},
     reconcileNativeBreakpoints = () => ({ cleared: false, registered: 0 })
 }) {
     function validateBytes(bytes) {
@@ -77,11 +78,16 @@ export function createRomService({
         const oldRomWasLoaded = native.isRomLoaded();
         let saveStage = null;
 
-        native.pause(true);
-        state.running = false;
-        state.paused = true;
-        state.frameBudget = 0;
+        state.fileTransactionSerial++;
+        state.fileTransactionActive = true;
+        state.nativeBreakSerial = Number(state.nativeBreakSerial || 0) + 1;
+        state.currentBreakIdentity = null;
         try {
+            await cancelPendingScriptEvents("ROM/save transaction started");
+            native.pause(true);
+            state.running = false;
+            state.paused = true;
+            state.frameBudget = 0;
             native.writeFile(ROM_CANDIDATE_PATH, candidate.bytes);
             native.writeFile(ROM_PATH, native.readFile(ROM_CANDIDATE_PATH));
             saveStage = stageSave(options.candidateSave);
@@ -121,19 +127,36 @@ export function createRomService({
             Object.assign(state, metadataBefore, { running: false, paused: true });
             try {
                 if (oldRomWasLoaded && filesBefore.get(ROM_PATH)?.length) {
-                    native.loadRom(filesBefore.get(ROM_PATH).length);
+                    const rollbackResult = native.loadRom(filesBefore.get(ROM_PATH).length);
+                    if (rollbackResult !== 0) {
+                        throw codedError(ErrorCode.NATIVE_ERROR, `ROM rollback load failed (${rollbackResult})`, {
+                            nativeCode: rollbackResult,
+                            rollbackStage: "native-load"
+                        });
+                    }
+                    await sleep(Number(options.rollbackWaitMs ?? options.waitMs ?? 0));
+                    if (!native.isRomLoaded()) {
+                        throw codedError(ErrorCode.NATIVE_ERROR, "ROM rollback did not restore native loaded state", {
+                            rollbackStage: "native-loaded-gate"
+                        });
+                    }
                     reconcileNativeBreakpoints();
                 }
             } catch (rollbackError) {
+                state.breakpointsInSync = false;
                 error.mcpDetails = {
                     ...(error.mcpDetails || {}),
                     rollbackFailed: true,
+                    nativeCode: rollbackError?.mcpDetails?.nativeCode,
+                    rollbackStage: rollbackError?.mcpDetails?.rollbackStage || "breakpoint-reconcile",
+                    breakpointsInSync: false,
                     rollbackMessage: String(rollbackError?.message || rollbackError).slice(0, 300)
                 };
             }
             try { native.pause(true); } catch {}
             throw error;
         } finally {
+            state.fileTransactionActive = false;
             try { native.unlinkFile(ROM_CANDIDATE_PATH); } catch {}
             for (const path of [saveStage?.candidatePath, "__candidate_rom.sav", "__candidate_rom.dsv"].filter(Boolean)) {
                 try { native.unlinkFile(path); } catch {}

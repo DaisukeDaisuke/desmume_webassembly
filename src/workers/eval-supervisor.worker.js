@@ -28,14 +28,16 @@ onmessage = (event) => {
     if (message.type === "run") {
         if (started
             || typeof message.code !== "string"
-            || typeof message.sandboxSource !== "string") {
-            protocolError("one run message with string code and sandbox source is required");
+            || typeof message.sandboxSource !== "string"
+            || typeof message.dependency?.source !== "string") {
+            protocolError("one run message with code, sandbox source, and fixed dependency is required");
             return;
         }
         started = true;
         try {
             sandboxUrl = URL.createObjectURL(new Blob([message.sandboxSource], { type: "text/javascript" }));
             sandbox = new Worker(sandboxUrl);
+            sandbox.postMessage({ type: "initialize", dependency: message.dependency });
         } catch (error) {
             protocolError(`sandbox Worker could not be started: ${String(error?.message || error)}`);
             disposeSandbox();
@@ -47,7 +49,8 @@ onmessage = (event) => {
                 if (childMessage.type !== "ready"
                     || childMessage.hardened !== true
                     || childMessage.layer !== "sandbox"
-                    || typeof childMessage.channelToken !== "string") {
+                    || typeof childMessage.channelToken !== "string"
+                    || childMessage.dependencyHash !== message.dependency.sha256) {
                     protocolError("sandbox Worker did not provide a valid channel token");
                     disposeSandbox();
                     return;

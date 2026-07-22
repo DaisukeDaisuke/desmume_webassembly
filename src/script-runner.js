@@ -1,8 +1,9 @@
 import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
-import { assertSafeScriptSource } from "./script-source-policy.js";
 import { ResourceLimits } from "./resource-limits.js";
+import acornDependency from "./dependencies/acorn.dependency-source.js";
+import { normalizeBoundedValue } from "./bounded-value.js";
 
 export function createScriptRunner({
     source,
@@ -21,11 +22,6 @@ export function createScriptRunner({
                 ErrorCode.SCRIPT_SOURCE_INVALID,
                 "Script source must be a non-empty string up to 262144 characters"
             );
-        }
-        try {
-            assertSafeScriptSource(code);
-        } catch (error) {
-            return responder.fail(error.mcpCode, error.message, error.mcpDetails);
         }
         const timeout = Number(timeoutMs);
         if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600000) {
@@ -82,7 +78,8 @@ export function createScriptRunner({
                             type: "run",
                             code,
                             shortcuts: getShortcuts(),
-                            sandboxSource
+                            sandboxSource,
+                            dependency: acornDependency
                         });
                     } catch (error) {
                         finish(responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Script request could not be sent", {
@@ -119,7 +116,11 @@ export function createScriptRunner({
                     return;
                 }
                 if (message.type === "done" && ready) {
-                    finish(responder.ok({ value: message.result }));
+                    try {
+                        finish(responder.ok({ value: normalizeBoundedValue(message.result).value }));
+                    } catch (error) {
+                        finish(responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, String(error?.message || error)));
+                    }
                     return;
                 }
                 if (message.type === "error" && ready) {

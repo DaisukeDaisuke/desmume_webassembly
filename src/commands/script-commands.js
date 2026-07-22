@@ -1,6 +1,7 @@
 import { ErrorCode } from "../error-codes.js";
 import { codedError, isPlainObject } from "../validation.js";
 import { ResourceLimits } from "../resource-limits.js";
+import { normalizeBoundedValue } from "../bounded-value.js";
 
 export function createScriptCommands({
     state,
@@ -9,6 +10,7 @@ export function createScriptCommands({
     stopPersistentScript,
     scriptSummary,
     renderScriptConsole,
+    runSandboxBoundarySelfTest,
     runIsolatedScript,
     runCommand
 }) {
@@ -87,6 +89,13 @@ export function createScriptCommands({
         return evaluate(params);
     }
 
+    async function sandboxBoundarySelfTest(params = {}) {
+        if (Object.keys(params).length) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "runSandboxBoundarySelfTest accepts no parameters");
+        }
+        return runSandboxBoundarySelfTest();
+    }
+
     async function injectScript(params = {}) {
         return runIsolatedScript(
             String(params.code ?? ui.scriptCode.value),
@@ -110,6 +119,7 @@ export function createScriptCommands({
             );
         }
         const results = [];
+        let resultBytes = 0;
         for (const item of items) {
             if (!isPlainObject(item)) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "batch items must be plain objects");
@@ -121,15 +131,21 @@ export function createScriptCommands({
             if (command === "batch") {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "nested batch commands are unavailable");
             }
-            results.push({ command, result: await runCommand(command, item.params || {}) });
-            const resultBytes = new TextEncoder().encode(JSON.stringify(results)).byteLength;
-            if (resultBytes > ResourceLimits.batchResultBytes) {
+            const rawResult = await runCommand(command, item.params || {});
+            let bounded;
+            try {
+                bounded = normalizeBoundedValue({ command, result: rawResult }, {
+                    maxBytes: ResourceLimits.batchResultBytes - resultBytes
+                });
+            } catch (error) {
                 throw codedError(
                     ErrorCode.INVALID_ARGUMENT,
                     `batch results exceed ${ResourceLimits.batchResultBytes} bytes`,
-                    { maximumBytes: ResourceLimits.batchResultBytes, completedCommands: results.length }
+                    { maximumBytes: ResourceLimits.batchResultBytes, completedCommands: results.length, reason: String(error?.message || error) }
                 );
             }
+            resultBytes += bounded.bytes;
+            results.push(bounded.value);
         }
         return { results };
     }
@@ -143,6 +159,7 @@ export function createScriptCommands({
         listScriptPrint,
         listScripts,
         restartScript,
+        runSandboxBoundarySelfTest: sandboxBoundarySelfTest,
         runPersistentScript,
         runScript,
         stopScript

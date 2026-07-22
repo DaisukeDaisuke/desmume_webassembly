@@ -86,6 +86,7 @@ export function createCommands(context) {
         runCommand,
         runDebuggerInstruction,
         runIsolatedScript,
+        runSandboxBoundarySelfTest,
         runTraceStepper,
         runUntilNextBranchOrReturn,
         runUntilTrueNextBranch,
@@ -335,6 +336,7 @@ export function createCommands(context) {
             stopPersistentScript,
             scriptSummary,
             renderScriptConsole,
+            runSandboxBoundarySelfTest,
             runIsolatedScript,
             runCommand
         }),

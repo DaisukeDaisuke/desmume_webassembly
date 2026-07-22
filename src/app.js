@@ -9,6 +9,7 @@ import { createApiDescriptions } from "./api-descriptions.js";
 import { createAppState } from "./state.js";
 import { installGlobalShortcuts } from "./shortcuts.js";
 import { createScriptRunner } from "./script-runner.js";
+import { createSandboxBoundarySelfTest } from "./sandbox-boundary-self-test.js";
 import { createScriptService } from "./script-service.js";
 import { createCommands } from "./commands/command-factory.js";
 import { bindUi } from "./ui/ui-controller.js";
@@ -115,8 +116,22 @@ const scriptRunner = createScriptRunner({
         definition.defaults
     ])
 });
+const sandboxBoundarySelfTest = createSandboxBoundarySelfTest();
 
 const breakpointOwners = createBreakpointOwnerStore({
+    onReconcileStart: () => {
+        state.breakpointsInSync = false;
+        state.paused = true;
+        state.running = false;
+        nativeBridge.pauseWithoutFaultHandling(true);
+    },
+    onReconcileSuccess: () => { state.breakpointsInSync = true; },
+    onReconcileFailure: () => {
+        state.breakpointsInSync = false;
+        state.paused = true;
+        state.running = false;
+        nativeBridge.pauseWithoutFaultHandling(true);
+    },
     onClearNative: () => {
         if (state.ready && nativeBridge.isRomLoaded()) nativeBridge.clearAllBreakpoints();
     },
@@ -221,6 +236,7 @@ const debuggerCoordinator = createDebuggerCoordinator({
 });
 const {
     breakpointKindName,
+    cancelAllPersistentScriptEvents,
     finishPersistentScriptEvent,
     getNativeStatus,
     getRegisters,
@@ -286,6 +302,7 @@ const romService = createRomService({
     sleep,
     blockSaveFlush,
     drawFrame,
+    cancelPendingScriptEvents: cancelAllPersistentScriptEvents,
     reconcileNativeBreakpoints: () => breakpointOwners.reconcileNativeBreakpoints()
 });
 const {
@@ -444,6 +461,7 @@ const commands = createCommands({
     runCommand,
     runDebuggerInstruction,
     runIsolatedScript: (code, timeoutMs) => scriptRunner.run(code, timeoutMs),
+    runSandboxBoundarySelfTest: () => sandboxBoundarySelfTest.run(),
     runTraceStepper,
     runUntilNextBranchOrReturn,
     runUntilTrueNextBranch,

@@ -213,6 +213,12 @@ export function createNativeBridge({
 
     function pause(paused = true) {
         ensureReady();
+        if (!paused && state.breakpointsInSync !== true) {
+            const error = new Error("resume is unavailable while native breakpoints are out of sync");
+            error.mcpCode = ErrorCode.NATIVE_ERROR;
+            error.mcpDetails = { breakpointsInSync: false };
+            throw error;
+        }
         return checkResult(state.fns.pauseEmu(paused ? 1 : 0), paused ? "pause" : "resume");
     }
 
@@ -379,6 +385,7 @@ export function createNativeBridge({
     }
 
     function runFrame({ render, keys, touch }) {
+        if (state.breakpointsInSync !== true) throw Object.assign(new Error("frame execution requires synchronized breakpoints"), { mcpCode: ErrorCode.NATIVE_ERROR });
         return checkResult(state.fns.runFrame(
             render ? 1 : 0,
             keys,
@@ -389,6 +396,7 @@ export function createNativeBridge({
     }
 
     function runFrames(count, { render, keys }) {
+        if (state.breakpointsInSync !== true) throw Object.assign(new Error("frame execution requires synchronized breakpoints"), { mcpCode: ErrorCode.NATIVE_ERROR });
         return checkResult(state.fns.runFrames(count, render ? 1 : 0, keys), "runFrames");
     }
 
@@ -422,10 +430,12 @@ export function createNativeBridge({
     }
 
     function step(cpu, count = 1) {
+        if (state.breakpointsInSync !== true) throw Object.assign(new Error("step requires synchronized breakpoints"), { mcpCode: ErrorCode.NATIVE_ERROR });
         return checkResult(state.fns.dbgStep(cpuIndex(cpu), Number(count)), "step");
     }
 
     function stepOver(cpu) {
+        if (state.breakpointsInSync !== true) throw Object.assign(new Error("stepOver requires synchronized breakpoints"), { mcpCode: ErrorCode.NATIVE_ERROR });
         return checkResult(state.fns.dbgStepOver(cpuIndex(cpu)), "stepOver");
     }
 

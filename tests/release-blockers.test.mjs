@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { createHash, webcrypto } from "node:crypto";
 import { createMcpResponder } from "../src/mcp-responder.js";
 import { createOperationManager } from "../src/operation-manager.js";
 import { createInputSequenceService } from "../src/input-service.js";
@@ -24,7 +25,6 @@ import { registerWebMcp } from "../src/webmcp.js";
 import { unwrapLegacyScalar } from "../src/legacy-scalar.js";
 import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { assertSafeScriptSource, containsDynamicImport } from "../src/script-source-policy.js";
-import { createScriptRunner } from "../src/script-runner.js";
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
 import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
@@ -32,6 +32,7 @@ import { createContextCommands } from "../src/commands/context-commands.js";
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
 const workerBundles = new Map();
+const dependencyBundles = new Map();
 
 async function bundledWorkerSource(relativeUrl) {
     const entryPoint = fileURLToPath(new URL(relativeUrl, import.meta.url));
@@ -43,6 +44,24 @@ async function bundledWorkerSource(relativeUrl) {
         workerBundles.set(entryPoint, result.outputFiles[0].text);
     }
     return workerBundles.get(entryPoint);
+}
+
+async function bundledDependency(relativeUrl, globalName) {
+    const entryPoint = fileURLToPath(new URL(relativeUrl, import.meta.url));
+    const key = `${entryPoint}:${globalName}`;
+    if (!dependencyBundles.has(key)) {
+        const result = await esbuild.build({
+            entryPoints: [entryPoint], bundle: true, write: false, minify: true,
+            platform: "browser", format: "iife", globalName, target: ["chrome120"], logLevel: "silent"
+        });
+        const source = `${result.outputFiles[0].text}\n${globalName}`;
+        dependencyBundles.set(key, { source, sha256: createHash("sha256").update(source).digest("hex") });
+    }
+    return dependencyBundles.get(key);
+}
+
+function testCrypto() {
+    return { randomUUID: () => "sandbox-token", subtle: webcrypto.subtle };
 }
 
 function memoryStorage() {
@@ -61,9 +80,11 @@ async function runEvalSandbox(code) {
     let storageCalls = 0;
     const context = vm.createContext({
         console,
-        crypto: { randomUUID: () => "sandbox-token" },
+        crypto: testCrypto(),
+        TextEncoder,
         postMessage: (message) => messages.push(message),
         addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: () => {},
         setTimeout: (handler) => {
             if (typeof handler === "string") networkCalls++;
             else handler();
@@ -95,6 +116,8 @@ async function runEvalSandbox(code) {
     });
     context.self = context;
     vm.runInContext(source, context, { filename: "eval.worker.js" });
+    const dependency = await bundledDependency("../src/dependencies/acorn.entry.js", "__desmumeAcorn");
+    await listeners.get("message")({ data: { type: "initialize", dependency } });
     await listeners.get("message")({ data: { type: "run", code, shortcuts: [] } });
     return { messages, networkCalls, storageCalls };
 }
@@ -102,12 +125,17 @@ async function runEvalSandbox(code) {
 async function runAlgorithmSandbox() {
     const source = await bundledWorkerSource("../src/workers/algorithm.worker.js");
     const messages = [];
+    const listeners = new Map();
     let networkCalls = 0;
     let storageCalls = 0;
     const networkCapability = () => { networkCalls++; };
     const context = vm.createContext({
         console,
+        crypto: testCrypto(),
+        TextEncoder,
         postMessage: (message) => messages.push(message),
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: () => {},
         setTimeout: (handler) => {
             if (typeof handler === "string") networkCalls++;
             else handler();
@@ -136,14 +164,17 @@ async function runAlgorithmSandbox() {
             getItem: () => { storageCalls++; },
             setItem: () => { storageCalls++; }
         },
-        navigator: {},
-        onmessage: null
+        navigator: {}
     });
     context.self = context;
     vm.runInContext(source, context, { filename: "algorithm.worker.js" });
-    context.onmessage({
+    const dependency = await bundledDependency("../src/dependencies/ssim.entry.js", "__desmumeSsim");
+    const token = messages[0].channelToken;
+    await listeners.get("message")({ data: { type: "initialize", dependency } });
+    await listeners.get("message")({
         data: {
             type: "compare",
+            channelToken: token,
             width: 16,
             screen: "top",
             region: [0, 0, 16, 16],
@@ -341,8 +372,8 @@ test("locally bundled comparison sandbox uses no network or storage capability",
     const result = await runAlgorithmSandbox();
     assert.equal(result.networkCalls, 0);
     assert.equal(result.storageCalls, 0);
-    assert.deepEqual(result.messages.map((message) => message.type), ["ready", "done"]);
-    assert.equal(result.messages[1].result.pct, 0);
+    assert.deepEqual(result.messages.map((message) => message.type), ["bootstrapReady", "ready", "done"]);
+    assert.equal(result.messages[2].result.pct, 0);
 });
 
 test("opaque and cross-origin contexts cannot use the message bridge to dump arbitrary ROM data", async () => {
@@ -1113,7 +1144,7 @@ test("next-branch stepping safely leaves current exec breakpoint for step and st
     }
 });
 
-test("script source policy rejects comment-separated and templated dynamic imports", () => {
+test("main-realm script source policy performs only structural validation", () => {
     for (const source of [
         'import("https://example.com/module.js")',
         'let x = 1, y = 1; x++ / import("./x.js") / y',
@@ -1126,11 +1157,7 @@ test("script source policy rejects comment-separated and templated dynamic impor
         'import<!-- split\n("https://example.com/module.js")',
         'const value = `${import/**/("https://example.com/module.js")}`'
     ]) {
-        assert.throws(
-            () => assertSafeScriptSource(source),
-            (error) => error?.mcpCode === "SCRIPT_SOURCE_INVALID",
-            source
-        );
+        assert.equal(assertSafeScriptSource(source), undefined);
     }
     for (const source of [
         '"import(\\"https://example.com\\")"',
@@ -1138,21 +1165,23 @@ test("script source policy rejects comment-separated and templated dynamic impor
         'const pattern = /import\\s*\\(/; return pattern.test("x")',
         'const important = () => 1; return important()'
     ]) {
-        assert.equal(containsDynamicImport(source), false, source);
+        assert.equal(assertSafeScriptSource(source), undefined);
     }
+    assert.throws(
+        () => containsDynamicImport("return 1"),
+        (error) => error?.mcpCode === "SCRIPT_SOURCE_INVALID"
+            && error?.mcpDetails?.hardenedWorkerRequired === true
+    );
 });
 
-test("eval command rejects dynamic import bypass before any Worker starts", async () => {
-    let workerStarts = 0;
-    const runner = createScriptRunner({
-        source: "supervisor", sandboxSource: "sandbox", responder,
-        callCommand: async () => responder.ok(),
-        createWorker: () => { workerStarts++; throw new Error("must not start"); }
-    });
-    const result = await runner.run('return import/**/("https://example.com/module.js")');
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, "SCRIPT_SOURCE_INVALID");
-    assert.equal(workerStarts, 0);
+test("hardened eval worker rejects dynamic import syntax after lockdown", async () => {
+    const result = await runEvalSandbox('return import/**/("https://example.com/module.js")');
+    assert.equal(result.networkCalls, 0);
+    assert.ok(result.messages.some((message) => (
+        message.type === "error"
+        && message.error?.name === "SyntaxError"
+        && message.error?.message.includes("dynamic import")
+    )));
 });
 
 test("eval sandbox blocks network, DOM, Window, sub-Workers, and constructor-chain escape", async () => {
@@ -1243,9 +1272,11 @@ async function runPersistentScalarSandbox(
     let storageCalls = 0;
     const context = vm.createContext({
         console,
-        crypto: { randomUUID: () => "persistent-token" },
+        crypto: testCrypto(),
+        TextEncoder,
         postMessage: (message) => messages.push(message),
         addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: () => {},
         setTimeout: (handler) => {
             if (typeof handler === "string") networkCalls++;
             else handler();
@@ -1276,6 +1307,8 @@ async function runPersistentScalarSandbox(
         }
     });
     vm.runInContext(source, context, { filename: "persistent-script.worker.js" });
+    const dependency = await bundledDependency("../src/dependencies/acorn.entry.js", "__desmumeAcorn");
+    await listeners.get("message")({ data: { type: "initialize", dependency } });
     const start = listeners.get("message")({
         data: {
             type: "start",
@@ -1343,11 +1376,15 @@ test("Ctable script registers hooks and lets the coordinator resume after callba
     const listeners = new Map();
     const context = vm.createContext({
         console,
-        crypto: { randomUUID: () => "ctable-token" },
+        crypto: testCrypto(),
+        TextEncoder,
         postMessage: (message) => messages.push(message),
-        addEventListener: (type, listener) => listeners.set(type, listener)
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: () => {}
     });
     vm.runInContext(workerSource, context, { filename: "persistent-script.worker.js" });
+    const dependency = await bundledDependency("../src/dependencies/acorn.entry.js", "__desmumeAcorn");
+    await listeners.get("message")({ data: { type: "initialize", dependency } });
     let startupComplete = false;
     const startup = listeners.get("message")({
         data: { type: "start", code: ctableSource, shortcuts: [] }
@@ -1417,11 +1454,15 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
     let buttonValue = 0;
     const context = vm.createContext({
         console,
-        crypto: { randomUUID: () => "overlay-token" },
+        crypto: testCrypto(),
+        TextEncoder,
         postMessage: (message) => messages.push(message),
-        addEventListener: (type, listener) => listeners.set(type, listener)
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: () => {}
     });
     vm.runInContext(workerSource, context, { filename: "persistent-script.worker.js" });
+    const dependency = await bundledDependency("../src/dependencies/acorn.entry.js", "__desmumeAcorn");
+    await listeners.get("message")({ data: { type: "initialize", dependency } });
 
     const resultFor = (request) => {
         if (request.type === "register") return { id: request.trigger.callbackId };
@@ -1524,9 +1565,14 @@ async function runEvalSupervisor(childMessage) {
     context.onmessage = null;
     vm.runInContext(source, context, { filename: "eval-supervisor.worker.js" });
     listener = context.onmessage;
-    listener({ data: { type: "run", code: "return 1", sandboxSource: "sandbox", shortcuts: [] } });
+    const dependency = { source: "dependency", sha256: "dependency-hash" };
+    listener({ data: { type: "run", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: [] } });
     const child = workers[0];
-    child.onmessage({ data: { type: "ready", hardened: true, layer: "sandbox", channelToken: "secret" } });
+    assert.deepEqual(JSON.parse(JSON.stringify(child.messages[0])), { type: "initialize", dependency });
+    child.onmessage({ data: {
+        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
+        dependencyHash: dependency.sha256
+    } });
     child.onmessage({ data: childMessage });
     return { messages, child };
 }
@@ -1558,9 +1604,16 @@ test("persistent supervisor gates replies and rejects forged child messages", as
     });
     context.onmessage = null;
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
-    context.onmessage({ data: { type: "start", code: "return 1", sandboxSource: "sandbox", shortcuts: [] } });
+    const dependency = { source: "dependency", sha256: "dependency-hash" };
+    context.onmessage({ data: {
+        type: "start", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: []
+    } });
     const child = workers[0];
-    child.onmessage({ data: { type: "ready", hardened: true, layer: "sandbox", channelToken: "secret" } });
+    assert.deepEqual(JSON.parse(JSON.stringify(child.messages[0])), { type: "initialize", dependency });
+    child.onmessage({ data: {
+        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
+        dependencyHash: dependency.sha256
+    } });
     child.onmessage({ data: { type: "call", id: "request-1", command: "status", params: {}, channelToken: "secret" } });
     assert.ok(messages.some((message) => message.type === "call" && message.id === "request-1"));
     context.onmessage({ data: { replyId: "request-1", result: { ok: true } } });

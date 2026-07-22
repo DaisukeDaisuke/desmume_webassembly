@@ -4,6 +4,7 @@ import { createEmbeddedWorker } from "./worker-host.js";
 import algorithmWorkerSource from "./workers/algorithm.worker.js";
 import { normalizeArea } from "./frame-diff/common.js";
 import { isValidAlgorithmWorkerResult } from "./frame-comparator-result.js";
+import ssimDependency from "./dependencies/ssim.dependency-source.js";
 
 export function createFrameComparator({
     responder,
@@ -31,6 +32,7 @@ export function createFrameComparator({
         return new Promise((resolve) => {
             let finished = false;
             let ready = false;
+            let channelToken = "";
             let timer = 0;
             const finish = (result) => {
                 if (finished) return;
@@ -43,8 +45,17 @@ export function createFrameComparator({
             const aborted = () => finish(responder.fail(ErrorCode.CANCELLED, "Frame comparison was cancelled"));
             host.worker.onmessage = (event) => {
                 const message = event.data || {};
-                if (message.type === "ready" && !ready
+                if (message.type === "bootstrapReady" && !ready && !channelToken
+                    && message.hardened === true && message.layer === "bootstrap"
+                    && typeof message.channelToken === "string") {
+                    channelToken = message.channelToken;
+                    host.worker.postMessage({ type: "initialize", dependency: ssimDependency });
+                } else if (message.type === "ready" && !ready
                     && message.hardened === true && message.layer === "sandbox") {
+                    if (message.channelToken !== channelToken || message.dependencyHash !== ssimDependency.sha256) {
+                        finish(responder.fail(ErrorCode.WORKER_PROTOCOL_ERROR, "Algorithm dependency attestation failed"));
+                        return;
+                    }
                     ready = true;
                     clearTimeout(timer);
                     timer = setTimeout(() => finish(responder.fail(
@@ -63,7 +74,8 @@ export function createFrameComparator({
                             type: "compare",
                             ...cloneableArgs,
                             baseline,
-                            current
+                            current,
+                            channelToken
                         }, [baseline.buffer, current.buffer]);
                     } catch (error) {
                         finish(responder.fail(

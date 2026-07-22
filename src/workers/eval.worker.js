@@ -1,11 +1,14 @@
 "use strict";
 
-import { assertSandboxSource } from "./sandbox-source-policy.js";
+import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
+import { normalizeBoundedValue } from "../bounded-value.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
+const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+const NativeTextEncoder = globalThis.TextEncoder;
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -18,12 +21,13 @@ const EventSource = undefined;
 const importScripts = undefined;
 const Function = undefined;
 const replies = new Map();
+let parse = null;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
-    "navigator"
+    "navigator", "crypto"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -129,9 +133,49 @@ function describeError(error, code, phase) {
 }
 
 lockDownRuntimeCodeGeneration();
+assertLockedGlobals();
+
+function assertSandboxSource(source) {
+    const ast = parse(`async function __desmumeSandbox__(){\n${String(source)}\n}`, {
+        ecmaVersion: "latest",
+        sourceType: "script"
+    });
+    const pending = [ast];
+    const seen = new Set();
+    while (pending.length) {
+        const node = pending.pop();
+        if (!node || typeof node !== "object" || seen.has(node)) continue;
+        seen.add(node);
+        if (node.type === "ImportExpression") throw new SyntaxError("dynamic import is unavailable in isolated scripts");
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) pending.push(...value);
+            else if (value && typeof value === "object") pending.push(value);
+        }
+    }
+}
 
 nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
+    if (!parse) {
+        if (message.type !== "initialize") {
+            send({ type: "protocolError", message: "dependency initialization is required" });
+            return;
+        }
+        try {
+            const acorn = await initializeLockedDependency({
+                dependency: message.dependency,
+                nativeEval,
+                nativeDigest,
+                NativeTextEncoder
+            });
+            if (typeof acorn.parse !== "function") throw new Error("Acorn parse export is unavailable");
+            parse = acorn.parse;
+            send({ type: "ready", hardened: true, layer: "sandbox", dependencyHash: message.dependency.sha256 });
+        } catch (error) {
+            send({ type: "protocolError", message: `dependency initialization failed: ${String(error?.message || error)}` });
+        }
+        return;
+    }
     if (message.replyId) {
         const pending = replies.get(message.replyId);
         if (!pending) {
@@ -149,16 +193,16 @@ nativeAddEventListener("message", async (event) => {
     }
     installShortcuts(message.shortcuts);
     try {
+        // Deliberately parse twice in the locked realm: once at acceptance and once immediately before compilation.
+        assertSandboxSource(message.code);
         assertSandboxSource(message.code);
         const script = `(async (mcp, webmcp) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
         const run = nativeEval(script);
         const result = await run(mcp, webmcp);
-        send({ type: "done", result });
+        send({ type: "done", result: normalizeBoundedValue(result === undefined ? null : result).value });
     } catch (error) {
         const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
         send({ type: "error", error: describeError(error, message.code, phase) });
     }
 });
-
-send({ type: "ready", hardened: true, layer: "sandbox" });
 })();

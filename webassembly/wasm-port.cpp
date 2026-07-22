@@ -471,13 +471,13 @@ void setSampleRate(int r) {
 
 void *prepareRomBuffer(int rl) {
   if (rl <= 0) return NULL;
-  romLen = rl;
-  if (romLen > romBufferCap) {
-    u8 *resized = (u8 *)realloc((void *)romBuffer, romLen);
+  if (rl > romBufferCap) {
+    u8 *resized = (u8 *)realloc((void *)romBuffer, rl);
     if (!resized) return NULL;
     romBuffer = resized;
-    romBufferCap = romLen;
+    romBufferCap = rl;
   }
+  romLen = rl;
   return romBuffer;
 }
 
@@ -501,7 +501,7 @@ int reset() {
 
 int loadROM(int len) {
   try {
-    romLen = len;
+    if (len <= 0) return -2;
     const bool hadRom = romLoaded;
     romLoaded = false;
     paused = true;
@@ -518,6 +518,7 @@ int loadROM(int len) {
     SPU_SetVolume(35);
 
     if (!NDS_LoadROM("rom.nds")) return emuLastError;
+    romLen = len;
     romLoaded = true;
     paused = false;
     execute = true;
@@ -537,7 +538,8 @@ int isRomLoaded() { return romLoaded ? 1 : 0; }
 
 int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   try {
-  if (paused || !romLoaded) return 0;
+  if (!romLoaded) return -1;
+  if (paused) return 1;
   if (!shouldDraw) NDS_SkipNextFrame();
   if (touched) {
     NDS_setTouchPos(touchX, touchY);
@@ -580,8 +582,8 @@ int runFrames(int count, int shouldDraw, u32 keys) {
   for (int i = 0; i < count; i++) {
     const int result = runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0);
     if (result < 0) return result;
-    ran++;
     if (result > 0) break;
+    ran++;
   }
   return ran;
 }
@@ -778,6 +780,7 @@ void *dbgDumpMemory(int proc, u32 addr, int len) {
     static std::vector<u8> dump;
     if (len < 0) len = 0;
     if (len > 16 * 1024 * 1024) len = 16 * 1024 * 1024;
+    if (len > 0 && (uint64_t)addr + (uint64_t)len > 0x100000000ULL) return NULL;
     dump.resize(len);
     for (int i = 0; i < len; i++) dump[i] = (u8)dbgRead8(proc, addr + i);
     return dump.data();

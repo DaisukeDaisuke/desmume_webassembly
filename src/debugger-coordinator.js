@@ -74,8 +74,21 @@ export function createDebuggerCoordinator({
     async function finishCompletedPersistentScriptEvent(eventId, pending) {
         state.pendingScriptEvents.delete(Number(eventId));
         clearTimeout(pending.timeoutId);
-        if (!pending.eligibleAutoResume || pending.failed
-            || pending.pauseSerial !== state.explicitPauseSerial || !native.hasLoadedRom()) return;
+        const currentClassification = breakpointOwners.classifySite(pending.ownerSite);
+        const status = getNativeStatus();
+        const currentBreak = status?.lastBreak;
+        const sameBreak = state.nativeBreakSerial === pending.nativeBreakSerial
+            && currentBreak?.hit === true
+            && breakpointKindName(currentBreak.kind) === pending.type
+            && String(currentBreak.cpu) === pending.cpu
+            && (Number(currentBreak.address) >>> 0) === pending.address
+            && (Number(currentBreak.pc) >>> 0) === pending.eventPc;
+        if (pending.failed || pending.pauseSerial !== state.explicitPauseSerial
+            || pending.romGeneration !== state.romGeneration
+            || pending.fileTransactionSerial !== state.fileTransactionSerial
+            || state.fileTransactionActive || state.loadingFile || !sameBreak
+            || !currentClassification.scriptOnly || state.breakpointsInSync !== true
+            || !native.hasLoadedRom()) return;
 
         // Exec hooks stop before the instruction. MMU read/write hooks have already
         // completed the access, so stepping those would duplicate the side effect.
@@ -102,7 +115,7 @@ export function createDebuggerCoordinator({
         updateStatus();
     }
 
-    async function failPersistentScriptEvent(eventId, pending, reason, error = null) {
+    async function failPersistentScriptEvent(eventId, pending, reason, error = null, code = "SCRIPT_EVENT_FINALIZATION_FAILED") {
         if (state.pendingScriptEvents.get(Number(eventId)) === pending) {
             state.pendingScriptEvents.delete(Number(eventId));
         }
@@ -119,7 +132,7 @@ export function createDebuggerCoordinator({
             await Promise.allSettled(pending.scriptIds.map((id) => stopPersistentScript({ id })));
         }
         state.lastScriptError = {
-            code: "SCRIPT_EVENT_FINALIZATION_FAILED",
+            code,
             eventId: Number(eventId),
             reason,
             message: String(error?.message || error || reason).slice(0, 500)
@@ -160,7 +173,7 @@ export function createDebuggerCoordinator({
         return {
             deferred: true,
             eventId: Number(eventId),
-            eligible: pending.eligibleAutoResume
+            eligible: breakpointOwners.classifySite(pending.ownerSite).scriptOnly
         };
     }
 
@@ -180,14 +193,39 @@ export function createDebuggerCoordinator({
         await Promise.all(completions);
     }
 
+    async function cancelAllPersistentScriptEvents(reason = "file transaction started") {
+        await Promise.allSettled([...state.pendingScriptEvents.entries()].map(([eventId, pending]) => (
+            failPersistentScriptEvent(eventId, pending, reason)
+        )));
+    }
+
     function dispatchScriptTriggers(triggers, breakpoint, type, classification) {
         if (!triggers.length) return;
         if (state.pendingScriptEvents.size >= ResourceLimits.pendingScriptEvents) {
-            state.lastScriptError = {
-                code: "BUSY",
-                message: `pending script event limit reached (${ResourceLimits.pendingScriptEvents})`
+            const eventId = state.nextScriptEventId++;
+            const pending = {
+                pendingCallbacks: new Map(),
+                scriptIds: [...new Set(triggers.map((trigger) => Number(trigger.scriptId)))],
+                pauseSerial: state.explicitPauseSerial,
+                romGeneration: state.romGeneration,
+                fileTransactionSerial: state.fileTransactionSerial,
+                nativeBreakSerial: state.nativeBreakSerial,
+                ownerSite: classification.ownerSite,
+                cpu: String(breakpoint.cpu),
+                type,
+                address: Number(breakpoint.address) >>> 0,
+                eventPc: Number(breakpoint.pc) >>> 0,
+                failed: true,
+                timeoutId: 0
             };
-            log(state.lastScriptError.message);
+            state.pendingScriptEvents.set(eventId, pending);
+            void failPersistentScriptEvent(
+                eventId,
+                pending,
+                `pending script event limit reached (${ResourceLimits.pendingScriptEvents})`,
+                null,
+                "BUSY"
+            ).catch((error) => log(`overflow recovery failed: ${String(error?.message || error)}`));
             return;
         }
         const eventId = state.nextScriptEventId++;
@@ -205,10 +243,14 @@ export function createDebuggerCoordinator({
             pendingCallbacks,
             scriptIds: [...new Set(triggers.map((trigger) => Number(trigger.scriptId)))],
             pauseSerial: state.explicitPauseSerial,
+            romGeneration: state.romGeneration,
+            fileTransactionSerial: state.fileTransactionSerial,
+            nativeBreakSerial: state.nativeBreakSerial,
+            ownerSite: classification.ownerSite,
             cpu: String(breakpoint.cpu),
             type,
             address: Number(breakpoint.address) >>> 0,
-            eligibleAutoResume: classification.scriptOnly === true,
+            eventPc: Number(breakpoint.pc) >>> 0,
             ownerClassification: classification,
             failed: false,
             timeoutId: 0
@@ -271,6 +313,14 @@ export function createDebuggerCoordinator({
         if (state.lastBreakKey === key) return nativeStatus;
 
         state.lastBreakKey = key;
+        state.nativeBreakSerial = Number(state.nativeBreakSerial || 0) + 1;
+        state.currentBreakIdentity = {
+            serial: state.nativeBreakSerial,
+            cpu: String(breakpoint.cpu),
+            type,
+            address: Number(breakpoint.address) >>> 0,
+            pc: Number(breakpoint.pc) >>> 0
+        };
         log(`break ${type} ${breakpoint.cpu} at ${hex(breakpoint.address)} pc ${hex(breakpoint.pc)}`);
         const triggers = matchingScriptTriggers(type, breakpoint);
         const site = {
@@ -281,7 +331,7 @@ export function createDebuggerCoordinator({
         const ownerSite = ["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)
             ? { cpu: "special", type, address: 0 }
             : site;
-        const classification = breakpointOwners.classifySite(ownerSite);
+        const classification = { ...breakpointOwners.classifySite(ownerSite), ownerSite };
         breakpointService.publish({
             ...breakpoint,
             ...site,
@@ -317,6 +367,7 @@ export function createDebuggerCoordinator({
         getNativeStatus,
         getRegisters,
         requestPersistentScriptResume,
+        cancelAllPersistentScriptEvents,
         settlePersistentScriptCallbacks,
         syncNativeBreakStatus,
         withCurrentExecBreakpointSuspended
