@@ -20,7 +20,11 @@ export function createStateService({
     }
 
     function pauseForLoad() {
-        const runState = { running: state.running, paused: state.paused };
+        const runState = {
+            running: state.running,
+            paused: state.paused,
+            explicitPauseSerial: Number(state.explicitPauseSerial || 0)
+        };
         state.loadingFile = true;
         state.running = false;
         state.paused = true;
@@ -45,7 +49,9 @@ export function createStateService({
         state.breakRefreshKey = "";
         state.lastBreakKey = "";
         native.clearBreakStatus();
-        if (runState.running && !runState.paused) {
+        const explicitlyPausedDuringLoad = Number(state.explicitPauseSerial || 0)
+            !== Number(runState.explicitPauseSerial || 0);
+        if (runState.running && !runState.paused && !explicitlyPausedDuringLoad) {
             state.paused = false;
             state.running = true;
             native.pause(false);

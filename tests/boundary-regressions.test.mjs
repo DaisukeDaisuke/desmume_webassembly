@@ -509,6 +509,39 @@ test("State load notice follows the run state that existed before loading", asyn
     assert.deepEqual(paused.invalidations, [{ showResumeNotice: true }]);
 });
 
+test("State load commits its destructive boundary only after operation cancellation settles", async () => {
+    const events = [];
+    const commands = createStateCommands({
+        blockSaveFlush: () => {},
+        bytesFromParams: () => new Uint8Array([1]),
+        cancelAndWait: async () => {
+            events.push("cancel");
+            throw Object.assign(new Error("did not settle"), { mcpCode: "TIMEOUT" });
+        },
+        dispatchScriptEvent: () => {},
+        drawLoadedStateFrame: () => {},
+        ensureRomLoaded: () => {},
+        fileTransactionService: {
+            run: async (_reason, task) => task({
+                commit: async () => { events.push("commit"); }
+            })
+        },
+        native: {
+            loadStateFile: () => {
+                events.push("native-load");
+                return 0;
+            }
+        },
+        pauseForFileLoad: () => ({ running: true, paused: false }),
+        restoreAfterFileLoad: () => {},
+        state: {},
+        stopAfterFailedStateLoad: () => {}
+    });
+
+    await assert.rejects(commands.loadStateBytes(), /did not settle/);
+    assert.deepEqual(events, ["cancel"]);
+});
+
 test("State service forwards notice ownership and preserves the requested run state", () => {
     const notices = [];
     const pauses = [];
@@ -532,6 +565,28 @@ test("State service forwards notice ownership and preserves the requested run st
     assert.equal(state.running, true);
     assert.equal(state.paused, false);
     assert.deepEqual(pauses, [true, false]);
+});
+
+test("State service preserves an explicit pause requested while a file load is active", () => {
+    const pauses = [];
+    const state = {
+        running: true, paused: false, ready: true, loadingFile: false,
+        frameBudget: 0, lastTick: 0, nativeFault: false,
+        explicitPauseSerial: 4
+    };
+    const service = createStateService({
+        state,
+        native: { pause: (value) => pauses.push(value), clearBreakStatus: () => {} },
+        frameService: { invalidateAfterStateLoad: () => {} },
+        onStatusChange: () => {}
+    });
+    const before = service.pauseForLoad();
+    state.explicitPauseSerial++;
+    service.restoreAfterLoad(before);
+
+    assert.equal(state.running, false);
+    assert.equal(state.paused, true);
+    assert.deepEqual(pauses, [true, true]);
 });
 
 test("State resume notice clears only text that it owns", () => {

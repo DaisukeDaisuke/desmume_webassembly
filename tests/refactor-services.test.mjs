@@ -70,6 +70,30 @@ test("operation timeout pauses and performs cleanup exactly once", async () => {
   assert.equal(manager.current(), null);
 });
 
+test("operation timeout returns after a bounded settlement wait when task ignores abort", async () => {
+  let finishTask;
+  let cleanups = 0;
+  const manager = createOperationManager({
+    responder,
+    settleTimeoutMs: 10
+  });
+  const result = await manager.run({
+    name: "abort-ignoring-task",
+    timeoutMs: 5,
+    task: () => new Promise((resolve) => { finishTask = resolve; }),
+    cleanup: async () => { cleanups++; }
+  });
+
+  assert.equal(result.error.code, "TIMEOUT");
+  assert.equal(manager.current().name, "abort-ignoring-task");
+  assert.equal(cleanups, 0);
+
+  finishTask(responder.ok());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cleanups, 1);
+  assert.equal(manager.current(), null);
+});
+
 test("operation cancellation reports its reason and cleans up exactly once", async () => {
   let pauses = 0;
   let releases = 0;
@@ -247,6 +271,31 @@ test("debugger service requires and applies freezes for step paths", async () =>
     const branch = createDebuggerHarness();
     await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
     assert.equal(branch.freezes(), 1);
+});
+
+test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {
+    let nativeEnableCalls = 0;
+    const state = {
+        traceEnabled: true,
+        traceStateSynchronized: false
+    };
+    const ui = { traceToggle: { checked: false } };
+    const commands = createDebuggerControlCommands({
+        ensureReady: () => {},
+        native: { setTraceEnabled: () => { nativeEnableCalls++; } },
+        readCallStackData: () => ({ enabled: true, frames: [] }),
+        renderCallStack: () => {},
+        state,
+        ui
+    });
+
+    assert.deepEqual(await commands.setStackTraceMode({ enabled: true }), {
+        enabled: true,
+        synchronized: false,
+        suspended: true
+    });
+    assert.equal(nativeEnableCalls, 0);
+    assert.equal(state.traceStateSynchronized, false);
 });
 
 test("view service converts call stack disassembly modes", () => {

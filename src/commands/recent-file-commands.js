@@ -48,8 +48,8 @@ export function createRecentFileCommands(context) {
                 if (item.kind === "state") {
                     ensureRomLoaded("recent state reload requires a loaded ROM");
                 }
-                await commit();
                 await cancelAndWait(item.kind === "save" ? "reset" : "state-load");
+                await commit();
 
                 if (item.kind === "save") {
                     const runState = pauseForFileLoad();

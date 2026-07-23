@@ -28,9 +28,9 @@ export function createRomCommands({
                     : await openPicker(ui.romFile);
                 const { file, bytes } = selection;
                 await ensureWasmReady();
-                await commit();
                 await cancelAndWait("rom-load");
-                pauseForFileLoad();
+                await commit();
+                const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
                     writeRomFile(file.name, bytes);
@@ -46,7 +46,7 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ running: true, paused: false });
+                    if (loaded) restoreAfterFileLoad({ ...runState, running: true, paused: false });
                     else stopAfterFailedLoad();
                 }
             });
@@ -56,9 +56,9 @@ export function createRomCommands({
             return fileTransactionService.run("ROM byte load", async ({ commit }) => {
                 const bytes = bytesFromParams(params);
                 await ensureWasmReady();
-                await commit();
                 await cancelAndWait("rom-load");
-                pauseForFileLoad();
+                await commit();
+                const runState = pauseForFileLoad();
                 const resume = params.resume !== false;
                 const name = params.name || "mcp-rom.nds";
                 let loaded = false;
@@ -76,7 +76,7 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ running: resume, paused: !resume });
+                    if (loaded) restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
                     else stopAfterFailedLoad();
                 }
             });
@@ -98,9 +98,9 @@ export function createRomCommands({
                 if (!response.ok) throw codedError(ErrorCode.INVALID_ARGUMENT, `ROM fetch failed: ${response.status}`);
                 const bytes = new Uint8Array(await response.arrayBuffer());
                 await ensureWasmReady();
-                await commit();
                 await cancelAndWait("rom-load");
-                pauseForFileLoad();
+                await commit();
+                const runState = pauseForFileLoad();
                 const resume = params.resume !== false;
                 const name = params.name || url.split("/").pop() || "url-rom.nds";
                 let loaded = false;
@@ -118,7 +118,7 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ running: resume, paused: !resume });
+                    if (loaded) restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
                     else stopAfterFailedLoad();
                 }
             });

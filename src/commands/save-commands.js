@@ -30,8 +30,8 @@ export function createSaveCommands({
                     ? await readFileFromInput(ui.saveFile)
                     : await openPicker(ui.saveFile);
                 const { file, bytes } = selection;
-                await commit();
                 await cancelAndWait("reset");
+                await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -97,8 +97,8 @@ export function createSaveCommands({
                 rememberSlot(slot);
                 const bytes = await idbGet(`save:${slot}`);
                 if (!bytes) throw new Error(`save slot not found: ${slot}`);
-                await commit();
                 await cancelAndWait("reset");
+                await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {

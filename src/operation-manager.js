@@ -2,7 +2,12 @@ import { ErrorCode } from "./error-codes.js";
 
 const CANCEL_SETTLE_TIMEOUT_MS = 10000;
 
-export function createOperationManager({ responder, pause = async () => {}, releaseInput = async () => {} }) {
+export function createOperationManager({
+    responder,
+    pause = async () => {},
+    releaseInput = async () => {},
+    settleTimeoutMs = CANCEL_SETTLE_TIMEOUT_MS
+}) {
     let active = null;
     let serial = 0;
 
@@ -12,10 +17,7 @@ export function createOperationManager({ responder, pause = async () => {}, rele
         return true;
     }
 
-    async function cancelAndWait(reason = "user-cancel") {
-        const operation = active;
-        if (!operation) return false;
-        operation.controller.abort(reason);
+    async function waitForSettlement(operation) {
         let timer = 0;
         try {
             await Promise.race([
@@ -26,17 +28,22 @@ export function createOperationManager({ responder, pause = async () => {}, rele
                         error.mcpCode = ErrorCode.TIMEOUT;
                         error.mcpDetails = {
                             operation: operation.name,
-                            timeoutMs: CANCEL_SETTLE_TIMEOUT_MS
+                            timeoutMs: settleTimeoutMs
                         };
                         reject(error);
-                    }, CANCEL_SETTLE_TIMEOUT_MS);
+                    }, settleTimeoutMs);
                 })
             ]);
-        } catch (error) {
-            throw error;
         } finally {
             clearTimeout(timer);
         }
+    }
+
+    async function cancelAndWait(reason = "user-cancel") {
+        const operation = active;
+        if (!operation) return false;
+        operation.controller.abort(reason);
+        await waitForSettlement(operation);
         return true;
     }
 
@@ -120,7 +127,11 @@ export function createOperationManager({ responder, pause = async () => {}, rele
         try {
             return await runBody();
         } finally {
-            await operation.done;
+            try {
+                await waitForSettlement(operation);
+            } catch (error) {
+                if (error?.mcpCode !== ErrorCode.TIMEOUT) throw error;
+            }
         }
     }
 

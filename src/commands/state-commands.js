@@ -76,8 +76,8 @@ export function createStateCommands(context) {
                 if (params.slot && !bytes) {
                     throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
                 }
-                await commit();
                 await cancelAndWait("state-load");
+                await commit();
                 const runState = pauseForFileLoad();
                 try {
                     if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
@@ -114,8 +114,8 @@ export function createStateCommands(context) {
                     ? await readFileFromInput(ui.stateFile)
                     : await openPicker(ui.stateFile);
                 const { file, bytes } = selected;
-                await commit();
                 await cancelAndWait("state-load");
+                await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -150,8 +150,8 @@ export function createStateCommands(context) {
             );
             return fileTransactionService.run("State byte load", async ({ commit }) => {
                 const bytes = bytesFromParams(params);
-                await commit();
                 await cancelAndWait("state-load");
+                await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -185,8 +185,8 @@ export function createStateCommands(context) {
                 const response = await fetch(url, { cache: "no-store" });
                 if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
                 const bytes = new Uint8Array(await response.arrayBuffer());
-                await commit();
                 await cancelAndWait("state-load");
+                await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {

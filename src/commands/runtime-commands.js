@@ -85,8 +85,8 @@ export function createRuntimeCommands(context) {
         async reset(params = {}) {
             ensureRomLoaded("reset requires a loaded ROM");
             return fileTransactionService.run("ROM reset", async ({ commit }) => {
-                await commit();
                 await cancelAndWait("reset");
+                await commit();
                 const runState = pauseForFileLoad();
                 const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
                 let loaded = false;
@@ -111,7 +111,9 @@ export function createRuntimeCommands(context) {
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(hold ? { running: false, paused: true } : runState);
+                    if (loaded) restoreAfterFileLoad(
+                        hold ? { ...runState, running: false, paused: true } : runState
+                    );
                     else stopAfterFailedLoad();
                 }
             });
@@ -120,8 +122,8 @@ export function createRuntimeCommands(context) {
         async reloadRom(params = {}) {
             ensureRomLoaded("ROM reload requires a loaded ROM");
             return fileTransactionService.run("ROM reload", async ({ commit }) => {
-                await commit();
                 await cancelAndWait("rom-load");
+                await commit();
                 const runState = pauseForFileLoad();
                 const resume = params.resume === true
                     || (params.resume !== false
@@ -147,7 +149,9 @@ export function createRuntimeCommands(context) {
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(resume ? runState : { running: false, paused: true });
+                    if (loaded) restoreAfterFileLoad(
+                        resume ? runState : { ...runState, running: false, paused: true }
+                    );
                     else stopAfterFailedLoad();
                 }
             });

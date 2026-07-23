@@ -209,3 +209,11 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - `src/file-io-service.js:24-29`: `openPicker()` waits only for `change`; browser cancel may leave the promise pending forever. Purpose: add focus/cancel fallback cleanup so import/inject commands resolve/reject on canceled picker.
 - `old/desmume/desmume/src/saves.cpp:1086-1141` and `webassembly/wasm-port.cpp:632-647`: DeSmuME `savestate_save()` compresses unless `compressionLevel == Z_NO_COMPRESSION`; WASM passes `0`, which is zlib no-compression. Purpose: call `savestate_save(*stateFile)` or `Z_DEFAULT_COMPRESSION` so exported State returns to the compressed exe-compatible format.
 - `old/desmume/desmume/src/saves.cpp:1201-1277`: unknown chunks currently `return false`; simply appending a WASM trace chunk would break exe compatibility. Purpose for future work: do not add an unknown `.dst` chunk unless the desktop loader behavior is changed/confirmed; prefer sidecar/container metadata if exe compatibility must remain exact.
+
+## 2026-07-23 File Boundary Follow-up Addendum
+
+- File load/reset commands now wait for the active operation to settle before committing the destructive file boundary. If cancellation settlement times out, script callbacks and breakpoint generations remain unchanged and no native load starts.
+- `pauseForLoad()` captures `explicitPauseSerial`; restore keeps the emulator paused when a user issues `pause` during an active file transaction, including ROM paths that otherwise request resume.
+- Re-enabling an already-enabled trace while State history is unsynchronized is a native no-op and reports the trace as suspended. Disabling/re-enabling remains the explicit destructive path for starting fresh trace history.
+- An operation whose task ignores abort returns its timeout result after a bounded settlement grace period. It remains `BUSY` until the late task actually settles, so cleanup is not run concurrently with code that can still mutate emulator state.
+- Verification: Codespace `check:js`, 100/100 tests, `build:js`, and safe-heap build passed. Chrome DevTools MCP loaded the local ROM and State and confirmed `setStackTraceMode({enabled:true})` returns `synchronized:false, suspended:true` after State load.
