@@ -1,34 +1,24 @@
 # DeSmuME WebAssembly API
-
 This document describes the browser-side API exposed by `public/index.html`.
-All operations are local to the browser. ROM, save, and state files are not uploaded.
-
+Operations execute in the browser. Local ROM, Save, and State file controls do not upload their contents; only the explicit `loadRomUrl` and `loadStateUrl` commands fetch a caller-supplied URL.
 ## Local security context
-
 This security context is also included in the native WebMCP tool descriptions so an AI client receives it before choosing a tool:
-
 - ROM, save, and State file inputs are read into the current browser page and in-memory emulator only. They are not uploaded by the file controls, debugger commands, memory commands, eval scripts, or persistent scripts. `data:` and `blob:` requests shown by DevTools are local in-memory resources, not remote transfers.
 - The page loads its executable `<script>` resources only from the same origin. It uses the browser's built-in `document.modelContext` API (with `navigator.modelContext` only as a compatibility fallback) and does not load `@mcp-b/global` or another third-party WebMCP shim into the page global scope.
 - The `postMessage` command bridge requires `event.origin === window.location.origin`. Opaque sandbox origins (`null`) and other origins receive no command execution and no reply, including for ROM dumps, memory reads, and register reads. Native WebMCP and an exact same-origin caller remain trusted interfaces and can intentionally request debugger data.
 - One-shot eval and persistent scripts run behind supervisor Workers in inner sandbox Workers. Acorn parsing happens first in a separate dependency-only parser Worker that receives script text but no emulator, memory, register, frame, or MCP RPC capability. The execution sandbox has no DOM or `window`, and network APIs, sub-Workers, raw `postMessage`, `localStorage`, `sessionStorage`, IndexedDB, Cache API, string timers, global `eval`, and constructor-chain code generation are disabled. RPC reaches the emulator only through the authenticated supervisor protocol and an explicit command allowlist.
 - No executable source is fetched from a CDN at runtime. Acorn 8.17.0 and ssim.js 3.5.0 are exact-version npm dependencies bundled at build time. `ssim-trim` runs only in its algorithm Worker, which disables network, sub-Workers, raw messages, browser storage, string timers, `eval`, constructor-chain generation, and matching Worker-global prototype capabilities before accepting comparison work. It receives only the baseline/current frame pixels and comparison options required for that call, never ROM, save, or State bytes.
 - Choosing `loadRomUrl` or `loadStateUrl` is an explicit request to fetch the supplied URL. The local file controls are the appropriate path when no network fetch is desired.
-
 These are concrete isolation guarantees for `execute_webmcp_tool` / WebMCP eval and production page code, not permission for a caller to disclose data it intentionally receives. Chrome DevTools MCP `evaluate_script` runs directly in the main page as a privileged local diagnostic and is outside the page sandbox boundary. Keep ROM/memory results out of chat and logs, and grant native WebMCP, same-origin page access, or DevTools access only to a trusted client.
-
 ## Browser Entry Points
-
 - `window.DesmumeMCP.call(name, params)`: Runs one command and returns a result object.
 - `window.DesmumeMCP.list()`: Returns command names, parameter notes, and descriptions.
 - `window.DesmumeMCP.shortcuts()` / `window.DesmumeShortcuts`: Lists global one-letter shortcut functions.
 - `window.a(...)` through `window.Z(...)`: Short aliases that return the same JSON objects as `DesmumeMCP.call()`. For example, `await window.a("pc", 16)` disassembles near PC without opcode bytes by default, and `await window.A("pc", 16)` includes opcode bytes. Positional arguments are mapped per shortcut; passing one object uses it directly, such as `await window.i({ timeoutMs: 1000 })`.
 - `window.postMessage({ type: "desmume-mcp", id, command, params }, "*")`: Message-based command transport. The page replies with `{ type: "desmume-mcp-result", id, result }`.
 - Browser WebMCP: when `document.modelContext` (or the compatibility fallback `navigator.modelContext`) is available, the page registers `desmume.list`, `desmume.call`, `desmume.eval`, and `desmume.runScript`. Their descriptions inject the local security context above. Use `desmume.eval` for multi-command investigation scripts with `mcp.call(command, params)`.
-
 ### One-letter shortcut reference
-
 Each shortcut is an `async` function on `window`; call it with positional arguments in the listed order, or with one parameter object to name values explicitly. Omitted arguments use the defaults shown below (or the command's normal defaults). Upper- and lower-case names are distinct. `window.DesmumeShortcuts` exposes the same command/parameter/default mapping for discovery.
-
 | Shortcut | Command | Positional parameters and defaults |
 | --- | --- | --- |
 | `a` / `A` | `disassemble` | `address, count=16, before=4, mode`; `A` includes opcode bytes |
@@ -57,9 +47,17 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 | `x` / `X` | `clearBreakStatus` / `copyCallStackMarkdown` | `x()` / `X()` |
 | `y` / `Y` | `setScale` / `copyCallStackCsv` | `y(scale)` / `Y()` |
 | `z` / `Z` | `setRotation` / `takeScreenshot` | `z(rotation)` / `Z(type, includeDataUrl)` |
-
+## Public command inventory
+The current public registry exposes 119 command names. Compatibility aliases are included in this count. `window.DesmumeMCP.list()` is the runtime source of truth; this inventory is the reviewable document counterpart.
+- System and context: `status`, `snapshotContext`, `saveAnalysisBaseline`, `restoreAnalysisBaseline`, `pause`, `resume`, `continue`, `reset`, `reloadRom`, `setSpeed`, `setRenderEnabled`, `setAudio`, `setScale`, `setRotation`, `setAutoUpdate`, `setFeatureSet`.
+- ROM, Save, State, and recent files: `loadRomFile`, `loadRomBytes`, `loadRomUrl`, `importSaveFile`, `exportSaveFile`, `saveSaveSlot`, `loadSaveSlot`, `saveState`, `loadState`, `loadStateBytes`, `loadStateUrl`, `importStateFile`, `exportStateFile`, `listRecentFiles`, `reloadRecentFile`.
+- Input and screenshots: `setInput`, `setKeyBinding`, `runInputHold`, `runInputTap`, `runTouchHold`, `runInputSequence`, `listInputSequences`, `deleteInputSequence`, `takeScreenshot`, `stepFrames`.
+- Registers, memory, and binary utilities: `getRegisters`, `setRegister`, `dumpMemory`, `injectMemoryFile`, `injectBytes`, `searchMemory`, `resetMemorySearch`, `writeMemory`, `setMemoryFreeze`, `listMemoryFreezes`, `applyMemoryFreezes`, `binaryFloat`, `setCTableSeed`, `memoryGetRegister`, `memorySetRegister`, `memoryReadByte`, `memoryReadWord`, `memoryReadDword`, `memoryWriteByte`, `memoryWriteWord`, `memoryWriteDword`.
+- Disassembly and debugger control: `disassemble`, `disassembleBytes`, `setBreakpoint`, `setSpecialBreakpoint`, `listBreakpoints`, `removeBreakpoint`, `clearBreakStatus`, `step`, `smartStep`, `stepOver`, `stepNextBranchOrReturn`, `nextBranchOrReturn`, `trueNextBranch`, `nextTrueBranch`, `setStackTraceMode`, `setStackTracePrivilegeCheck`, `stackTrace`, `callStack`, `listOtherCoroutines`, `getOtherCoroutines`, `copyCallStackMarkdown`, `copyCallStackCsv`, `runUntilReturn`, `runUntilNextCall`, `returnToPop`, `nextFunctionEnter`, `nextCall`, `nextFunctionCall`.
+- Wait and frame operations: `wait`, `waitMs`, `waitForBreak`, `runUntil`, `captureFrame`, `listFrameSnapshots`, `deleteFrameSnapshot`, `compareFrame`, `waitForScreenChange`.
+- Isolated and persistent scripts: `eval`, `runScript`, `injectScript`, `batch`, `runPersistentScript`, `listScripts`, `stopScript`, `restartScript`, `getScript`, `listScriptPrint`, `clearScriptPrint`, `runSandboxBoundarySelfTest`.
+- Compatibility aliases: `reg`, `regw`, `read8`, `read16`, `read32`, `write8`, `write16`, `write32`.
 ## Commands
-
 - `status`: Returns pause state, file-load gate state, ROM-loaded state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values.
 - `snapshotContext`: Returns a compact, self-contained analysis context: `paused`/`running`, ROM state, frame, ARM9/ARM7 selection, PC/SP/LR/CPSR, up to eight near-PC lines, latest break reason, and the current trace/`skipIrq` policy. A loaded ROM is required because register access is native state.
 - `saveAnalysisBaseline`: Saves a named browser state slot together with its pause/running and trace/`skipIrq` policy, ROM name, byte size, SHA-256, and baseline state-format version. Pass `{ "name": "before-menu" }`; an existing name is protected unless `{ "replace": true }` is explicit.
@@ -106,6 +104,7 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 - `writeMemory`: Writes one value with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string }`.
 - `setMemoryFreeze`: Adds or removes a repeated memory write with `{ "cpu": "arm9", "address": number|string, "size": 1|2|4, "value": number|string, "enabled": boolean }`.
 - `listMemoryFreezes`: Returns the current repeated memory writes used by Memory Freeze.
+- `applyMemoryFreezes`: Immediately applies every enabled Memory Freeze entry once and returns the number applied. The normal emulation loop also applies enabled freezes automatically.
 - Memory dump highlighting: read/write breakpoints are reflected in the GUI memory dump as red-highlighted byte cells and packed words when the dumped range contains the watched address. This is display-only and does not move the disassembly cursor.
 - `setBreakpoint`: Adds or removes execution/read/write breakpoints with `{ "cpu": "arm9", "type": "exec"|"read"|"write", "address": number|string, "enabled": boolean }`. Addresses without `0x`, such as `20cb6c4`, are treated as hexadecimal addresses. Execution breakpoints stop before the matched instruction; read/write breakpoints stop the emulator as soon as the native memory hook observes the access. Debug memory viewer reads do not trigger memory breakpoints.
 - `setSpecialBreakpoint`: Enables exception breakpoints with `{ "kind": "dataAbort"|"prefetchAbort"|"undefinedInstruction", "enabled": boolean }`. These stop the emulator and preserve the recorded call stack near the exception source; they do not destroy the emulator instance.
@@ -142,61 +141,38 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 - `injectScript`: Runs isolated JavaScript against a capability object. Network APIs, DOM access, import, and Function constructor are unavailable in the sandbox. Pass `{ "timeoutMs": number }` to change the script timeout.
 - `batch`: Runs multiple WebMCP commands sequentially. Pass `{ "commands": [{ "command": "status", "params": {} }] }`; the result contains one entry per command.
 - `setFeatureSet`: Enables or disables heavy tool groups with `{ "debugger": boolean, "memory": boolean, "mcp": boolean }`.
-
 Most commands accept `{ "timeoutMs": number }` through the WebMCP runner. If the command does not finish before that deadline, the call fails with a timeout error.
-
 ## Long-running operations and normal errors
-
 `waitForBreak`, `runUntil`, `runInputSequence`, and `waitForScreenChange` are mutually exclusive. A second long-running operation returns `ok:false` with `error.code="BUSY"`; it does not wait or start another emulator loop. `pause`, ROM/State load, reset, page unload, and explicit cancellation stop the active operation and release timers, listeners, temporary breakpoint owners, DS buttons, and touch input.
-
 `waitForBreak`, `runUntil`, and `waitForScreenChange` require `timeoutMs` in the range 1 through 600000. Timeout is a normal result with `error.code="TIMEOUT"`, not a rejected Promise. The emulator is paused and the next command can run immediately.
-
 All expected failures use this shape across `DesmumeMCP`, WebMCP, and Worker RPC:
-
 ```js
 { ok: false, error: { code, message, recoverable: true, details? } }
 ```
-
 Stable error codes include `WASM_NOT_READY`, `ROM_NOT_LOADED`, `INVALID_ARGUMENT`, `UNKNOWN_COMMAND`, `TIMEOUT`, `BUSY`, `CANCELLED`, `SCREEN_INVALID`, `NO_WAITABLE_BREAKPOINTS`, `BREAKPOINT_NOT_FOUND`, `BREAKPOINT_NOT_WAITABLE`, `BREAKPOINT_INTERRUPTED`, `SCRIPT_PAUSED`, `SCRIPT_SOURCE_INVALID`, `SCRIPT_COMPILE_ERROR`, `SCRIPT_RUNTIME_ERROR`, `WORKER_START_FAILED`, `WORKER_CRASHED`, `WORKER_PROTOCOL_ERROR`, `SEQUENCE_NOT_FOUND`, `SEQUENCE_EXISTS`, `FRAME_SNAPSHOT_NOT_FOUND`, `FRAME_SNAPSHOT_EXISTS`, `ALGORITHM_UNAVAILABLE`, `ALGORITHM_INTEGRITY_FAILED`, `NATIVE_ERROR`, `NATIVE_FAULT`, and `INTERNAL_ERROR`.
-
 Application errors remain successful WebMCP transports. Compact text contains the short `ok`/error summary, while structured content remains an object.
-
 ### `waitForBreak`
-
 ```js
 waitForBreak({ timeoutMs: 30000, scriptBreakpoints: "ignore" })
 ```
-
 The default ignores script-only breakpoints and requires at least one enabled non-script breakpoint. With none it returns `NO_WAITABLE_BREAKPOINTS` without resuming. Mixed script/user ownership is user-visible. A persistent script callback still runs; an explicit callback pause ends the wait with `SCRIPT_PAUSED`.
-
 ### `runUntil`
-
 Use exactly one condition:
-
 ```js
 runUntil({ timeoutMs: 30000, pc: "021e54fc" })
 runUntil({ timeoutMs: 30000, bp: 12, hits: 10 })
 ```
-
 The PC form owns a temporary execution breakpoint without replacing an existing owner. The hit-count form counts only events after the call begins. All temporary ownership is removed on every exit path.
-
 ### `runInputSequence`
-
 ```js
 runInputSequence({ id: "menu-open", seq: [["t", "A", 2], ["w", 300], ["hf", "Up", 2]] })
 runInputSequence({ id: "menu-open" })
 ```
-
 Opcodes are `t` (tap), `s` (spam for milliseconds), `h` (hold for milliseconds), `hf` (hold for emulator frames), `w` (real-time wait), `wf` (emulator-frame wait), and `x` (touch). Join simultaneous buttons with `+`. The entire sequence is validated before execution. IDs are stored under the versioned `desmume-input-sequences-v1` key. Replacing a different existing sequence requires `replace:true`. `listInputSequences` and `deleteInputSequence` manage saved entries.
-
 ## Frame snapshots and comparison
-
 State load invalidates capture APIs until one complete emulator frame increments the native frame counter. CPU stepping, a partial frame interrupted by a breakpoint, canvas repaint, and framebuffer capture alone do not validate it. During this interval the UI keeps the last valid canvas visible and reports that execution must resume; capture, comparison, screenshot, and screen-wait commands return `SCREEN_INVALID`.
-
 `captureFrame({id, replace:false})` copies the native 256x384 framebuffer into independent JavaScript storage. At most 16 snapshots are retained; exceeding the limit or reusing an ID without `replace:true` returns a normal error. `listFrameSnapshots` and `deleteFrameSnapshot` manage them.
-
 `compareFrame` requires `id`, `algorithm`, and `thresholdPct`. `screen` is `top`, `bottom`, or `both` (default); `region` is `[x,y,width,height]`; and absolute `ignoreRects` are not silently clipped.
-
 | ID | Meaning | Suggested use | Main defaults |
 | --- | --- | --- | --- |
 | `px` | changed pixel percentage | static UI, fades | tolerance 8 |
@@ -204,36 +180,24 @@ State load invalidates capture APIs until one complete emulator frame increments
 | `hist` | luminance histogram distance | scenes and overall tone | 16 bins |
 | `blk` | trimmed block-layout change | menus with local animation | tile 16, grid 4, blur 1, tile threshold 8%, trim 20% |
 | `edge` | trimmed edge-layout change | text boxes, borders, positioning | tile 16, blur 1, tile threshold 10%, trim 20% |
-| `ssim-trim` | trimmed tiled SSIM | texture/lighting tolerance | tile 16, tile threshold 12%, trim 20%; verified optional library |
-
+| `ssim-trim` | trimmed tiled SSIM | texture/lighting tolerance | tile 16, tile threshold 12%, trim 20%; verified bundled library |
 All scores are 0–100, but thresholds are algorithm-specific. `hist`, `blk`, `edge`, and the built-in `px` fallback work offline.
-
 ### `waitForScreenChange`
-
 The operation captures frame A once while paused and compares every later completed sample to A: B-vs-A, C-vs-A, D-vs-A. It never advances the baseline. `stableFrames` counts consecutive samples meeting `thresholdPct`; `sampleEveryFrames` reduces comparison frequency without changing A. A user-visible breakpoint returns `BREAKPOINT_INTERRUPTED`; script-only hits are ignored unless requested. Timeout details include `maxPct`.
-
-## Worker and optional algorithm policy
-
+## Worker and bundled algorithm policy
 Persistent/eval Worker sources live under `src/workers`, are embedded as strings in the production `public/app.js` bundle, and start from Blob URLs. Stop, timeout, crash, and restart terminate the Worker, settle pending RPC, and revoke its URL. Their inner sandboxes cannot access the DOM, `window`, ROM/State bytes, frame pixels, network APIs, browser storage, raw messages, sub-Workers, or unapproved RPC. `localStorage`, `sessionStorage`, IndexedDB, and Cache API are explicitly shadowed even though normal browser Workers do not expose every one of those APIs.
-
-Optional external image algorithms use only fixed HTTPS allowlist entries with exact versions and SHA-256 verification. Integrity/network failure disables only that algorithm. License/version/hash/source metadata is maintained in `THIRD_PARTY_NOTICES.md`; `public/coi-serviceworker.js` remains an independent unminified vendored asset with its MIT header.
-
+Acorn 8.17.0 and ssim.js 3.5.0 are exact-version build dependencies. Their generated dependency source is checked against fixed SHA-256 values before it is embedded into `public/app.js`; no executable algorithm or parser source is fetched from a runtime CDN. A dependency-source mismatch fails closed before use. License, version, hash, and source metadata are maintained in `THIRD_PARTY_NOTICES.md`; `public/coi-serviceworker.js` remains an independent unminified vendored asset with its MIT header.
 `ssim-trim` uses the locally bundled, exact `ssim.js` 3.5.0 package. It executes only inside the embedded algorithm Worker after that Worker removes network, storage, raw-message, sub-Worker, and runtime code-generation capabilities. The library receives only frame pixels and comparison options for the active comparison. Worker startup, timeout, protocol, or execution failures remain isolated from `px`, `px-window`, `hist`, `blk`, and `edge`.
-
 ## Persistent injection scripts
-
 `runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is blocking `{ "asyncMode": false }`. Enable `{ "asyncMode": true }` only for a non-blocking register-observation script.
-
 - `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": false }` starts a script. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
 - `listScripts`, `stopScript: { id }`, `restartScript: { id }`, and `getScript: { id }` manage saved worker code. `getScript` returns at most 65536 source characters with `truncated` and `originalChars`; main-thread regular-expression evaluation is intentionally unavailable.
 - `listScriptPrint: { max: 10, id? }` returns the latest console lines; `clearScriptPrint: { id? }` clears one or all consoles.
+- `runSandboxBoundarySelfTest` accepts no parameters. It runs the fixed first-party production supervisor/sandbox probe and reports observed capability rejection and cleanup state. It does not read ROM, Save, State, emulated memory, or registers, and it does not return an attack payload.
 - The editor persists its draft in local storage. The source-file button loads a local `.js`, text, or Lua source into the editor only; it never uploads it. Lua source is reference material—the runnable injection language is JavaScript.
 - The breakpoints set by these persistent scripts significantly slow down the ROM. Defining a large number of breakpoints can cause them to take 30 seconds or more to complete.
 - Async mode permits only register reads (`memory.getregister` / `memory.reg`) among direct emulator-state APIs. It rejects register writes, memory reads/writes/dumps/injection/freezes, and pause/resume, preventing a queued script from mutating or observing stale immediate state. If an async script fails to register a callback, throws while starting or handling a callback, or its Worker reports an execution error, it is stopped automatically: its triggers are removed and its Worker is terminated. Blocking mode retains the full API and can pause the emulator.
-
 Inside a persistent script, `print(...)`, `printf(format, ...)`, and `printhex(label, value)` write to that script's own console. `printf` accepts `%s`, `%d`, and hexadecimal `%x` / `%.8x` forms. Each script gets these asynchronous APIs:
-
-
 ```js
 // Blocking mode: all values are JavaScript numbers. Use 0x prefixes for hexadecimal input.
 const pc = await memory.getregister("pc", "arm9");
@@ -247,20 +211,16 @@ await memory.writedword(0x02000020, 0x12345678); // memory bytes: 12 34 56 78
 printhex("word", await memory.readword(0x02000010));
 printhex("dword", await memory.readdword(0x02000020));
 ```
-
 `readword` / `readdword` and `writeword` / `writedword` use Big Endian values at the API boundary. The implementation converts those values to and from the emulator's Little Endian memory layout. `readbyte` / `writebyte` are aliases for one-byte access. WebMCP equivalents are `memoryGetRegister`, `memorySetRegister`, `memoryReadByte`, `memoryReadWord`, `memoryReadDword`, `memoryWriteByte`, `memoryWriteWord`, and `memoryWriteDword`.
-
+Public compatibility aliases map directly to those commands: `reg` → `memoryGetRegister`, `regw` → `memorySetRegister`, `read8` / `read16` / `read32` → `memoryReadByte` / `memoryReadWord` / `memoryReadDword`, and `write8` / `write16` / `write32` → `memoryWriteByte` / `memoryWriteWord` / `memoryWriteDword`. They preserve the target command's validation and return shape.
 For an async script, register the callback and only read registers inside it. This mode never writes emulator state and stops itself if registration or callback execution fails:
-
 ```js
 memory.ontick(async ({ frame }) => {
   const pc = await memory.getregister("pc", "arm9");
   if ((frame % 60) === 0) printhex("ARM9 PC", pc);
 });
 ```
-
 Register a callback once; its registration is tied to the script and is removed automatically on `stopScript`:
-
 ```js
 memory.registerwrite(0x02000020, async (hit) => {
   print("write", hit.address, "pc", hit.pc);
@@ -277,29 +237,22 @@ emu_registerstart(async ({ reason }) => print("ROM reset/reloaded:", reason));
 emu_ontick(async ({ frame }) => { if ((frame % 60) === 0) print("frame", frame); });
 // memory.ontick(callback) is the same frame callback.
 ```
-
 `registerexec` is a non-stopping trace hook. Native execution pauses briefly before the matched ARM9 instruction so the callback sees the exact event state. After the callback, if PC is still on that execute breakpoint, the API skips that breakpoint for one instruction and then resumes normally. A trace callback therefore does not repeatedly dispatch at an unchanged PC or leave the emulator paused. A different breakpoint encountered by that one-instruction step is still honored. To intentionally stop at the original event, call `await emu.pause()` or `await mcp.call("pause")` inside the callback; that explicit pause takes effect immediately in the event state and cancels the automatic step and resume.
-
 Persistent scripts can call WebMCP commands through `mcp.call(command, params)` or its `webmcp.call` alias, subject to the async-mode restrictions above. Common emulator and debugger operations also have shortcuts such as `emu.status()`, `emu.step()`, `emu.smartStep()`, `emu.stepOver()`, `emu.stepNextBranchOrReturn()`, `emu.trueNextBranch()`, `emu.runUntilReturn()`, `emu.runUntilNextCall()`, `emu.stepFrames(params)`, and `emu.setInput(params)`. Blocking mode also permits `emu.pause()` and `emu.resume()`.
-
 The current version exposes `stateLoad` and `stateSave` events to the worker event bus for future scripts, and normal `mcp.call("loadState", ...)`, `mcp.call("saveState", ...)`, `mcp.call("reloadRecentFile", ...)`, and `mcp.call("setInput", ...)` remain available from callback code. The helper `setCTableSeed` provides the JavaScript equivalent of the common `setCTable_jp.lua` pattern: it writes `0x4b539adb` at `0x02385f0c` and zero at the following word unless overridden.
-
 ### Chrome MCPでのファイルアップロード
-
-- AI側からのROM/Save/State読み込みは、Chrome MCPのアップロード対象要素IDとアップロードツールを組み合わせる。
-- file inputのIDは毎回変わる可能性がある。固定IDを仮定しない。
-- アップロード用ツールはデフォルトで見えていないことがある。必要なら `tool_search` で `take_snapshot` と `upload_file` を探して使う。
+- AI側からROM、Save、Stateを読み込む場合は、Chrome MCPの現在のアップロード対象要素UIDと`upload_file`を組み合わせる。
+- file inputやアップロードボタンのUIDはページ状態やスナップショットごとに変化し得る。`rom-file`、`3_16`など、過去に見えたUIDを固定値として仮定しない。
+- `take_snapshot`や`upload_file`が最初から見えていない場合は、利用中のMCPクライアントのツール検索機能で確認する。
 - 手順:
-    1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/` または `http://localhost:8766/`）を開く。
-    2. `take_snapshot` でDOM/アクセシビリティツリーを取り、ROM/Save/Stateの file input またはアップロードボタンの現在IDを確認する。
-    3. `upload_file` で、そのIDへユーザー指定ローカルファイルを渡す。(idは`uid: rom-file`**ではない。**`uid: 3_16`のはず)
-    4. ROM/Save/State本文はチャットに出さず、ブラウザへローカルアップロードするだけにする。
-- DQ9のROM/Save/Stateはユーザー指定パスを使う。内容をコンテキストへ貼らない。
-
-
+  1. Chrome MCPで対象ページ（例: `https://daisukedaisuke.github.io/desmume_webassembly/`または`http://localhost:8766/`）を開く。
+  2. `take_snapshot`で現在のDOM／アクセシビリティツリーを取得し、対象となるROM、Save、Stateのfile inputまたはアップロードボタンの現在UIDを確認する。
+  3. `upload_file`で、そのUIDへユーザー指定のローカルファイルを渡す。(idは`uid: rom-file`**ではない。**)
+  4. ROM、Save、Stateの本文やbyte列はチャットへ出さず、ブラウザーへローカルアップロードするだけにする。
+- DQ9のROM、Save、Stateはユーザーが指定したパスを使い、内容をコンテキストへ貼り付けない。
 ### コードについて
-- スクリプトは1vs1で処理するのではなく、複数行のコードとして賢いスクリプトを書くこと
-- おかしいと思ったらすぐステータスコマンドを実行すること。
-- js実行での情報は、必要な情報のみに絞ること、mcpの全出力をコンテキストにダンプするのは初回だけにすること。
-- 人間との共同作業も有効活用すること。例えば、ステータスでしてほしいことを言い、mcpで60秒スリープして、人間のフィードバックを得るなど。
-- 10進数、16進数相互変換など、論理的タスクは、必ずローカルのランタイムか、js実行で計算すること。
+- 単発コマンドを一行ずつ大量に往復させず、同じ調査目的に属する処理は、結果を必要最小限に集約する複数行のスクリプトとして実行する。
+- 挙動が想定と異なる場合は、推測で操作を続けず、まず`status`または`window.DesmumeMCP.call("status", {})`で現在状態を確認する。
+- JavaScriptやMCPの結果は必要な情報だけを返す。全出力をコンテキストへ流すのは初回の構造確認など、明確な必要がある場合に限る。
+- 人間との共同作業が有効な場面では、画面上で行ってほしい操作や確認点を明示し、必要なら`wait`／`waitMs`などで操作後の状態を取得する。固定時間の待機だけで人間の操作完了を断定しない。
+- 10進数と16進数の変換、address計算、bit演算などの論理的計算は、暗算ではなくローカルruntimeまたは隔離JavaScriptで実行する。

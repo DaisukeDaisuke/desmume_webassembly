@@ -21,10 +21,17 @@ function validRom(fill) {
     return bytes;
 }
 
-function createScriptBreakHarness() {
+function createScriptBreakHarness({
+    type = "dataAbort",
+    kind = 3,
+    cpu = "arm9",
+    address = 0,
+    ownerSite = { cpu: "special", type, address: 0 }
+} = {}) {
     const messages = [];
     let resumeCount = 0;
-    let nativeStatus = { arm9: { pc: 0 }, lastBreak: { hit: false } };
+    let stepCount = 0;
+    let nativeStatus = { [cpu]: { pc: 0 }, lastBreak: { hit: false } };
     const state = {
         ready: true,
         running: true,
@@ -43,7 +50,7 @@ function createScriptBreakHarness() {
         breakRefreshKey: "",
         scriptTriggers: [{
             id: 11, scriptId: 5, callbackId: 17,
-            type: "dataAbort", cpu: "arm9", address: 0
+            type, cpu, address
         }],
         scripts: new Map([[5, {
             running: true,
@@ -54,12 +61,13 @@ function createScriptBreakHarness() {
         nextScriptCallbackToken: 1
     };
     const owners = createBreakpointOwnerStore();
-    owners.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
+    owners.addOwner(ownerSite, {
         id: 11, origin: "script", scriptId: 5, triggerId: 11
     });
     const native = {
         getStatus: () => nativeStatus,
         pause: (paused) => { if (!paused) resumeCount++; },
+        step: () => { stepCount++; },
         clearBreakStatus: () => {},
         hasLoadedRom: () => true
     };
@@ -76,13 +84,13 @@ function createScriptBreakHarness() {
     const hit = (pc) => {
         nativeStatus = {
             frame: state.frame + 1,
-            arm9: { pc },
-            lastBreak: { hit: true, cpu: "arm9", kind: 3, address: 0, pc, value: 0 }
+            [cpu]: { pc },
+            lastBreak: { hit: true, cpu, kind, address, pc, value: 0 }
         };
         coordinator.syncNativeBreakStatus(nativeStatus);
         return messages.at(-1);
     };
-    return { coordinator, state, messages, hit, resumeCount: () => resumeCount };
+    return { coordinator, state, messages, hit, resumeCount: () => resumeCount, stepCount: () => stepCount };
 }
 
 test("persistent callback cannot resume a different native break", async () => {
@@ -111,6 +119,44 @@ test("persistent callback cannot resume across a file transaction serial", async
     });
     assert.equal(harness.resumeCount(), 0);
     assert.equal(harness.state.pendingScriptEvents.size, 0);
+});
+
+test("read script breakpoint resumes once after callback without native step", async () => {
+    const harness = createScriptBreakHarness({
+        type: "read",
+        kind: 1,
+        cpu: "arm9",
+        address: 0x02000010,
+        ownerSite: { cpu: "arm9", type: "read", address: 0x02000010 }
+    });
+    const event = harness.hit(0x02000020);
+
+    assert.equal(await harness.coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 5,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    }), true);
+    assert.equal(harness.resumeCount(), 1);
+    assert.equal(harness.stepCount(), 0);
+});
+
+test("write script breakpoint resumes once after callback without native step", async () => {
+    const harness = createScriptBreakHarness({
+        type: "write",
+        kind: 2,
+        cpu: "arm9",
+        address: 0x02000010,
+        ownerSite: { cpu: "arm9", type: "write", address: 0x02000010 }
+    });
+    const event = harness.hit(0x02000020);
+
+    assert.equal(await harness.coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 5,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    }), true);
+    assert.equal(harness.resumeCount(), 1);
+    assert.equal(harness.stepCount(), 0);
 });
 
 test("pending script event overflow is tracked and fails closed", async () => {
