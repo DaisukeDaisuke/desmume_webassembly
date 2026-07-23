@@ -1,5 +1,4 @@
 import * as esbuild from "esbuild";
-import { parse } from "acorn";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -27,7 +26,7 @@ export async function buildDependencySources() {
       metafile: true
     });
     const source = `${result.outputFiles[0].text}\n${globalName}`;
-    assertNoDependencyImports(result, entryPoint);
+    await assertNoDependencyImports(result, entryPoint);
     const sha256 = createHash("sha256").update(source).digest("hex");
     if (expectedDependencyHashes[sourceModule] !== sha256) {
       throw new Error(`${sourceModule} SHA-256 ${sha256} does not match the fixed audited hash`);
@@ -41,7 +40,7 @@ export async function buildDependencySources() {
   return dependencySources;
 }
 
-function assertNoDependencyImports(result, entryPoint) {
+async function assertNoDependencyImports(result, entryPoint) {
   const imports = Object.entries(result.metafile.outputs)
     .flatMap(([output, metadata]) => (metadata.imports || []).map((item) => ({ output, ...item })));
   if (imports.length) {
@@ -49,28 +48,14 @@ function assertNoDependencyImports(result, entryPoint) {
       imports.map((item) => `${item.path}:${item.kind}`).join(", ")
     }`);
   }
-  if (containsDynamicImportExpression(result.outputFiles[0].text)) {
-    throw new Error(`${entryPoint} dependency bundle contains dynamic import syntax`);
+  try {
+    await esbuild.transform(result.outputFiles[0].text, {
+      loader: "js",
+      target: ["chrome120"],
+      supported: { "dynamic-import": false },
+      logLevel: "silent"
+    });
+  } catch (error) {
+    throw new Error(`${entryPoint} dependency bundle contains unsupported syntax: ${error.message}`);
   }
-}
-
-function containsDynamicImportExpression(source) {
-  const ast = parse(source, {
-    ecmaVersion: "latest",
-    sourceType: "script",
-    allowReturnOutsideFunction: true
-  });
-  const pending = [ast];
-  const seen = new Set();
-  while (pending.length) {
-    const node = pending.pop();
-    if (!node || typeof node !== "object" || seen.has(node)) continue;
-    seen.add(node);
-    if (node.type === "ImportExpression") return true;
-    for (const value of Object.values(node)) {
-      if (Array.isArray(value)) pending.push(...value);
-      else if (value && typeof value === "object") pending.push(value);
-    }
-  }
-  return false;
 }

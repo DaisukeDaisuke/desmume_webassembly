@@ -372,6 +372,14 @@ test("comparison dependencies are exact-version local bundles with no runtime CD
     assert.doesNotMatch(appSource, /createAlgorithmLoader|algorithm-loader/);
 });
 
+test("dependency bundle verification does not execute audited parser dependency", async () => {
+    const policy = await readFile(new URL("../scripts/dependency-bundle-policy.mjs", import.meta.url), "utf8");
+    assert.doesNotMatch(policy, /from\s+["']acorn["']/);
+    assert.doesNotMatch(policy, /import\s*\(\s*["']acorn["']\s*\)/);
+    assert.match(policy, /expected-hashes\.json/);
+    assert.match(policy, /createHash\("sha256"\)/);
+});
+
 test("locally bundled comparison sandbox uses no network or storage capability", async () => {
     const result = await runAlgorithmSandbox();
     assert.equal(result.networkCalls, 0);
