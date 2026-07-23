@@ -1,6 +1,6 @@
 "use strict";
 
-import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
+import { assertLockedGlobals, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
 import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
 import { serializeWorkerError } from "../worker-error-summary.js";
@@ -9,8 +9,6 @@ import { serializeWorkerError } from "../worker-error-summary.js";
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
-const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
-const NativeTextEncoder = globalThis.TextEncoder;
 const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
@@ -32,7 +30,7 @@ let drainingEvents = false;
 let droppedTicks = 0;
 let asyncMode = false;
 let activeEvent = null;
-let parse = null;
+let initialized = false;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
@@ -238,25 +236,6 @@ lockDownRuntimeCodeGeneration();
 lockDownCapabilityPrototypes();
 assertLockedGlobals();
 
-function assertSandboxSource(source) {
-    const ast = parse(`async function __desmumeSandbox__(){\n${String(source)}\n}`, {
-        ecmaVersion: "latest",
-        sourceType: "script"
-    });
-    const pending = [ast];
-    const seen = new Set();
-    while (pending.length) {
-        const node = pending.pop();
-        if (!node || typeof node !== "object" || seen.has(node)) continue;
-        seen.add(node);
-        if (node.type === "ImportExpression") throw new SyntaxError("dynamic import is unavailable in isolated scripts");
-        for (const value of Object.values(node)) {
-            if (Array.isArray(value)) pending.push(...value);
-            else if (value && typeof value === "object") pending.push(value);
-        }
-    }
-}
-
 async function runEvent(message) {
     const previousEvent = activeEvent;
     activeEvent = {
@@ -306,21 +285,10 @@ async function drainEvents() {
 
 nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
-    if (!parse) {
-        if (message.type !== "initialize") return fail(new Error("dependency initialization is required"), "protocol");
-        try {
-            const acorn = await initializeLockedDependency({
-                dependency: message.dependency,
-                nativeEval,
-                nativeDigest,
-                NativeTextEncoder
-            });
-            if (typeof acorn.parse !== "function") throw new Error("Acorn parse export is unavailable");
-            parse = acorn.parse;
-            send({ type: "ready", hardened: true, layer: "sandbox", dependencyHash: message.dependency.sha256 });
-        } catch (error) {
-            fail(error, "startup");
-        }
+    if (!initialized) {
+        if (message.type !== "initialize") return fail(new Error("sandbox initialization is required"), "protocol");
+        initialized = true;
+        send({ type: "ready", hardened: true, layer: "sandbox" });
         return;
     }
     if (message.replyId) {
@@ -335,8 +303,6 @@ nativeAddEventListener("message", async (event) => {
         asyncMode = !!message.asyncMode;
         installShortcuts(message.shortcuts);
         try {
-            assertSandboxSource(message.code);
-            assertSandboxSource(message.code);
             const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             send({ type: "started" });

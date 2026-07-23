@@ -2,9 +2,11 @@ import * as esbuild from "esbuild";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { buildDependencySources } from "./dependency-bundle-policy.mjs";
 
 const bundledWorkers = new Map();
 for (const entryPoint of [
+  "src/workers/parser.worker.js",
   "src/workers/eval.worker.js",
   "src/workers/eval-supervisor.worker.js",
   "src/workers/persistent-script.worker.js",
@@ -25,31 +27,7 @@ for (const entryPoint of [
   bundledWorkers.set(resolve(entryPoint), result.outputFiles[0].text);
 }
 
-const dependencySources = new Map();
-for (const [entryPoint, sourceModule, globalName] of [
-  ["src/dependencies/acorn.entry.js", "src/dependencies/acorn.dependency-source.js", "__desmumeAcorn"],
-  ["src/dependencies/ssim.entry.js", "src/dependencies/ssim.dependency-source.js", "__desmumeSsim"]
-]) {
-  const result = await esbuild.build({
-    entryPoints: [entryPoint],
-    bundle: true,
-    write: false,
-    minify: true,
-    platform: "browser",
-    format: "iife",
-    globalName,
-    target: ["chrome120"],
-    legalComments: "none",
-    logLevel: "silent",
-    metafile: true
-  });
-  const source = `${result.outputFiles[0].text}\n${globalName}`;
-  dependencySources.set(resolve(sourceModule), Object.freeze({
-    source,
-    sha256: createHash("sha256").update(source).digest("hex"),
-    metafile: result.metafile
-  }));
-}
+const dependencySources = await buildDependencySources();
 
 await esbuild.build({
   entryPoints: ["src/app.js"],

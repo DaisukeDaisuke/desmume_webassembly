@@ -292,7 +292,7 @@ test("WebMCP relies on the native browser API without a global third-party scrip
     const connectDirective = policy.split(";").find((directive) => directive.trim().startsWith("connect-src"));
     assert.ok(scriptDirective);
     assert.doesNotMatch(scriptDirective, /https?:/);
-    assert.match(connectDirective || "", /\bdata:/);
+    assert.doesNotMatch(connectDirective || "", /\bdata:/);
     assert.match(api, /## Local security context/);
     assert.match(api, /event\.origin === window\.location\.origin/);
     assert.match(api, /localStorage.*sessionStorage/);
@@ -1588,13 +1588,18 @@ async function runEvalSupervisor(childMessage) {
     listener = context.onmessage;
     const dependency = { source: "dependency", sha256: "dependency-hash" };
     listener({ data: {
-        type: "run", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: []
+        type: "run", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
     } });
-    const child = workers[0];
-    assert.deepEqual(JSON.parse(JSON.stringify(child.messages[0])), { type: "initialize", dependency });
-    child.onmessage({ data: {
-        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
+    const parser = workers[0];
+    assert.deepEqual(JSON.parse(JSON.stringify(parser.messages[0])), { type: "initialize", dependency });
+    parser.onmessage({ data: {
+        type: "ready", hardened: true, layer: "parser", channelToken: "parser-secret",
         dependencyHash: dependency.sha256
+    } });
+    parser.onmessage({ data: { type: "parsed", channelToken: "parser-secret" } });
+    const child = workers[1];
+    child.onmessage({ data: {
+        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret"
     } });
     child.onmessage({ data: childMessage });
     return { messages, child, listener, revoked: () => revoked };
@@ -1636,13 +1641,18 @@ test("persistent supervisor gates replies for authenticated child messages", asy
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
     const dependency = { source: "dependency", sha256: "dependency-hash" };
     context.onmessage({ data: {
-        type: "start", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: []
+        type: "start", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
     } });
-    const child = workers[0];
-    assert.deepEqual(JSON.parse(JSON.stringify(child.messages[0])), { type: "initialize", dependency });
-    child.onmessage({ data: {
-        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret",
+    const parser = workers[0];
+    assert.deepEqual(JSON.parse(JSON.stringify(parser.messages[0])), { type: "initialize", dependency });
+    parser.onmessage({ data: {
+        type: "ready", hardened: true, layer: "parser", channelToken: "parser-secret",
         dependencyHash: dependency.sha256
+    } });
+    parser.onmessage({ data: { type: "parsed", channelToken: "parser-secret" } });
+    const child = workers[1];
+    child.onmessage({ data: {
+        type: "ready", hardened: true, layer: "sandbox", channelToken: "secret"
     } });
     const childOnMessage = child.onmessage;
     const validChildCall = vm.runInContext(`({
@@ -1665,6 +1675,7 @@ test("all bundled supervisor and sandbox Worker sources parse as classic scripts
     for (const path of [
         "../src/workers/eval.worker.js",
         "../src/workers/persistent-script.worker.js",
+        "../src/workers/parser.worker.js",
         "../src/workers/algorithm.worker.js"
     ]) {
         const source = await bundledWorkerSource(path);

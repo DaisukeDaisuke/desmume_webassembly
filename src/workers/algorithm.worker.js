@@ -1,6 +1,6 @@
 "use strict";
 
-import { assertLockedGlobals, initializeLockedDependency } from "./dependency-bootstrap.js";
+import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -23,9 +23,10 @@ const Function = undefined;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "addEventListener", "removeEventListener", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror",
+    "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
-    "navigator", "crypto"
+    "navigator", "crypto", "EventTarget", "WorkerGlobalScope", "DedicatedWorkerGlobalScope"
 ]) {
     try {
         Object.defineProperty(globalThis, name, {
@@ -93,6 +94,7 @@ function lockDownRuntimeCodeGeneration() {
 }
 
 lockDownRuntimeCodeGeneration();
+lockDownCapabilityPrototypes();
 assertLockedGlobals();
 
 function normalizeArea({ width, screen = "both", region, ignoreRects = [] }) {

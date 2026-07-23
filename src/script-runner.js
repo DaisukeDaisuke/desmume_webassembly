@@ -8,6 +8,7 @@ import { normalizeBoundedValue } from "./bounded-value.js";
 export function createScriptRunner({
     source,
     sandboxSource,
+    parserSource,
     responder,
     callCommand,
     getShortcuts = () => [],
@@ -78,6 +79,7 @@ export function createScriptRunner({
                             type: "run",
                             code,
                             shortcuts: getShortcuts(),
+                            parserSource,
                             sandboxSource,
                             dependency: acornDependency
                         });

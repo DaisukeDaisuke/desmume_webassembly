@@ -2,6 +2,7 @@ import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import supervisorSource from "./workers/eval-supervisor.worker.js";
 import sandboxSource from "./workers/eval.worker.js";
+import parserSource from "./workers/parser.worker.js";
 import dependency from "./dependencies/acorn.dependency-source.js";
 import { normalizeBoundedValue } from "./bounded-value.js";
 
@@ -74,6 +75,7 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                         type: "run",
                         code,
                         shortcuts: [],
+                        parserSource,
                         sandboxSource,
                         dependency,
                     });
@@ -146,7 +148,7 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                 && cleanup.allTimersCleared;
             return normalizeBoundedValue({
                 passed,
-                productionPath: ["eval-supervisor.worker", "eval.worker"],
+                productionPath: ["eval-supervisor.worker", "parser.worker", "eval.worker"],
                 productionWorkerReady: boundary.value?.productionWorkerReady === true,
                 pendingRpcCreated: pending.pendingRpcBeforeShutdown,
                 cleanup

@@ -25,7 +25,12 @@ jobs:
           
       - name: Install JavaScript dependencies
         run: |
-          npm ci
+          npm ci --ignore-scripts
+          test "$(npm config get ignore-scripts)" = "true"
+
+      - name: Verify bundled dependency boundary
+        run: |
+          npm run check:dependency-bundles
 
       - name: Test and verify first-party JavaScript
         run: |
@@ -55,7 +60,7 @@ jobs:
 
       - name: Minify Emscripten JavaScript
         run: |
-          npx terser public/desmume.js -o public/desmume.js --compress --mangle
+          npm run minify:wasm
 
       - name: Verify Pages output
         run: |

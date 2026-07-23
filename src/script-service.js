@@ -2,6 +2,7 @@ import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
 import persistentScriptSupervisorSource from "./workers/persistent-script-supervisor.worker.js";
 import persistentScriptSandboxSource from "./workers/persistent-script.worker.js";
+import parserWorkerSource from "./workers/parser.worker.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
@@ -365,6 +366,7 @@ export function createScriptService({
                         type: "start",
                         code,
                         asyncMode,
+                        parserSource: parserWorkerSource,
                         sandboxSource: persistentScriptSandboxSource,
                         dependency: acornDependency,
                         shortcuts: Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [

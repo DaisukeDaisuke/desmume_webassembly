@@ -1,14 +1,14 @@
 "use strict";
 
-import { assertLockedGlobals, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
-import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams } from "../worker-rpc-payload.js";
+import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { serializeWorkerError } from "../worker-error-summary.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
+const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+const NativeTextEncoder = globalThis.TextEncoder;
 const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
@@ -21,12 +21,12 @@ const WebSocket = undefined;
 const EventSource = undefined;
 const importScripts = undefined;
 const Function = undefined;
-const replies = new Map();
-let initialized = false;
+let parse = null;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
-    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
+    "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror",
+    "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches",
     "localStorage", "sessionStorage", "close",
     "navigator", "crypto", "EventTarget", "WorkerGlobalScope", "DedicatedWorkerGlobalScope"
 ]) {
@@ -95,27 +95,22 @@ function lockDownRuntimeCodeGeneration() {
     }
 }
 
-function call(command, params = {}) {
-    const normalizedParams = normalizeWorkerRpcParams(command, params);
-    return new Promise((resolve, reject) => {
-        const id = Math.random().toString(36).slice(2);
-        replies.set(id, { resolve, reject });
-        send({ type: "call", id, command, params: normalizedParams });
+function assertSandboxSource(source) {
+    const ast = parse(`async function __desmumeSandbox__(){\n${String(source)}\n}`, {
+        ecmaVersion: "latest",
+        sourceType: "script"
     });
-}
-
-const mcp = { call };
-const webmcp = mcp;
-
-function installShortcuts(definitions) {
-    for (const [name, command, parameterNames, defaults = {}] of definitions || []) {
-        globalThis[name] = (...args) => {
-            const params = args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])
-                ? { ...defaults, ...args[0] }
-                : Object.fromEntries(parameterNames.map((parameter, index) => [parameter, args[index]])
-                    .filter(([, value]) => value !== undefined));
-            return call(command, { ...defaults, ...params });
-        };
+    const pending = [ast];
+    const seen = new Set();
+    while (pending.length) {
+        const node = pending.pop();
+        if (!node || typeof node !== "object" || seen.has(node)) continue;
+        seen.add(node);
+        if (node.type === "ImportExpression") throw new SyntaxError("dynamic import is unavailable in isolated scripts");
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) pending.push(...value);
+            else if (value && typeof value === "object") pending.push(value);
+        }
     }
 }
 
@@ -125,39 +120,40 @@ assertLockedGlobals();
 
 nativeAddEventListener("message", async (event) => {
     const message = event.data || {};
-    if (!initialized) {
+    if (!parse) {
         if (message.type !== "initialize") {
-            send({ type: "protocolError", message: "sandbox initialization is required" });
+            send({ type: "protocolError", message: "dependency initialization is required" });
             return;
         }
-        initialized = true;
-        send({ type: "ready", hardened: true, layer: "sandbox" });
-        return;
-    }
-    if (message.replyId) {
-        const pending = replies.get(message.replyId);
-        if (!pending) {
-            send({ type: "protocolError", message: `unknown reply id: ${message.replyId}` });
-            return;
+        try {
+            const acorn = await initializeLockedDependency({
+                dependency: message.dependency,
+                nativeEval,
+                nativeDigest,
+                NativeTextEncoder
+            });
+            if (typeof acorn.parse !== "function") throw new Error("Acorn parse export is unavailable");
+            parse = acorn.parse;
+            send({ type: "ready", hardened: true, layer: "parser", dependencyHash: message.dependency.sha256 });
+        } catch (error) {
+            send({ type: "protocolError", message: `dependency initialization failed: ${String(error?.message || error)}` });
         }
-        replies.delete(message.replyId);
-        if (message.error) pending.reject(new Error(message.error));
-        else pending.resolve(message.result);
         return;
     }
-    if (message.type !== "run" || typeof message.code !== "string") {
-        send({ type: "protocolError", message: "run message with string code is required" });
+    if (message.channelToken !== channelToken) {
+        send({ type: "protocolError", message: "parser Worker token mismatch" });
         return;
     }
-    installShortcuts(message.shortcuts);
+    if (message.type !== "parse" || typeof message.code !== "string") {
+        send({ type: "protocolError", message: "parse message with string code is required" });
+        return;
+    }
     try {
-        const script = `(async (mcp, webmcp) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-eval-user.js`;
-        const run = nativeEval(script);
-        const result = await run(mcp, webmcp);
-        send({ type: "done", result: normalizeBoundedValue(result === undefined ? null : result).value });
+        assertSandboxSource(message.code);
+        assertSandboxSource(message.code);
+        send({ type: "parsed" });
     } catch (error) {
-        const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
-        send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase }) });
+        send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase: "compile" }) });
     }
 });
 })();

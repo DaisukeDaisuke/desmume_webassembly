@@ -36,6 +36,7 @@ import { withInternalMetadata } from "./internal-command-metadata.js";
 import { createScreenInvalidNotice } from "./screen-invalid-notice.js";
 import evalSupervisorWorkerSource from "./workers/eval-supervisor.worker.js";
 import evalSandboxWorkerSource from "./workers/eval.worker.js";
+import parserWorkerSource from "./workers/parser.worker.js";
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
 const DESMUME_SCRIPT_URL = "desmume.js?v=20260619-immediate-memory-break";
 const state = createAppState();
@@ -107,6 +108,7 @@ const mcpResponder = createMcpResponder({
 const scriptRunner = createScriptRunner({
     source: evalSupervisorWorkerSource,
     sandboxSource: evalSandboxWorkerSource,
+    parserSource: parserWorkerSource,
     responder: mcpResponder,
     callCommand: (command, params) => runCommand(command, params),
     getShortcuts: () => Object.entries(window.DesmumeShortcuts || {}).map(([shortcut, definition]) => [

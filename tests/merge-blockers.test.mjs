@@ -270,6 +270,7 @@ test("sandbox boundary self-test uses production supervisors and no dedicated pr
     const selfTest = await readFile(new URL("../src/sandbox-boundary-self-test.js", import.meta.url), "utf8");
     const buildScript = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
     assert.match(selfTest, /eval-supervisor\.worker\.js/);
+    assert.match(selfTest, /parser\.worker\.js/);
     assert.match(selfTest, /eval\.worker\.js/);
     assert.match(selfTest, /pendingRpcBeforeShutdown/);
     assert.match(selfTest, /childWorkerTerminateCalled/);
@@ -322,12 +323,20 @@ test("persistent supervisor bounds queued non-tick events and terminates on over
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
     const dependency = { source: "fixed", sha256: "fixed-hash" };
     context.onmessage({ data: {
-        type: "start", code: "return 1", sandboxSource: "sandbox", dependency, shortcuts: []
+        type: "start", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
     } });
-    const child = workers[0];
+    const parser = workers[0];
+    parser.onmessage({ data: {
+        type: "ready", hardened: true, layer: "parser",
+        channelToken: "parser-token", dependencyHash: dependency.sha256
+    } });
+    parser.onmessage({ data: {
+        type: "parsed", channelToken: "parser-token"
+    } });
+    const child = workers[1];
     child.onmessage({ data: {
         type: "ready", hardened: true, layer: "sandbox",
-        channelToken: "queue-token", dependencyHash: dependency.sha256
+        channelToken: "queue-token"
     } });
 
     for (let id = 1; id <= ResourceLimits.persistentEventQueue + 2; id++) {

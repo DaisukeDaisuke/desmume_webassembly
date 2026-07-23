@@ -28,8 +28,10 @@ export async function initializeLockedDependency({
 export function assertLockedGlobals() {
     for (const name of [
         "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
-        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "indexedDB", "caches", "localStorage",
-        "sessionStorage", "close", "navigator", "crypto", "eval", "Function"
+        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror",
+        "BroadcastChannel", "WebTransport", "WebSocketStream", "indexedDB", "caches", "localStorage",
+        "sessionStorage", "close", "navigator", "crypto", "EventTarget", "WorkerGlobalScope",
+        "DedicatedWorkerGlobalScope", "eval", "Function"
     ]) {
         if (globalThis[name] !== undefined) throw new Error(`lockdown invariant failed: ${name}`);
     }
@@ -38,7 +40,8 @@ export function assertLockedGlobals() {
 export function lockDownCapabilityPrototypes() {
     const names = [
         "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts",
-        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror", "close"
+        "postMessage", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror",
+        "BroadcastChannel", "WebTransport", "WebSocketStream", "close"
     ];
     const prototypes = [];
     let current = Object.getPrototypeOf(globalThis);

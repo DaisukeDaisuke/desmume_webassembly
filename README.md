@@ -41,10 +41,12 @@ flowchart LR
 
 Application source lives under `src/`. `public/app.js` is a generated IIFE bundle and must not be edited directly. Worker source also lives under `src/workers/`; the JavaScript build embeds it as text in `public/app.js`, so production does not request separate first-party Worker files. `public/coi-serviceworker.js` remains an independent vendored asset and is neither bundled nor generically minified.
 
-Install the pinned JavaScript build dependencies and run the checks:
+Install the pinned JavaScript build dependencies in Codespace/CI with lifecycle scripts disabled, verify the dependency bundles before running tests, then run the checks:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+test "$(npm config get ignore-scripts)" = "true"
+npm run check:dependency-bundles
 npm test
 npm run check:licenses
 npm run check:js
@@ -52,7 +54,7 @@ npm run build:js
 npm run build:notices
 ```
 
-`npm run build:js` creates the minified production `public/app.js` without a source map. For local development, run:
+`npm run check:dependency-bundles` bundles Acorn and SSIM from the lockfile, rejects retained static or dynamic imports, parses the generated dependency bundles, and fails unless their SHA-256 values match `src/dependencies/expected-hashes.json`. `npm run build:js` repeats that gate before embedding the fixed dependency source into the minified production `public/app.js` without a source map. For local development, run:
 
 ```bash
 npm run watch:js
@@ -87,7 +89,7 @@ The native build emits `public/desmume.js` as a single Emscripten JavaScript fil
 gh codespace stop -c <codespace-name>
 ```
 
-GitHub Actions performs the production native build, pinned npm install, license verification, application bundle, notices, and targeted Emscripten JavaScript minification. It must not re-minify `public/app.js` or `public/coi-serviceworker.js`.
+GitHub Actions performs the production native build, `npm ci --ignore-scripts`, dependency-bundle SHA/import verification before tests, license verification, application bundle, notices, and targeted Emscripten JavaScript minification through the local `terser` package script. It must not use `npx` online fallback and must not re-minify `public/app.js` or `public/coi-serviceworker.js`.
 
 ## Local Operation
 

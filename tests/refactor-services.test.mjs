@@ -603,11 +603,20 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
     assert.match(source, /type: "ready", hardened: true, layer: "supervisor"/);
   }
   for (const workerUrl of [
+    new URL("../src/workers/parser.worker.js", import.meta.url)
+  ]) {
+    const source = await readFile(workerUrl, "utf8");
+    assert.match(source, /assertSandboxSource/);
+    assert.match(source, /Object\.defineProperty\(globalThis/);
+    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
+    assert.match(source, /type: "ready", hardened: true, layer: "parser"/);
+  }
+  for (const workerUrl of [
     new URL("../src/workers/eval.worker.js", import.meta.url),
     new URL("../src/workers/persistent-script.worker.js", import.meta.url)
   ]) {
     const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /assertSandboxSource/);
+    assert.doesNotMatch(source, /assertSandboxSource/);
     assert.match(source, /Object\.defineProperty\(globalThis/);
     assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
     assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
@@ -616,6 +625,7 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
   const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
   assert.match(buildSource, /bundledWorkers/);
   assert.match(buildSource, /embedded-workers/);
+  assert.match(buildSource, /parser\.worker\.js/);
   assert.match(buildSource, /eval-supervisor\.worker\.js/);
   assert.match(buildSource, /persistent-script-supervisor\.worker\.js/);
 });

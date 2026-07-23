@@ -6,6 +6,9 @@ import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-
 let sandbox = null;
 let sandboxUrl = "";
 let channelToken = "";
+let parser = null;
+let parserUrl = "";
+let parserChannelToken = "";
 let started = false;
 let childWorkerTerminateCalled = false;
 let childBlobUrlRevokeCalled = false;
@@ -60,7 +63,23 @@ function disposeSandbox() {
     childEventBusy = false;
 }
 
+function disposeParser() {
+    if (parser) {
+        parser.onmessage = null;
+        parser.onerror = null;
+        parser.onmessageerror = null;
+        parser.terminate();
+        parser = null;
+    }
+    if (parserUrl) {
+        URL.revokeObjectURL(parserUrl);
+        parserUrl = "";
+    }
+    parserChannelToken = "";
+}
+
 function shutdown(requestId) {
+    disposeParser();
     disposeSandbox();
     postMessage({
         type: "shutdownAck",
@@ -165,16 +184,10 @@ function queueEvent(message) {
 }
 
 function startSandbox(message) {
-    if (started || typeof message.code !== "string" || typeof message.sandboxSource !== "string"
-        || typeof message.dependency?.source !== "string") {
-        fail(new Error("one start message with code, sandbox source, and fixed dependency is required"));
-        return;
-    }
-    started = true;
     try {
         sandboxUrl = URL.createObjectURL(new Blob([message.sandboxSource], { type: "text/javascript" }));
         sandbox = new Worker(sandboxUrl);
-        sandbox.postMessage({ type: "initialize", dependency: message.dependency });
+        sandbox.postMessage({ type: "initialize" });
     } catch (error) {
         fail(error, "startup");
         disposeSandbox();
@@ -186,8 +199,7 @@ function startSandbox(message) {
             if (childMessage.type !== "ready"
                 || childMessage.hardened !== true
                 || childMessage.layer !== "sandbox"
-                || typeof childMessage.channelToken !== "string"
-                || childMessage.dependencyHash !== message.dependency.sha256) {
+                || typeof childMessage.channelToken !== "string") {
                 fail(new Error("sandbox Worker did not provide a valid channel token"), "child-auth");
                 disposeSandbox();
                 return;
@@ -224,6 +236,65 @@ function startSandbox(message) {
     };
 }
 
+function startParser(message) {
+    try {
+        parserUrl = URL.createObjectURL(new Blob([message.parserSource], { type: "text/javascript" }));
+        parser = new Worker(parserUrl);
+        parser.postMessage({ type: "initialize", dependency: message.dependency });
+    } catch (error) {
+        fail(error, "parser-startup");
+        disposeParser();
+        return;
+    }
+    parser.onmessage = (event) => {
+        const parserMessage = event.data || {};
+        if (!parserChannelToken) {
+            if (parserMessage.type !== "ready"
+                || parserMessage.hardened !== true
+                || parserMessage.layer !== "parser"
+                || typeof parserMessage.channelToken !== "string"
+                || parserMessage.dependencyHash !== message.dependency.sha256) {
+                fail(new Error("parser Worker did not provide a valid dependency attestation"), "parser-auth");
+                disposeParser();
+                return;
+            }
+            parserChannelToken = parserMessage.channelToken;
+            parser.postMessage({ type: "parse", code: message.code, channelToken: parserChannelToken });
+            return;
+        }
+        if (parserMessage.channelToken !== parserChannelToken
+            || !["parsed", "error", "protocolError"].includes(parserMessage.type)) {
+            fail(new Error("parser Worker sent an invalid message"), "parser-output");
+            disposeParser();
+            return;
+        }
+        if (parserMessage.type === "parsed") {
+            disposeParser();
+            startSandbox(message);
+            return;
+        }
+        if (parserMessage.type === "error") {
+            postMessage({
+                type: "failed",
+                phase: "compile",
+                error: smallValue(parserMessage.error)
+            });
+            disposeParser();
+            return;
+        }
+        fail(new Error(String(parserMessage.message || "parser protocol error")), "parser");
+        disposeParser();
+    };
+    parser.onerror = (event) => {
+        fail(new Error(String(event.message || "parser Worker crashed")), "parser-runtime");
+        disposeParser();
+    };
+    parser.onmessageerror = () => {
+        fail(new Error("parser Worker returned an unreadable message"), "parser-output");
+        disposeParser();
+    };
+}
+
 onmessage = (event) => {
     const message = event.data || {};
     if (message.type === "shutdown") {
@@ -231,7 +302,13 @@ onmessage = (event) => {
         return;
     }
     if (message.type === "start") {
-        startSandbox(message);
+        if (started || typeof message.code !== "string" || typeof message.sandboxSource !== "string"
+            || typeof message.parserSource !== "string" || typeof message.dependency?.source !== "string") {
+            fail(new Error("one start message with code, parser source, sandbox source, and fixed dependency is required"));
+            return;
+        }
+        started = true;
+        startParser(message);
         return;
     }
     if (message.replyId && sandbox && pendingRequestIds.delete(String(message.replyId))) {
