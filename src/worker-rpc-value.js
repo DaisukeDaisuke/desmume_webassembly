@@ -1,4 +1,4 @@
-import { normalizeTrustedValue } from "./trusted-value-normalizer.js";
+import { normalizeTrustedValue, readOwnDataProperty } from "./trusted-value-normalizer.js";
 
 const DEFAULT_LIMITS = Object.freeze({
     maxDepth: 10,
@@ -13,8 +13,8 @@ export const WorkerByteLimits = Object.freeze({
     disassembleBytes: Object.freeze({ decodedBytes: 64 * 1024, opcodeWords: 16 * 1024 })
 });
 
-const BYTE_COMMAND_SCHEMAS = Object.freeze({
-    injectBytes: Object.freeze({
+const BYTE_COMMAND_SCHEMAS = new Map([
+    ["injectBytes", Object.freeze({
         maxBytes: 3 * 1024 * 1024 + 64 * 1024,
         specialArrays: Object.freeze({ bytes: Object.freeze({ kind: "byte", maxItems: 1024 * 1024 }) }),
         stringLimits: Object.freeze({
@@ -23,8 +23,8 @@ const BYTE_COMMAND_SCHEMAS = Object.freeze({
             input: 3 * 1024 * 1024,
             text: 3 * 1024 * 1024
         })
-    }),
-    disassembleBytes: Object.freeze({
+    })],
+    ["disassembleBytes", Object.freeze({
         maxBytes: 256 * 1024,
         specialArrays: Object.freeze({
             bytes: Object.freeze({ kind: "byte", maxItems: 64 * 1024 }),
@@ -38,19 +38,28 @@ const BYTE_COMMAND_SCHEMAS = Object.freeze({
             text: 192 * 1024,
             opcodes: 192 * 1024
         })
-    })
-});
+    })]
+]);
+
+function copySchemaOptions(options = {}) {
+    const output = Object.create(null);
+    for (const key of ["maxDepth", "maxNodes", "maxProperties", "maxArray", "maxBytes", "specialArrays", "stringLimits"]) {
+        const value = readOwnDataProperty(options, key);
+        if (value !== undefined) output[key] = value;
+    }
+    return output;
+}
 
 export function normalizeWorkerProtocolValue(value, options = {}) {
+    const safeOptions = copySchemaOptions(options);
     return normalizeTrustedValue(value, {
         ...DEFAULT_LIMITS,
-        ...options,
-        maxArray: options.maxArray ?? options.maxArrayItems ?? DEFAULT_LIMITS.maxArray
+        ...safeOptions
     });
 }
 
 export function normalizeWorkerRpcParams(command, params = {}) {
-    const schema = BYTE_COMMAND_SCHEMAS[command];
+    const schema = BYTE_COMMAND_SCHEMAS.get(command);
     return normalizeWorkerProtocolValue(params, schema || {}).value;
 }
 

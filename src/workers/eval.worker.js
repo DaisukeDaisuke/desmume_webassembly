@@ -3,6 +3,7 @@
 import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
 import { normalizeWorkerRpcParams } from "../worker-rpc-value.js";
+import { serializeWorkerError } from "../worker-error-serializer.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -119,21 +120,6 @@ function installShortcuts(definitions) {
     }
 }
 
-function describeError(error, code, phase) {
-    const name = String(error?.name || "Error");
-    const message = String(error?.message || error);
-    const stack = String(error?.stack || "");
-    const match = stack.match(/desmume-eval-user\.js:(\d+):(\d+)/);
-    const details = { phase, errorName: name };
-    if (match) {
-        details.line = Math.max(1, Number(match[1]) - 1);
-        details.column = Number(match[2]);
-        details.sourceExcerpt = String(code || "").split("\n")[details.line - 1] || "";
-    }
-    if (stack) details.stack = stack.split("\n").slice(0, 4).join("\n");
-    return { name, message, details };
-}
-
 lockDownRuntimeCodeGeneration();
 lockDownCapabilityPrototypes();
 assertLockedGlobals();
@@ -215,7 +201,7 @@ nativeAddEventListener("message", async (event) => {
         send({ type: "done", result: normalizeBoundedValue(result === undefined ? null : result).value });
     } catch (error) {
         const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
-        send({ type: "error", error: describeError(error, message.code, phase) });
+        send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase }) });
     }
 });
 })();

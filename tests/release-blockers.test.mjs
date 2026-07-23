@@ -30,6 +30,7 @@ import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "../src/script-rpc-policy.js";
 import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../src/worker-rpc-value.js";
+import { normalizeBoundedValue } from "../src/bounded-value.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 
 const responder = createMcpResponder({ logger: {} });
@@ -1226,6 +1227,32 @@ test("captured intrinsics prevent sandbox RPC limit bypasses", async () => {
     }
 });
 
+test("sandbox prototype pollution cannot raise first-boundary limits", async () => {
+    const result = await runEvalSandbox(`
+        Object.prototype.maxBytes = Infinity;
+        Object.prototype.maxDepth = Infinity;
+        Object.prototype.maxNodes = Infinity;
+        Object.prototype.maxArray = Infinity;
+        Object.prototype.maxProperties = Infinity;
+        return "x".repeat(8 * 1024 * 1024);
+    `);
+    assert.equal(result.messages.some((message) => message.type === "done"), false);
+    assert.ok(result.messages.some((message) => message.type === "error"));
+
+    const rpc = await runEvalSandbox(`
+        Object.defineProperty(Object.prototype, "maxBytes", {
+            value: Infinity,
+            enumerable: true,
+            configurable: true
+        });
+        await mcp.call("__proto__", { payload: "x".repeat(8 * 1024 * 1024) });
+        return "unexpected";
+    `);
+    assert.equal(rpc.messages.some((message) => message.type === "call"), false);
+    assert.equal(rpc.messages.some((message) => message.type === "done"), false);
+    assert.ok(rpc.messages.some((message) => message.type === "error"));
+});
+
 test("captured TextEncoder and Uint8Array copying enforce result and byte boundaries", async () => {
     const oversizedResult = await runEvalSandbox(`
         TextEncoder.prototype.encode = () => new Uint8Array(0);
@@ -1242,6 +1269,33 @@ test("captured TextEncoder and Uint8Array copying enforce result and byte bounda
     const call = boundedBytes.messages.find((message) => message.type === "call");
     assert.equal(call.command, "injectBytes");
     assert.deepEqual(Array.from(call.params.bytes), [1, 2, 3]);
+});
+
+test("eval sandbox bounds thrown error fields before posting", async () => {
+    const huge = await runEvalSandbox(`
+        throw {
+            name: "N".repeat(8 * 1024 * 1024),
+            message: "M".repeat(8 * 1024 * 1024),
+            stack: "S".repeat(8 * 1024 * 1024)
+        };
+    `);
+    assert.equal(huge.messages.some((message) => message.type === "done"), false);
+    const error = huge.messages.find((message) => message.type === "error")?.error;
+    assert.ok(error);
+    assert.ok(new TextEncoder().encode(error.name).byteLength <= 256);
+    assert.ok(new TextEncoder().encode(error.message).byteLength <= 2048);
+    assert.ok(new TextEncoder().encode(error.details.stack).byteLength <= 8192);
+
+    const getter = await runEvalSandbox(`
+        const thrown = {};
+        Object.defineProperty(thrown, "message", {
+            get() { throw new Error("getter executed"); }
+        });
+        throw thrown;
+    `);
+    const getterError = getter.messages.find((message) => message.type === "error")?.error;
+    assert.ok(getterError);
+    assert.equal(getterError.message.includes("getter executed"), false);
 });
 
 test("Worker RPC policy preserves normal debugger calls and bounded byte injection", () => {
@@ -1268,6 +1322,57 @@ test("Worker RPC policy preserves normal debugger calls and bounded byte injecti
     }, EVAL_RPC_ALLOWLIST, seen), /binary structured values|byte budget/);
 });
 
+test("normalizer ignores inherited polluted limits and rejects unsafe explicit limits", () => {
+    const polluted = ["maxBytes", "maxDepth", "maxNodes", "maxArray", "maxProperties"];
+    try {
+        for (const key of polluted) {
+            Object.defineProperty(Object.prototype, key, {
+                value: Infinity,
+                enumerable: true,
+                configurable: true
+            });
+        }
+        assert.throws(() => normalizeBoundedValue("x".repeat(8 * 1024 * 1024)), /byte budget/);
+        for (const value of [Infinity, NaN, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
+            assert.throws(() => normalizeBoundedValue("ok", { maxBytes: value }), /maxBytes/);
+        }
+        assert.throws(() => normalizeBoundedValue({ payload: "ok" }, {
+            stringLimits: { payload: Infinity }
+        }), /stringLimits\.payload/);
+        assert.throws(() => normalizeBoundedValue({ payload: [1] }, {
+            specialArrays: { payload: { kind: "byte", maxItems: Infinity } }
+        }), /maxItems/);
+        assert.throws(() => normalizeBoundedValue([1, 2], { maxArray: 1 }), /item budget/);
+        assert.throws(() => normalizeBoundedValue({ a: 1, b: 2 }, { maxProperties: 1, maxArray: 2 }), /property budget/);
+    } finally {
+        for (const key of polluted) Reflect.deleteProperty(Object.prototype, key);
+    }
+});
+
+test("Worker command schema lookup does not resolve prototypes or inherited options", () => {
+    try {
+        Object.defineProperty(Object.prototype, "maxBytes", {
+            value: Infinity,
+            enumerable: true,
+            configurable: true
+        });
+        Object.defineProperty(Object.prototype, "specialArrays", {
+            value: { payload: { kind: "byte", maxItems: Infinity } },
+            enumerable: true,
+            configurable: true
+        });
+        assert.throws(() => normalizeWorkerRpcParams("__proto__", {
+            payload: new Uint8Array(8 * 1024 * 1024)
+        }), /binary structured values|byte budget/);
+        assert.throws(() => normalizeWorkerRpcParams("constructor", {
+            payload: "x".repeat(8 * 1024 * 1024)
+        }), /byte budget/);
+    } finally {
+        Reflect.deleteProperty(Object.prototype, "maxBytes");
+        Reflect.deleteProperty(Object.prototype, "specialArrays");
+    }
+});
+
 test("byte command aliases share decoded-size enforcement", () => {
     const tools = createBinaryTools({ getPc: () => 0, getSelectedCpu: () => "arm9" });
     for (const params of [
@@ -1281,6 +1386,15 @@ test("byte command aliases share decoded-size enforcement", () => {
     }
     assert.deepEqual(tools.opcodeWordsFromInput({ words: [1, 2] }, 2), [1, 2]);
     assert.deepEqual(tools.opcodeWordsFromInput({ opcodes: [1, 2] }, 2), [1, 2]);
+    assert.deepEqual(Array.from(tools.bytesFromFlexibleParams({ bytes: ["0x01", "ff"] }, 2)), [1, 255]);
+    assert.deepEqual(tools.opcodeWordsFromInput({ words: ["0x12345678"] }, 1), [0x12345678]);
+    assert.deepEqual(tools.opcodeWordsFromInput({ opcodes: ["0xe12fff1e"] }, 1), [0xe12fff1e]);
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerRpcParams("injectBytes", {
+        bytes: ["0x01", "ff"]
+    }))), { bytes: ["0x01", "ff"] });
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeWorkerRpcParams("disassembleBytes", {
+        words: ["0x12345678"], opcodes: ["0xe12fff1e"]
+    }))), { words: ["0x12345678"], opcodes: ["0xe12fff1e"] });
     assert.throws(() => tools.opcodeWordsFromInput({ words: [1, 2, 3] }, 2), /exceeds 2 words/);
     assert.throws(() => tools.opcodeWordsFromInput({ opcodes: [1, 2, 3] }, 2), /exceeds 2 words/);
     assert.throws(() => normalizeWorkerRpcParams("injectBytes", {
@@ -1456,6 +1570,32 @@ test("persistent print remains bounded after TextEncoder mutation", async () => 
     `, []);
     assert.equal(messages.some((message) => message.type === "print"), false);
     assert.ok(messages.some((message) => message.type === "failed"));
+});
+
+test("persistent sandbox bounds failure fields before posting", async () => {
+    const { messages: hugeMessages } = await runPersistentScalarSandbox(`
+        throw {
+            name: "N".repeat(8 * 1024 * 1024),
+            message: "M".repeat(8 * 1024 * 1024),
+            stack: "S".repeat(8 * 1024 * 1024)
+        };
+    `, []);
+    const failure = hugeMessages.find((message) => message.type === "failed");
+    assert.ok(failure);
+    assert.ok(new TextEncoder().encode(failure.error.name).byteLength <= 256);
+    assert.ok(new TextEncoder().encode(failure.error.message).byteLength <= 2048);
+    assert.ok(new TextEncoder().encode(failure.error.details.stack).byteLength <= 8192);
+
+    const { messages: getterMessages } = await runPersistentScalarSandbox(`
+        const thrown = {};
+        Object.defineProperty(thrown, "message", {
+            get() { throw new Error("getter executed"); }
+        });
+        throw thrown;
+    `, []);
+    const getterFailure = getterMessages.find((message) => message.type === "failed");
+    assert.ok(getterFailure);
+    assert.equal(getterFailure.error.message.includes("getter executed"), false);
 });
 
 test("persistent-script legacy memory reads remain numeric", async () => {

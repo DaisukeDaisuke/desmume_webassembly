@@ -3,6 +3,7 @@
 import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
 import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-value.js";
+import { serializeWorkerError } from "../worker-error-serializer.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -136,6 +137,10 @@ const printhex = (label, value) => print(
     label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0"))
 );
 
+function callbackErrorMessage(error) {
+    return serializeWorkerError(error, { phase: "callback" }).message;
+}
+
 function unwrapLegacyScalar(result, command) {
     if (result?.ok === false) {
         const error = new Error(result.error?.message || `${command} failed`);
@@ -224,11 +229,7 @@ function fail(error, phase = "runtime") {
     send({
         type: "failed",
         phase,
-        error: {
-            name: String(error?.name || "Error"),
-            message: String(error?.message || error),
-            stack: String(error?.stack || "")
-        }
+        error: serializeWorkerError(error, { phase })
     });
 }
 
@@ -269,7 +270,7 @@ async function runEvent(message) {
                 await entry.callback(message.payload);
             } catch (error) {
                 if (asyncMode) throw error;
-                print(`callback error: ${String(error?.message || error)}`);
+                print(`callback error: ${callbackErrorMessage(error)}`);
             }
         }
     } finally {
@@ -294,7 +295,7 @@ async function drainEvents() {
                 await runEvent(message);
             } catch (error) {
                 if (asyncMode) throw error;
-                print(`callback error: ${String(error?.message || error)}`);
+                print(`callback error: ${callbackErrorMessage(error)}`);
             }
         }
     } finally {

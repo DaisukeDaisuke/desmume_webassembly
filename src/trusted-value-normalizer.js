@@ -5,6 +5,7 @@ const NativeSet = globalThis.Set;
 const NativeTextEncoder = globalThis.TextEncoder;
 const NativeTypeError = globalThis.TypeError;
 const NativeRangeError = globalThis.RangeError;
+const NativeNumber = globalThis.Number;
 
 const nativeReflectApply = globalThis.Reflect.apply;
 const nativeArrayIsArray = NativeArray.isArray;
@@ -19,10 +20,14 @@ const nativeHasOwnProperty = globalThis.Object.prototype.hasOwnProperty;
 const nativeObjectPrototype = globalThis.Object.prototype;
 const nativeNumberIsFinite = globalThis.Number.isFinite;
 const nativeNumberIsInteger = globalThis.Number.isInteger;
+const nativeNumberIsSafeInteger = globalThis.Number.isSafeInteger;
 const nativeSetHas = NativeSet.prototype.has;
 const nativeSetAdd = NativeSet.prototype.add;
 const nativeSetDelete = NativeSet.prototype.delete;
 const nativeTextEncode = NativeTextEncoder.prototype.encode;
+const nativeStringTrim = globalThis.String.prototype.trim;
+const nativeStringReplace = globalThis.String.prototype.replace;
+const nativeRegExpTest = globalThis.RegExp.prototype.test;
 const trustedTextEncoder = new NativeTextEncoder();
 const nativeUint8Prototype = NativeUint8Array.prototype;
 const nativeTypedArrayPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [nativeUint8Prototype]);
@@ -43,6 +48,14 @@ const DEFAULT_LIMITS = Object.freeze({
     maxProperties: 256
 });
 
+const MAXIMUM_LIMITS = Object.freeze({
+    maxDepth: 64,
+    maxNodes: 100000,
+    maxBytes: 16 * 1024 * 1024,
+    maxArray: 1024 * 1024,
+    maxProperties: 4096
+});
+
 function callIntrinsic(fn, receiver, args) {
     return nativeReflectApply(fn, receiver, args);
 }
@@ -51,14 +64,36 @@ function hasOwn(value, key) {
     return callIntrinsic(nativeHasOwnProperty, value, [key]);
 }
 
+export function readOwnDataProperty(object, key) {
+    if (object === null || (typeof object !== "object" && typeof object !== "function")) return undefined;
+    const descriptor = callIntrinsic(nativeGetOwnPropertyDescriptor, null, [object, key]);
+    if (!descriptor || !hasOwn(descriptor, "value")) return undefined;
+    return descriptor.value;
+}
+
+function readLimit(options, key, fallback) {
+    const value = readOwnDataProperty(options, key);
+    if (value === undefined) return fallback;
+    return validateLimitValue(value, key, MAXIMUM_LIMITS[key]);
+}
+
+function validateLimitValue(value, key, maximum) {
+    if (!callIntrinsic(nativeNumberIsSafeInteger, null, [value])
+        || value < 0
+        || value > maximum) {
+        throw new NativeRangeError(`${key} must be a finite non-negative safe integer within the trusted maximum`);
+    }
+    return value;
+}
+
 function utf8Length(text) {
     const encoded = callIntrinsic(nativeTextEncode, trustedTextEncoder, [text]);
     return callIntrinsic(nativeTypedArrayByteLength, encoded, []);
 }
 
 function getSpecial(options, group, path) {
-    const entries = options[group];
-    return entries && hasOwn(entries, path) ? entries[path] : undefined;
+    const entries = readOwnDataProperty(options, group);
+    return readOwnDataProperty(entries, path);
 }
 
 function getUint8Length(value) {
@@ -90,11 +125,11 @@ function defineDataProperty(target, key, value) {
 
 export function normalizeTrustedValue(value, options = {}) {
     const limits = {
-        maxDepth: options.maxDepth ?? DEFAULT_LIMITS.maxDepth,
-        maxNodes: options.maxNodes ?? DEFAULT_LIMITS.maxNodes,
-        maxBytes: options.maxBytes ?? DEFAULT_LIMITS.maxBytes,
-        maxArray: options.maxArray ?? DEFAULT_LIMITS.maxArray,
-        maxProperties: options.maxProperties ?? options.maxArray ?? DEFAULT_LIMITS.maxProperties
+        maxDepth: readLimit(options, "maxDepth", DEFAULT_LIMITS.maxDepth),
+        maxNodes: readLimit(options, "maxNodes", DEFAULT_LIMITS.maxNodes),
+        maxBytes: readLimit(options, "maxBytes", DEFAULT_LIMITS.maxBytes),
+        maxArray: readLimit(options, "maxArray", DEFAULT_LIMITS.maxArray),
+        maxProperties: readLimit(options, "maxProperties", DEFAULT_LIMITS.maxProperties)
     };
     const seen = new NativeSet();
     let nodes = 0;
@@ -119,7 +154,10 @@ export function normalizeTrustedValue(value, options = {}) {
         if (typeof input === "string") {
             const length = utf8Length(input);
             const stringLimit = getSpecial(options, "stringLimits", path);
-            if (stringLimit !== undefined && length > stringLimit) {
+            const boundedStringLimit = stringLimit === undefined
+                ? undefined
+                : validateLimitValue(stringLimit, `stringLimits.${path}`, limits.maxBytes);
+            if (boundedStringLimit !== undefined && length > boundedStringLimit) {
                 throw new NativeRangeError("structured string exceeds field budget");
             }
             chargeBytes(length);
@@ -131,10 +169,14 @@ export function normalizeTrustedValue(value, options = {}) {
         const specialArray = getSpecial(options, "specialArrays", path);
         const uint8Length = getUint8Length(input);
         if (uint8Length >= 0) {
-            if (!specialArray || specialArray.kind !== "byte") {
+            if (!specialArray || readOwnDataProperty(specialArray, "kind") !== "byte") {
                 throw new NativeTypeError("binary structured values are unavailable in this field");
             }
-            if (uint8Length > specialArray.maxItems) {
+            const rawMaxItems = readOwnDataProperty(specialArray, "maxItems");
+            const maxItems = rawMaxItems === undefined
+                ? limits.maxArray
+                : validateLimitValue(rawMaxItems, "maxItems", MAXIMUM_LIMITS.maxArray);
+            if (uint8Length > maxItems) {
                 throw new NativeRangeError("structured byte input exceeds field budget");
             }
             chargeBytes(uint8Length);
@@ -149,10 +191,14 @@ export function normalizeTrustedValue(value, options = {}) {
         callIntrinsic(nativeSetAdd, seen, [input]);
         try {
             if (callIntrinsic(nativeArrayIsArray, null, [input])) {
-                const maximum = specialArray?.maxItems ?? limits.maxArray;
+                const specialKind = readOwnDataProperty(specialArray, "kind");
+                const rawMaxItems = readOwnDataProperty(specialArray, "maxItems");
+                const maximum = specialArray && rawMaxItems !== undefined
+                    ? validateLimitValue(rawMaxItems, "maxItems", MAXIMUM_LIMITS.maxArray)
+                    : limits.maxArray;
                 if (input.length > maximum) throw new NativeRangeError("structured array exceeds item budget");
                 const output = new NativeArray(input.length);
-                if (specialArray?.kind === "byte" || specialArray?.kind === "uint32") {
+                if (specialKind === "byte" || specialKind === "uint32") {
                     for (let index = 0; index < input.length; index++) {
                         const indexKey = `${index}`;
                         const descriptor = callIntrinsic(nativeGetOwnPropertyDescriptor, null, [input, indexKey]);
@@ -160,14 +206,26 @@ export function normalizeTrustedValue(value, options = {}) {
                             throw new NativeTypeError("structured arrays must be dense data arrays");
                         }
                         const item = descriptor.value;
+                        if (typeof item === "string") {
+                            const tokenLength = utf8Length(item);
+                            if (tokenLength > 16) throw new NativeRangeError(`structured ${specialKind} array token exceeds field budget`);
+                            const trimmed = callIntrinsic(nativeStringTrim, item, []);
+                            const text = callIntrinsic(nativeStringReplace, trimmed, [/^0x/i, ""]);
+                            if (!callIntrinsic(nativeRegExpTest, /^[0-9a-f]+$/i, [text])) {
+                                throw new NativeTypeError(`structured ${specialKind} array contains an invalid value`);
+                            }
+                            chargeBytes(tokenLength);
+                            defineDataProperty(output, indexKey, item);
+                            continue;
+                        }
                         if (!callIntrinsic(nativeNumberIsInteger, null, [item])
                             || item < 0
-                            || item > (specialArray.kind === "byte" ? 0xff : 0xffffffff)) {
-                            throw new NativeTypeError(`structured ${specialArray.kind} array contains an invalid value`);
+                            || item > (specialKind === "byte" ? 0xff : 0xffffffff)) {
+                            throw new NativeTypeError(`structured ${specialKind} array contains an invalid value`);
                         }
                         defineDataProperty(output, indexKey, item);
                     }
-                    chargeBytes(input.length * (specialArray.kind === "byte" ? 1 : 4));
+                    chargeBytes(input.length * (specialKind === "byte" ? 1 : 4));
                     return output;
                 }
                 for (let index = 0; index < input.length; index++) {
@@ -218,5 +276,7 @@ export const TrustedValueIntrinsics = Object.freeze({
     isArray: (value) => callIntrinsic(nativeArrayIsArray, null, [value]),
     isFinite: (value) => callIntrinsic(nativeNumberIsFinite, null, [value]),
     isInteger: (value) => callIntrinsic(nativeNumberIsInteger, null, [value]),
+    isSafeInteger: (value) => callIntrinsic(nativeNumberIsSafeInteger, null, [value]),
+    toNumber: (value) => NativeNumber(value),
     utf8Length
 });
