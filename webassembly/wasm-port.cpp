@@ -633,7 +633,7 @@ int saveStateToBuffer() {
   try {
     stateFile->truncate(0);
     stateFile->fseek(0, SEEK_SET);
-    savestate_save(*stateFile, 0);
+    savestate_save(*stateFile);
     return stateFile->size();
   } catch (const std::exception &) {
     return nativeFaultCode();
@@ -737,6 +737,10 @@ u32 dbgGetReg(int proc, int reg) {
 
 int dbgSetReg(int proc, int reg, u32 value) {
   armcpu_t *cpu = cpuFor(proc);
+  if (reg == 15) {
+    armcpu_set_pc(cpu, value);
+    return 0;
+  }
   if (reg >= 0 && reg < 16) {
     cpu->R[reg] = value;
     return 0;

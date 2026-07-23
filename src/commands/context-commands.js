@@ -135,8 +135,9 @@ export function createContextCommands(context) {
                 slot: baseline.slot,
                 saveFlushBlockMs: params.saveFlushBlockMs
             }, { analysisBaselineSlotToken }));
-            await call("setStackTraceMode", { enabled: false });
-            await call("setStackTraceMode", { enabled: baseline.traceEnabled });
+            if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
+                await call("setStackTraceMode", { enabled: baseline.traceEnabled });
+            }
             await call("setStackTracePrivilegeCheck", { enabled: baseline.skipIrq });
             if (baseline.running && !baseline.paused) await call("resume");
             else await call("pause");

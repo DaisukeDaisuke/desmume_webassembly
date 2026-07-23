@@ -117,6 +117,7 @@ export function createMemoryCommands(context) {
             const previousSnapshots = refine ? state.search.snapshot : null;
             const candidates = refine && state.search.addresses ? state.search.addresses : null;
             const matches = [];
+            const candidateAddresses = [];
             const findRange = (address) => ranges.find((range) => (
                 address >= range.address && address + size <= range.address + range.length
             ));
@@ -132,13 +133,14 @@ export function createMemoryCommands(context) {
                         ? readSized(previous, offset, size)
                         : 0;
                     if (!matchSearchCondition(condition, nowValue, oldValue, value, !!previous)) return false;
-                    matches.push({
+                    candidateAddresses.push(range.address + offset);
+                    if (matches.length < limit) matches.push({
                         address: range.address + offset,
                         range: range.name,
                         value: nowValue,
                         previous: previous ? oldValue : null
                     });
-                    return matches.length >= limit;
+                    return false;
                 };
                 if (offsets) {
                     for (const offset of offsets) {
@@ -172,7 +174,7 @@ export function createMemoryCommands(context) {
             state.search = {
                 snapshot: snapshots,
                 ranges,
-                addresses: matches.map((item) => item.address),
+                addresses: candidateAddresses,
                 address: ranges[0]?.address ?? 0,
                 length: ranges.reduce((sum, range) => sum + range.length, 0),
                 size,
@@ -189,7 +191,8 @@ export function createMemoryCommands(context) {
                 size,
                 condition,
                 totalShown: matches.length,
-                truncated: matches.length >= limit,
+                totalCandidates: candidateAddresses.length,
+                truncated: candidateAddresses.length > matches.length,
                 matches,
                 text
             };

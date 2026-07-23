@@ -4,7 +4,8 @@ import { codedError } from "../validation.js";
 export function createSaveCommands({
     ui,
     native,
-    cancelOperation,
+    cancelAndWait = async () => false,
+    fileTransactionService = { run: async (reason, task) => task({}) },
     ensureReady,
     ensureRomLoaded,
     readFileFromInput,
@@ -23,39 +24,41 @@ export function createSaveCommands({
 }) {
     return Object.freeze({
         async importSaveFile() {
-            cancelOperation("reset");
-            ensureReady();
-            const selection = ui.saveFile.files && ui.saveFile.files[0]
-                ? await readFileFromInput(ui.saveFile)
-                : await openPicker(ui.saveFile);
-            const { file, bytes } = selection;
-            const runState = pauseForFileLoad();
-            let loaded = false;
-            try {
-                const saveLoad = await applySaveAndReloadRom(file.name, bytes, {
-                    waitMs: bootWaitMs()
-                });
-                const result = saveLoad.ret;
-                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save import failed (${result})`, { nativeCode: result });
-                loaded = true;
-                if (result === 0) {
-                    rememberSlot(ui.stateSlot.value);
-                    await idbPut(`save:${ui.stateSlot.value}`, bytes);
-                    await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
-                    ui.storageStatus.textContent = `save loaded ${ui.stateSlot.value}`;
+            return fileTransactionService.run("Save import", async () => {
+                await cancelAndWait("reset");
+                ensureReady();
+                const selection = ui.saveFile.files && ui.saveFile.files[0]
+                    ? await readFileFromInput(ui.saveFile)
+                    : await openPicker(ui.saveFile);
+                const { file, bytes } = selection;
+                const runState = pauseForFileLoad();
+                let loaded = false;
+                try {
+                    const saveLoad = await applySaveAndReloadRom(file.name, bytes, {
+                        waitMs: bootWaitMs()
+                    });
+                    const result = saveLoad.ret;
+                    if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save import failed (${result})`, { nativeCode: result });
+                    loaded = true;
+                    if (result === 0) {
+                        rememberSlot(ui.stateSlot.value);
+                        await idbPut(`save:${ui.stateSlot.value}`, bytes);
+                        await recordRecentFile("save", file.name, bytes, ui.stateSlot.value);
+                        ui.storageStatus.textContent = `save loaded ${ui.stateSlot.value}`;
+                    }
+                    log(`save imported via ${saveLoad.path}: ${file.name}`);
+                    return {
+                        ret: result,
+                        size: bytes.length,
+                        reset: result === 0,
+                        reloaded: result === 0,
+                        path: saveLoad.path
+                    };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedLoad();
                 }
-                log(`save imported via ${saveLoad.path}: ${file.name}`);
-                return {
-                    ret: result,
-                    size: bytes.length,
-                    reset: result === 0,
-                    reloaded: result === 0,
-                    path: saveLoad.path
-                };
-            } finally {
-                if (loaded) restoreAfterFileLoad(runState);
-                else stopAfterFailedLoad();
-            }
+            });
         },
 
         async exportSaveFile() {
@@ -87,36 +90,38 @@ export function createSaveCommands({
         },
 
         async loadSaveSlot(params = {}) {
-            cancelOperation("reset");
-            ensureReady();
-            const slot = String(params.slot ?? ui.stateSlot.value);
-            rememberSlot(slot);
-            const bytes = await idbGet(`save:${slot}`);
-            if (!bytes) throw new Error(`save slot not found: ${slot}`);
-            const runState = pauseForFileLoad();
-            let loaded = false;
-            try {
-                const saveLoad = await applySaveAndReloadRom(slot, bytes, {
-                    waitMs: bootWaitMs()
-                });
-                const result = saveLoad.ret;
-                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save load failed (${result})`, { nativeCode: result });
-                loaded = true;
-                ui.storageStatus.textContent = `save loaded ${slot}`;
-                await recordRecentFile("save", slot, bytes, slot);
-                return {
-                    ret: result,
-                    slot,
-                    size: bytes.length,
-                    reset: result === 0,
-                    reloaded: result === 0,
-                    paused: runState.paused,
-                    path: saveLoad.path
-                };
-            } finally {
-                if (loaded) restoreAfterFileLoad(runState);
-                else stopAfterFailedLoad();
-            }
+            return fileTransactionService.run("Save slot load", async () => {
+                await cancelAndWait("reset");
+                ensureReady();
+                const slot = String(params.slot ?? ui.stateSlot.value);
+                rememberSlot(slot);
+                const bytes = await idbGet(`save:${slot}`);
+                if (!bytes) throw new Error(`save slot not found: ${slot}`);
+                const runState = pauseForFileLoad();
+                let loaded = false;
+                try {
+                    const saveLoad = await applySaveAndReloadRom(slot, bytes, {
+                        waitMs: bootWaitMs()
+                    });
+                    const result = saveLoad.ret;
+                    if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Save load failed (${result})`, { nativeCode: result });
+                    loaded = true;
+                    ui.storageStatus.textContent = `save loaded ${slot}`;
+                    await recordRecentFile("save", slot, bytes, slot);
+                    return {
+                        ret: result,
+                        slot,
+                        size: bytes.length,
+                        reset: result === 0,
+                        reloaded: result === 0,
+                        paused: runState.paused,
+                        path: saveLoad.path
+                    };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedLoad();
+                }
+            });
         }
     });
 }

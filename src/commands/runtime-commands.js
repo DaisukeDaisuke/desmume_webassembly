@@ -12,7 +12,9 @@ export function createRuntimeCommands(context) {
         applyFreezes,
         applyScaleRotation,
         bootWaitMs,
+        cancelAndWait = async () => false,
         cancelOperation,
+        fileTransactionService = { run: async (reason, task) => task({}) },
         dispatchScriptEvent,
         drawFrame,
         ensureReady,
@@ -81,68 +83,72 @@ export function createRuntimeCommands(context) {
         },
 
         async reset(params = {}) {
-            cancelOperation("reset");
             ensureRomLoaded("reset requires a loaded ROM");
-            const runState = pauseForFileLoad();
-            const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
-            let loaded = false;
-            try {
-                const result = await reloadCurrentRom({
-                    waitMs: bootWaitMs(params),
-                    resume: !hold && runState.running && !runState.paused
-                });
-                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reset failed (${result})`, { nativeCode: result });
-                loaded = true;
-                if (result === 0) {
-                    dispatchScriptEvent("start", {
-                        generation: ++state.scriptStartGeneration,
-                        reason: "reset"
+            return fileTransactionService.run("ROM reset", async () => {
+                await cancelAndWait("reset");
+                const runState = pauseForFileLoad();
+                const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
+                let loaded = false;
+                try {
+                    const result = await reloadCurrentRom({
+                        waitMs: bootWaitMs(params),
+                        resume: !hold && runState.running && !runState.paused
                     });
+                    if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reset failed (${result})`, { nativeCode: result });
+                    loaded = true;
+                    if (result === 0) {
+                        dispatchScriptEvent("start", {
+                            generation: ++state.scriptStartGeneration,
+                            reason: "reset"
+                        });
+                    }
+                    return {
+                        ret: result,
+                        reloaded: true,
+                        held: !!hold,
+                        waitMs: bootWaitMs(params),
+                        romLoaded: native.isRomLoaded()
+                    };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(hold ? { running: false, paused: true } : runState);
+                    else stopAfterFailedLoad();
                 }
-                return {
-                    ret: result,
-                    reloaded: true,
-                    held: !!hold,
-                    waitMs: bootWaitMs(params),
-                    romLoaded: native.isRomLoaded()
-                };
-            } finally {
-                if (loaded) restoreAfterFileLoad(hold ? { running: false, paused: true } : runState);
-                else stopAfterFailedLoad();
-            }
+            });
         },
 
         async reloadRom(params = {}) {
-            cancelOperation("rom-load");
             ensureRomLoaded("ROM reload requires a loaded ROM");
-            const runState = pauseForFileLoad();
-            const resume = params.resume === true
-                || (params.resume !== false
-                    && runState.running
-                    && !runState.paused
-                    && !ui.resetHoldToggle.checked);
-            let loaded = false;
-            try {
-                const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
-                if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reload failed (${result})`, { nativeCode: result });
-                loaded = true;
-                if (result === 0) {
-                    dispatchScriptEvent("start", {
-                        generation: ++state.scriptStartGeneration,
-                        reason: "reloadRom"
-                    });
+            return fileTransactionService.run("ROM reload", async () => {
+                await cancelAndWait("rom-load");
+                const runState = pauseForFileLoad();
+                const resume = params.resume === true
+                    || (params.resume !== false
+                        && runState.running
+                        && !runState.paused
+                        && !ui.resetHoldToggle.checked);
+                let loaded = false;
+                try {
+                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+                    if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reload failed (${result})`, { nativeCode: result });
+                    loaded = true;
+                    if (result === 0) {
+                        dispatchScriptEvent("start", {
+                            generation: ++state.scriptStartGeneration,
+                            reason: "reloadRom"
+                        });
+                    }
+                    return {
+                        ret: result,
+                        reloaded: true,
+                        resumed: resume,
+                        waitMs: bootWaitMs(params),
+                        romLoaded: native.isRomLoaded()
+                    };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(resume ? runState : { running: false, paused: true });
+                    else stopAfterFailedLoad();
                 }
-                return {
-                    ret: result,
-                    reloaded: true,
-                    resumed: resume,
-                    waitMs: bootWaitMs(params),
-                    romLoaded: native.isRomLoaded()
-                };
-            } finally {
-                if (loaded) restoreAfterFileLoad(resume ? runState : { running: false, paused: true });
-                else stopAfterFailedLoad();
-            }
+            });
         },
 
         async setSpeed(params = {}) {

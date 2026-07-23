@@ -37,3 +37,47 @@ This file contains durable context that is useful to every agent. Task-specific 
 ## Current task pointer
 
 - Read the newest checkpoint in `DEBUGGER_LOGIC_FIX_LIVE_HANDOFF.md` for current release-blocker status, exact patches already applied, and the next continuation point.
+
+## File/Feature Map From 2026-07-23 Context
+
+This table is based only on files and roles visible in the 2026-07-23 State/transaction/PC fix context.
+
+| File | Role / feature area |
+|---|---|
+| `src/app.js` | Main browser wiring. Creates shared services, native bridge, command registry/dispatcher, UI binding, WebMCP registration, and passes dependencies into command modules. |
+| `src/state.js` | Browser-side runtime state object: pause/running flags, ROM metadata, transaction serials, breakpoint identity, script event state, screen validity, and trace synchronization flag. |
+| `src/command-dispatcher.js` | Public command entry gate. Validates plain-object params, blocks reserved metadata fields, enforces active-operation and file-transaction `BUSY`, appends activity state, and queues UI refresh. |
+| `src/operation-manager.js` | Long-running operation manager for waits/input/runUntil flows. Owns AbortController, timeout/cancel result shaping, cleanup, input release, and `cancelAndWait()` quiescence. |
+| `src/file-transaction-service.js` | Shared ROM/Save/State transaction mutex. Owns `fileTransactionActive`, owner token, serial increment, native-break serial bump, current break invalidation, and pending persistent-script event cancellation. |
+| `src/rom-service.js` | Transactional ROM/save reload core. Stages candidate ROM/save files, calls native ROM load, reconciles breakpoints, commits metadata only after success, and attempts rollback on failure. |
+| `src/save-service.js` | Thin save helper over `rom-service`; maps `.sav`/`.dsv` path and applies save bytes before ROM reload. |
+| `src/state-service.js` | State-load pause/restore and screen invalidation policy. Invalidates completed-frame snapshots after State load and preserves/returns run state without owning the file mutex. |
+| `src/file-io-service.js` | Browser file download/read/picker helpers. Handles local file selection and picker cancellation/focus fallback. |
+| `src/native-bridge.js` | JavaScript wrapper around Emscripten exports and FS. Converts buffers/files/register/memory/state calls between browser code and native WASM functions. |
+| `src/debugger-coordinator.js` | Native break synchronization and persistent breakpoint event finalization. Checks ROM generation, file transaction serial, native break serial, pause serial, owner site, and callback identity before auto-resume. |
+| `src/debugger-service.js` | Higher-level debugger/readout service: snapshot context, disassembly refresh, instruction stepping, trace steppers/runUntil helpers, memory dump rendering support, and trace synchronization safety checks. |
+| `src/ui/view-service.js` | UI/API formatting helpers for registers, breakpoints, recent files, call stack normalization/public shape, disassembly formatting, memory search ranges, and memory dump presentation. |
+| `src/commands/command-factory.js` | Composes all command modules into the shared command surface and wires dependencies into each module. |
+| `src/commands/context-commands.js` | `status`, `snapshotContext`, analysis baseline save/restore, ROM/state identity validation, and baseline pause/trace policy restoration. |
+| `src/commands/rom-commands.js` | User/API ROM load commands: file, bytes, URL. Acquires file transaction, waits for operation cancellation, reads ROM bytes, and calls reload service. |
+| `src/commands/save-commands.js` | Save import/export/slot commands. Save import/load slot use file transaction and ROM reload so cartridge save is visible from boot. |
+| `src/commands/state-commands.js` | State save/load/import/bytes/URL/export commands. Uses transaction boundary, save-flush blocking, screen invalidation, recent-file recording, and native state load. |
+| `src/commands/recent-file-commands.js` | Recent save/state listing and reload. Dispatches recent save through save+ROM reload and recent state through State load path under the same transaction boundary. |
+| `src/commands/runtime-commands.js` | Runtime controls: pause/resume/reset/reloadRom, speed, render/audio/scale/rotation, and frame stepping. Reset/reloadRom share the file transaction path. |
+| `src/commands/disassembly-commands.js` | Register read/write, disassembly, opcode/byte disassembly, and memory register aliases. PC writes validate alignment and read back actual PC. |
+| `src/commands/memory-commands.js` | Memory dump/inject/search/write/freezes and big-endian memory shortcut commands. Memory search stores full candidate addresses separately from displayed matches for refine. |
+| `src/commands/debugger-control-commands.js` | Breakpoint commands, special breakpoints, clear break status, step/smartStep/stepOver/trace mode controls, stack/call-stack APIs, and call-stack copy helpers. |
+| `src/commands/input-commands.js` | DS button/touch/key binding commands visible through command factory. |
+| `src/commands/wait-commands.js` | Long-running wait/runUntil/input-sequence commands registered around `operation-manager`. |
+| `src/input-service.js` | Reusable input sequence runner used by app-level shortcut/input sequence command service. |
+| `src/api-descriptions.js` | Human/API descriptions for exposed commands. UI text here should describe user-visible result/action, not act as an internal specification. |
+| `webassembly/wasm-port.cpp` | Main WASM-native bridge implementation: ROM/save/state buffers, zlib helpers, pause/run frame, debugger registers/memory/breakpoints/disassembly/call stack exports, trace hooks, and native state compression call. |
+| `webassembly/build_safe_heap.sh` | Codespace build script for safe-heap WASM with useful native crash diagnostics. Produces generated `public/desmume.js`. |
+| `old/desmume/desmume/src/armcpu.cpp` | DeSmuME ARM CPU core implementation. Owns CPSR changes, prefetch, execution loop, IRQ/exception handling, and the PC/pipeline helper added for debugger PC writes. |
+| `old/desmume/desmume/src/armcpu.h` | DeSmuME ARM CPU core declarations, including exported CPU globals and the PC setter declaration used by WASM debugger code. |
+| `old/desmume/desmume/src/saves.cpp` | DeSmuME savestate implementation: chunk writing/reading, compression header, ROM/state metadata, State load reset/read/restore, and unknown-chunk behavior. |
+| `old/desmume/desmume/src/saves.h` | Savestate API declarations and default compression argument. |
+| `public/app.js` | Generated browser application bundle from `src/`. Do not hand-edit; regenerate with `npm run build:js`. |
+| `public/desmume.js` | Generated Emscripten single-file WASM payload. Do not inspect or hand-edit; regenerate with WASM build scripts. |
+| `handoff.md` | Durable task and investigation notes, including current release-blocker context and 2026-07-23 State/transaction/PC investigation line references. |
+| `system.md` | Durable shared agent context, project boundaries, verification policy, and this file/feature map. |

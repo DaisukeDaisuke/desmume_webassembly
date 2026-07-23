@@ -35,8 +35,21 @@ export function createDisassemblyCommands(context) {
             if (!Number.isInteger(index) || index < 0 || index > 17) {
                 throw new Error(`unknown register: ${register}`);
             }
-            const ret = native.setRegister(params.cpu, index, parseNumber(params.value));
+            const value = parseNumber(params.value);
+            if (index === 15) {
+                const registers = getRegisters(params.cpu);
+                const thumb = (value & 1) !== 0 || (Number(registers.cpsr) & 0x20) !== 0;
+                if (!thumb && (value & 3) !== 0) {
+                    throw codedError(ErrorCode.INVALID_ARGUMENT, "ARM PC writes must be 4-byte aligned", {
+                        value
+                    });
+                }
+            }
+            const ret = native.setRegister(params.cpu, index, value);
             if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Register write failed (${ret})`, { nativeCode: ret });
+            if (index === 15) {
+                return { ret, pc: getRegisters(params.cpu).pc >>> 0 };
+            }
             return { ret };
         },
 

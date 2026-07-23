@@ -11,6 +11,7 @@ export function createRomService({
     sleep,
     blockSaveFlush,
     drawFrame,
+    fileTransactionService,
     cancelPendingScriptEvents = async () => {},
     reconcileNativeBreakpoints = () => ({ cleared: false, registered: 0 })
 }) {
@@ -54,6 +55,22 @@ export function createRomService({
     }
 
     async function reload(options = {}) {
+        if (!state.fileTransactionActive && fileTransactionService) {
+            return fileTransactionService.run("ROM/save transaction", () => reload(options));
+        }
+        if (!state.fileTransactionActive) {
+            state.fileTransactionActive = true;
+            state.fileTransactionSerial++;
+            state.nativeBreakSerial = Number(state.nativeBreakSerial || 0) + 1;
+            state.currentBreakIdentity = null;
+            try {
+                await cancelPendingScriptEvents("ROM/save transaction started");
+                return await reload(options);
+            } finally {
+                state.fileTransactionActive = false;
+            }
+        }
+
         const pending = state.pendingRomCandidate;
         const candidate = pending || (state.romBytes
             ? { name: state.romName || ROM_PATH, bytes: new Uint8Array(state.romBytes) }
@@ -78,12 +95,7 @@ export function createRomService({
         const oldRomWasLoaded = native.isRomLoaded();
         let saveStage = null;
 
-        state.fileTransactionSerial++;
-        state.fileTransactionActive = true;
-        state.nativeBreakSerial = Number(state.nativeBreakSerial || 0) + 1;
-        state.currentBreakIdentity = null;
         try {
-            await cancelPendingScriptEvents("ROM/save transaction started");
             native.pause(true);
             state.running = false;
             state.paused = true;
@@ -114,6 +126,7 @@ export function createRomService({
             state.lastBreakKey = "";
             state.breakRefreshKey = "";
             state.breakLabel = "";
+            state.traceStateSynchronized = true;
             native.clearBreakStatus();
             state.running = options.resume === true;
             state.paused = options.resume !== true;
@@ -156,7 +169,6 @@ export function createRomService({
             try { native.pause(true); } catch {}
             throw error;
         } finally {
-            state.fileTransactionActive = false;
             try { native.unlinkFile(ROM_CANDIDATE_PATH); } catch {}
             for (const path of [saveStage?.candidatePath, "__candidate_rom.sav", "__candidate_rom.dsv"].filter(Boolean)) {
                 try { native.unlinkFile(path); } catch {}

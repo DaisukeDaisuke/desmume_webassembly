@@ -132,7 +132,10 @@ export function createViewService({
     
     function readCallStackData(params = {}) {
         const limit = callStackLimit(params);
-        return normalizeCallStackData(native.getCallStack(limit));
+        return {
+            ...normalizeCallStackData(native.getCallStack(limit)),
+            synchronized: state.traceStateSynchronized !== false
+        };
     }
     
     function disassemblyRows(cpu, address, options = {}) {
@@ -222,6 +225,10 @@ export function createViewService({
         const activeFrames = (activeStack ? activeStack.frames : data.frames || []).filter((frame) => !frame.synthetic);
         return {
             enabled: !!data.enabled,
+            synchronized: data.synchronized !== false,
+            message: data.synchronized === false
+                ? "Stateロード後のactive stackはCPU状態と同期していません。traceを再開するには一度Stack Traceをoff/onしてください。"
+                : "",
             depth: activeFrames.length,
             activeStackId,
             frames: activeFrames.map((frame) => publicCallStackFrame(frame, cpu)),

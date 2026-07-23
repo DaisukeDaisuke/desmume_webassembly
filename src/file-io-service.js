@@ -23,9 +23,40 @@ export function createFileIoService() {
 
     function openPicker(input) {
         input.value = "";
-        input.click();
         return new Promise((resolve, reject) => {
-            input.onchange = () => readInput(input).then(resolve, reject);
+            let settled = false;
+            let cancelTimer = 0;
+            const cleanup = () => {
+                settled = true;
+                clearTimeout(cancelTimer);
+                input.removeEventListener("change", onChange);
+                input.removeEventListener("cancel", onCancel);
+                window.removeEventListener("focus", onFocus);
+            };
+            const settle = (fn, value) => {
+                if (settled) return;
+                cleanup();
+                fn(value);
+            };
+            const onChange = () => {
+                readInput(input).then(
+                    (selection) => settle(resolve, selection),
+                    (error) => settle(reject, error)
+                );
+            };
+            const onCancel = () => settle(reject, new Error("file selection cancelled"));
+            const onFocus = () => {
+                clearTimeout(cancelTimer);
+                cancelTimer = setTimeout(() => {
+                    if (!input.files || input.files.length === 0) {
+                        settle(reject, new Error("file selection cancelled"));
+                    }
+                }, 250);
+            };
+            input.addEventListener("change", onChange, { once: true });
+            input.addEventListener("cancel", onCancel, { once: true });
+            window.addEventListener("focus", onFocus);
+            input.click();
         });
     }
 

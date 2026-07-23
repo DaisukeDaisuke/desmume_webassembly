@@ -28,6 +28,12 @@ const CANCELLING_COMMANDS = new Set([
     "reloadRecentFile"
 ]);
 
+const FILE_TRANSACTION_COMMANDS = new Set([
+    "loadRomFile", "loadRomBytes", "loadRomUrl", "importSaveFile", "loadSaveSlot",
+    "loadState", "importStateFile", "loadStateBytes", "loadStateUrl", "reloadRecentFile",
+    "reset", "reloadRom"
+]);
+
 const RESERVED_PARAM_FIELDS = Object.freeze([
     "_operation",
     "_origin",
@@ -86,6 +92,12 @@ export function createCommandDispatcher({
             && !CANCELLING_COMMANDS.has(name)
         ) {
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
+        }
+        if (state.fileTransactionActive && FILE_TRANSACTION_COMMANDS.has(name)) {
+            return responder.fail(
+                ErrorCode.BUSY,
+                `Active file transaction is ${state.fileTransactionReason || "in progress"}`
+            );
         }
         const result = await registry.execute(name, params);
         if (ACTIVITY_COMMANDS.has(name) && result && typeof result === "object") {

@@ -175,9 +175,15 @@ export function createDebuggerControlCommands(context) {
 
         async setStackTraceMode(params) {
             ensureReady();
+            const wasEnabled = !!ui.traceToggle.checked;
             native.setTraceEnabled(params.enabled);
             ui.traceToggle.checked = !!params.enabled;
-            if (!params.enabled) state.selectedCallstackLaneId = null;
+            if (!params.enabled) {
+                state.selectedCallstackLaneId = null;
+                state.traceStateSynchronized = true;
+            } else if (!wasEnabled) {
+                state.traceStateSynchronized = true;
+            }
             renderCallStack(readCallStackData(), { autoSelectActive: !!params.enabled });
             return { enabled: !!params.enabled };
         },

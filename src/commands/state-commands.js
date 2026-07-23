@@ -7,7 +7,7 @@ export function createStateCommands(context) {
         analysisBaselineSlotToken,
         blockSaveFlush,
         bytesFromParams,
-        cancelOperation,
+        cancelAndWait = async () => false,
         dispatchScriptEvent,
         download,
         drawLoadedStateFrame,
@@ -19,6 +19,7 @@ export function createStateCommands(context) {
         loadStateBytesFromMemory,
         log,
         native,
+        fileTransactionService = { run: async (reason, task) => task({}) },
         openPicker,
         pauseForFileLoad,
         readFileFromInput,
@@ -63,38 +64,40 @@ export function createStateCommands(context) {
                 params.saveFlushBlockMs ?? 30000,
                 "saveFlushBlockMs"
             );
-            cancelOperation("state-load");
             if (isAnalysisBaselineSlot(params.slot)
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "analysis baseline slots are reserved");
             }
-            const runState = pauseForFileLoad();
-            let bytes = null;
-            let loaded = false;
-            try {
-                if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
-                if (params.slot) bytes = await idbGet(String(params.slot));
-                if (params.slot && !bytes) {
-                    throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
+            return fileTransactionService.run("State load", async () => {
+                await cancelAndWait("state-load");
+                const runState = pauseForFileLoad();
+                let bytes = null;
+                let loaded = false;
+                try {
+                    if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
+                    if (params.slot) bytes = await idbGet(String(params.slot));
+                    if (params.slot && !bytes) {
+                        throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
+                    }
+                    const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
+                    if (ret !== 0) throw codedError(
+                        ErrorCode.NATIVE_ERROR,
+                        `State load failed (${ret})`,
+                        { nativeCode: ret }
+                    );
+                    loaded = true;
+                    state.frame = 0;
+                    blockSaveFlush(saveFlushBlockMs);
+                    drawLoadedStateFrame({
+                        showResumeNotice: !(runState.running && !runState.paused)
+                    });
+                    dispatchScriptEvent("stateLoad", { slot: params.slot || null });
+                    return { ok: true, paused: runState.paused, reset: false };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedStateLoad();
                 }
-                const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
-                if (ret !== 0) throw codedError(
-                    ErrorCode.NATIVE_ERROR,
-                    `State load failed (${ret})`,
-                    { nativeCode: ret }
-                );
-                loaded = true;
-                state.frame = 0;
-                blockSaveFlush(saveFlushBlockMs);
-                drawLoadedStateFrame({
-                    showResumeNotice: !(runState.running && !runState.paused)
-                });
-                dispatchScriptEvent("stateLoad", { slot: params.slot || null });
-                return { ok: true, paused: runState.paused, reset: false };
-            } finally {
-                if (loaded) restoreAfterFileLoad(runState);
-                else stopAfterFailedStateLoad();
-            }
+            });
         },
 
         async importStateFile(params = {}) {
@@ -103,33 +106,35 @@ export function createStateCommands(context) {
                 params.saveFlushBlockMs ?? 30000,
                 "saveFlushBlockMs"
             );
-            cancelOperation("state-load");
-            const selected = ui.stateFile.files && ui.stateFile.files[0]
-                ? await readFileFromInput(ui.stateFile)
-                : await openPicker(ui.stateFile);
-            const { file, bytes } = selected;
-            const runState = pauseForFileLoad();
-            let loaded = false;
-            try {
-                const ret = native.loadStateFile(bytes);
-                if (ret !== 0) throw codedError(
-                    ErrorCode.NATIVE_ERROR,
-                    `State import failed (${ret})`,
-                    { nativeCode: ret }
-                );
-                loaded = true;
-                state.frame = 0;
-                blockSaveFlush(saveFlushBlockMs);
-                drawLoadedStateFrame({
-                    showResumeNotice: !(runState.running && !runState.paused)
-                });
-                await recordRecentFile("state", file.name, bytes);
-                log(`state imported: ${file.name}`);
-                return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
-            } finally {
-                if (loaded) restoreAfterFileLoad(runState);
-                else stopAfterFailedStateLoad();
-            }
+            return fileTransactionService.run("State import", async () => {
+                await cancelAndWait("state-load");
+                const selected = ui.stateFile.files && ui.stateFile.files[0]
+                    ? await readFileFromInput(ui.stateFile)
+                    : await openPicker(ui.stateFile);
+                const { file, bytes } = selected;
+                const runState = pauseForFileLoad();
+                let loaded = false;
+                try {
+                    const ret = native.loadStateFile(bytes);
+                    if (ret !== 0) throw codedError(
+                        ErrorCode.NATIVE_ERROR,
+                        `State import failed (${ret})`,
+                        { nativeCode: ret }
+                    );
+                    loaded = true;
+                    state.frame = 0;
+                    blockSaveFlush(saveFlushBlockMs);
+                    drawLoadedStateFrame({
+                        showResumeNotice: !(runState.running && !runState.paused)
+                    });
+                    await recordRecentFile("state", file.name, bytes);
+                    log(`state imported: ${file.name}`);
+                    return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedStateLoad();
+                }
+            });
         },
 
         async loadStateBytes(params = {}) {
@@ -138,43 +143,63 @@ export function createStateCommands(context) {
                 params.saveFlushBlockMs ?? 30000,
                 "saveFlushBlockMs"
             );
-            cancelOperation("state-load");
-            const bytes = bytesFromParams(params);
-            const runState = pauseForFileLoad();
-            let loaded = false;
-            try {
-                const ret = native.loadStateFile(bytes);
-                if (ret !== 0) throw codedError(
-                    ErrorCode.NATIVE_ERROR,
-                    `State byte load failed (${ret})`,
-                    { nativeCode: ret }
-                );
-                loaded = true;
-                state.frame = 0;
-                blockSaveFlush(saveFlushBlockMs);
-                drawLoadedStateFrame({
-                    showResumeNotice: !(runState.running && !runState.paused)
-                });
-                log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
-                return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
-            } finally {
-                if (loaded) restoreAfterFileLoad(runState);
-                else stopAfterFailedStateLoad();
-            }
+            return fileTransactionService.run("State byte load", async () => {
+                await cancelAndWait("state-load");
+                const bytes = bytesFromParams(params);
+                const runState = pauseForFileLoad();
+                let loaded = false;
+                try {
+                    const ret = native.loadStateFile(bytes);
+                    if (ret !== 0) throw codedError(
+                        ErrorCode.NATIVE_ERROR,
+                        `State byte load failed (${ret})`,
+                        { nativeCode: ret }
+                    );
+                    loaded = true;
+                    state.frame = 0;
+                    blockSaveFlush(saveFlushBlockMs);
+                    drawLoadedStateFrame({
+                        showResumeNotice: !(runState.running && !runState.paused)
+                    });
+                    log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
+                    return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedStateLoad();
+                }
+            });
         },
 
         async loadStateUrl(params = {}) {
-            cancelOperation("state-load");
             ensureReady();
             const url = String(params.url || "");
             if (!url) throw new Error("url is required");
-            const response = await fetch(url, { cache: "no-store" });
-            if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            return stateCommands.loadStateBytes({
-                ...params,
-                bytes,
-                name: params.name || url.split("/").pop() || "url-state.dst"
+            return fileTransactionService.run("State URL load", async () => {
+                await cancelAndWait("state-load");
+                const response = await fetch(url, { cache: "no-store" });
+                if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
+                const bytes = new Uint8Array(await response.arrayBuffer());
+                const runState = pauseForFileLoad();
+                let loaded = false;
+                try {
+                    const ret = native.loadStateFile(bytes);
+                    if (ret !== 0) throw codedError(
+                        ErrorCode.NATIVE_ERROR,
+                        `State URL load failed (${ret})`,
+                        { nativeCode: ret }
+                    );
+                    loaded = true;
+                    state.frame = 0;
+                    blockSaveFlush(nonNegativeNumber(params.saveFlushBlockMs ?? 30000, "saveFlushBlockMs"));
+                    drawLoadedStateFrame({
+                        showResumeNotice: !(runState.running && !runState.paused)
+                    });
+                    log(`state loaded from URL: ${params.name || url.split("/").pop() || "url-state.dst"}`);
+                    return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
+                } finally {
+                    if (loaded) restoreAfterFileLoad(runState);
+                    else stopAfterFailedStateLoad();
+                }
             });
         },
 

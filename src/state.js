@@ -31,6 +31,8 @@ export function createAppState() {
         imageData: null,
         loadingFile: false,
         fileTransactionActive: false,
+        fileTransactionOwner: null,
+        fileTransactionReason: "",
         fileTransactionSerial: 0,
         lastTick: performance.now(),
         lastSaveFlush: 0,
@@ -75,6 +77,7 @@ export function createAppState() {
         completedFrameSerial: 0,
         screenValid: false,
         framesSinceStateLoad: 0,
-        stateLoadSerial: 0
+        stateLoadSerial: 0,
+        traceStateSynchronized: true
     };
 }

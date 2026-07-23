@@ -452,6 +452,11 @@ export function createDebuggerService({
     
     async function runTraceStepper(label, params = {}, shouldStop) {
         ensureRomLoaded(`${label} requires a loaded ROM`);
+        if (state.traceStateSynchronized === false) {
+            const error = new Error("Stateロード後のactive stackはCPU状態と同期していません。Stack Traceをoff/onして再同期してから実行してください。");
+            error.mcpCode = ErrorCode.STATE_INVALID;
+            throw error;
+        }
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
         const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);

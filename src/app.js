@@ -34,6 +34,7 @@ import { createCommandDispatcher } from "./command-dispatcher.js";
 import { createScriptPauseService } from "./script-pause-service.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { createScreenInvalidNotice } from "./screen-invalid-notice.js";
+import { createFileTransactionService } from "./file-transaction-service.js";
 import evalSupervisorWorkerSource from "./workers/eval-supervisor.worker.js";
 import evalSandboxWorkerSource from "./workers/eval.worker.js";
 import parserWorkerSource from "./workers/parser.worker.js";
@@ -298,13 +299,17 @@ const {
     openPicker,
     readInput: readFileFromInput
 } = fileIo;
+const fileTransactionService = createFileTransactionService({
+    state,
+    cancelPendingScriptEvents: cancelAllPersistentScriptEvents
+});
 const romService = createRomService({
     state,
     native: nativeBridge,
     sleep,
     blockSaveFlush,
     drawFrame,
-    cancelPendingScriptEvents: cancelAllPersistentScriptEvents,
+    fileTransactionService,
     reconcileNativeBreakpoints: () => breakpointOwners.reconcileNativeBreakpoints()
 });
 const {
@@ -404,6 +409,7 @@ const commands = createCommands({
     breakpointOwners,
     bytesFromFlexibleParams,
     bytesFromParams,
+    cancelAndWait: (reason) => operationManager.cancelAndWait(reason),
     cancelOperation: (reason) => operationManager.cancel(reason),
     copyText,
     currentRomIdentity,
@@ -416,6 +422,7 @@ const commands = createCommands({
     ensureRomLoaded,
     ensureWasmReady,
     frameService,
+    fileTransactionService,
     formatDisassemblyText,
     getPc,
     getRegisters,

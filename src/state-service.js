@@ -15,6 +15,7 @@ export function createStateService({
         state.screenValid = false;
         state.framesSinceStateLoad = 0;
         state.stateLoadSerial++;
+        state.traceStateSynchronized = false;
         onScreenInvalid({ showResumeNotice });
     }
 
@@ -40,12 +41,13 @@ export function createStateService({
             onStatusChange();
             return;
         }
+        state.breakLabel = "";
+        state.breakRefreshKey = "";
+        state.lastBreakKey = "";
+        native.clearBreakStatus();
         if (runState.running && !runState.paused) {
-            state.breakLabel = "";
-            state.breakRefreshKey = "";
             state.paused = false;
             state.running = true;
-            native.clearBreakStatus();
             native.pause(false);
         } else {
             state.paused = true;

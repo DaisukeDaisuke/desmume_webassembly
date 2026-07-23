@@ -10,6 +10,18 @@ export function createOperationManager({ responder, pause = async () => {}, rele
         return true;
     }
 
+    async function cancelAndWait(reason = "user-cancel") {
+        const operation = active;
+        if (!operation) return false;
+        operation.controller.abort(reason);
+        try {
+            await operation.done;
+        } catch {
+            // The caller only needs the operation to be fully quiesced.
+        }
+        return true;
+    }
+
     async function run({
         name,
         timeoutMs,
@@ -62,31 +74,39 @@ export function createOperationManager({ responder, pause = async () => {}, rele
             `${name} was cancelled`,
             { reason: operation.signal.reason, ...cancelDetails(operation) }
         );
-        try {
+        const runBody = async () => {
             const timeout = new Promise((resolve) => {
                 timer = setTimeout(() => {
                     controller.abort("timeout");
-                    resolve(timeoutResult());
+                    resolve({ timedOut: true });
                 }, timeoutMs);
             });
-            const running = Promise.resolve(task(operation)).catch((error) => {
+            const running = Promise.resolve(task(operation)).then((value) => ({
+                value
+            }), (error) => {
                 if (!operation.signal.aborted) throw error;
-                return operation.signal.reason === "timeout" ? timeoutResult() : cancelledResult();
+                return { value: operation.signal.reason === "timeout" ? timeoutResult() : cancelledResult() };
             });
             const result = await Promise.race([running, timeout]);
+            if (result?.timedOut) {
+                await pause();
+                await running.catch(() => {});
+                return timeoutResult();
+            }
             if (operation.signal.aborted) {
                 await pause();
                 return operation.signal.reason === "timeout" ? timeoutResult() : cancelledResult();
             }
-            return result;
-        } finally {
-            await cleanupOnce();
-        }
+            return result.value;
+        };
+        operation.done = runBody().finally(cleanupOnce);
+        return operation.done;
     }
 
     return {
         run,
         cancel,
+        cancelAndWait,
         current: () => active && ({ id: active.id, name: active.name, startedAt: active.startedAt })
     };
 }
