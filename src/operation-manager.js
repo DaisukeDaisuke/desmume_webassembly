@@ -1,5 +1,7 @@
 import { ErrorCode } from "./error-codes.js";
 
+const CANCEL_SETTLE_TIMEOUT_MS = 10000;
+
 export function createOperationManager({ responder, pause = async () => {}, releaseInput = async () => {} }) {
     let active = null;
     let serial = 0;
@@ -14,10 +16,26 @@ export function createOperationManager({ responder, pause = async () => {}, rele
         const operation = active;
         if (!operation) return false;
         operation.controller.abort(reason);
+        let timer = 0;
         try {
-            await operation.done;
-        } catch {
-            // The caller only needs the operation to be fully quiesced.
+            await Promise.race([
+                operation.done,
+                new Promise((resolve, reject) => {
+                    timer = setTimeout(() => {
+                        const error = new Error("Cancelled operation did not settle");
+                        error.mcpCode = ErrorCode.TIMEOUT;
+                        error.mcpDetails = {
+                            operation: operation.name,
+                            timeoutMs: CANCEL_SETTLE_TIMEOUT_MS
+                        };
+                        reject(error);
+                    }, CANCEL_SETTLE_TIMEOUT_MS);
+                })
+            ]);
+        } catch (error) {
+            throw error;
+        } finally {
+            clearTimeout(timer);
         }
         return true;
     }
@@ -74,23 +92,23 @@ export function createOperationManager({ responder, pause = async () => {}, rele
             `${name} was cancelled`,
             { reason: operation.signal.reason, ...cancelDetails(operation) }
         );
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => {
+                controller.abort("timeout");
+                resolve({ timedOut: true });
+            }, timeoutMs);
+        });
+        const running = Promise.resolve(task(operation)).then((value) => ({
+            value
+        }), (error) => {
+            if (!operation.signal.aborted) throw error;
+            return { value: operation.signal.reason === "timeout" ? timeoutResult() : cancelledResult() };
+        });
+        operation.done = running.then(() => {}, () => {}).finally(cleanupOnce);
         const runBody = async () => {
-            const timeout = new Promise((resolve) => {
-                timer = setTimeout(() => {
-                    controller.abort("timeout");
-                    resolve({ timedOut: true });
-                }, timeoutMs);
-            });
-            const running = Promise.resolve(task(operation)).then((value) => ({
-                value
-            }), (error) => {
-                if (!operation.signal.aborted) throw error;
-                return { value: operation.signal.reason === "timeout" ? timeoutResult() : cancelledResult() };
-            });
             const result = await Promise.race([running, timeout]);
             if (result?.timedOut) {
                 await pause();
-                await running.catch(() => {});
                 return timeoutResult();
             }
             if (operation.signal.aborted) {
@@ -99,8 +117,11 @@ export function createOperationManager({ responder, pause = async () => {}, rele
             }
             return result.value;
         };
-        operation.done = runBody().finally(cleanupOnce);
-        return operation.done;
+        try {
+            return await runBody();
+        } finally {
+            await operation.done;
+        }
     }
 
     return {

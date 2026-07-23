@@ -28,10 +28,9 @@ const CANCELLING_COMMANDS = new Set([
     "reloadRecentFile"
 ]);
 
-const FILE_TRANSACTION_COMMANDS = new Set([
-    "loadRomFile", "loadRomBytes", "loadRomUrl", "importSaveFile", "loadSaveSlot",
-    "loadState", "importStateFile", "loadStateBytes", "loadStateUrl", "reloadRecentFile",
-    "reset", "reloadRom"
+const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
+    "pause", "status", "listRecentFiles", "listBreakpoints", "listMemoryFreezes",
+    "listScripts", "getScript", "listScriptPrint"
 ]);
 
 const RESERVED_PARAM_FIELDS = Object.freeze([
@@ -93,7 +92,7 @@ export function createCommandDispatcher({
         ) {
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
         }
-        if (state.fileTransactionActive && FILE_TRANSACTION_COMMANDS.has(name)) {
+        if (state.fileTransactionActive && !FILE_TRANSACTION_ALLOWED_COMMANDS.has(name)) {
             return responder.fail(
                 ErrorCode.BUSY,
                 `Active file transaction is ${state.fileTransactionReason || "in progress"}`

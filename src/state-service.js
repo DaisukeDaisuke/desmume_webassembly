@@ -15,7 +15,7 @@ export function createStateService({
         state.screenValid = false;
         state.framesSinceStateLoad = 0;
         state.stateLoadSerial++;
-        state.traceStateSynchronized = false;
+        state.traceStateSynchronized = state.traceEnabled !== true;
         onScreenInvalid({ showResumeNotice });
     }
 

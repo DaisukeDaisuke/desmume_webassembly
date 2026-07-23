@@ -10,6 +10,9 @@ export function createContextCommands(context) {
         currentRomIdentity,
         emulatorActivity,
         ensureRomLoaded,
+        fileTransactionService = {
+            run: async (reason, task) => task({ token: null })
+        },
         hasLoadedRom,
         idbGet,
         native,
@@ -106,6 +109,7 @@ export function createContextCommands(context) {
 
         async restoreAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline restore requires a loaded ROM");
+            return fileTransactionService.run("Analysis baseline restore", async ({ token }) => {
             const name = String(params.name || "default");
             const baseline = readAnalysisBaseline(name);
             if (!baseline) {
@@ -134,7 +138,10 @@ export function createContextCommands(context) {
             await call("loadState", withInternalMetadata({
                 slot: baseline.slot,
                 saveFlushBlockMs: params.saveFlushBlockMs
-            }, { analysisBaselineSlotToken }));
+            }, {
+                analysisBaselineSlotToken,
+                fileTransactionToken: token
+            }));
             if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
                 await call("setStackTraceMode", { enabled: baseline.traceEnabled });
             }
@@ -147,6 +154,7 @@ export function createContextCommands(context) {
                 restored: true,
                 ...await snapshotContext(params)
             };
+            });
         }
     };
 }

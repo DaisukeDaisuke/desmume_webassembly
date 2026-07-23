@@ -1,5 +1,6 @@
 import { codedError, memorySize, positiveInteger } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
+import { ResourceLimits } from "../resource-limits.js";
 import { WorkerByteLimits } from "../worker-rpc-payload.js";
 
 export function createMemoryCommands(context) {
@@ -113,11 +114,19 @@ export function createMemoryCommands(context) {
                 && state.search.snapshot
                 && state.search.rangeKey === rangeKey
                 && state.search.size === size;
+            if (refine && state.search.candidateSetComplete === false) {
+                throw codedError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Previous search exceeded the candidate limit; start a narrower search before refining",
+                    { candidateLimit: ResourceLimits.memorySearchCandidates }
+                );
+            }
             const snapshots = new Map();
             const previousSnapshots = refine ? state.search.snapshot : null;
             const candidates = refine && state.search.addresses ? state.search.addresses : null;
             const matches = [];
             const candidateAddresses = [];
+            let totalCandidates = 0;
             const findRange = (address) => ranges.find((range) => (
                 address >= range.address && address + size <= range.address + range.length
             ));
@@ -133,7 +142,10 @@ export function createMemoryCommands(context) {
                         ? readSized(previous, offset, size)
                         : 0;
                     if (!matchSearchCondition(condition, nowValue, oldValue, value, !!previous)) return false;
-                    candidateAddresses.push(range.address + offset);
+                    totalCandidates++;
+                    if (candidateAddresses.length < ResourceLimits.memorySearchCandidates) {
+                        candidateAddresses.push(range.address + offset);
+                    }
                     if (matches.length < limit) matches.push({
                         address: range.address + offset,
                         range: range.name,
@@ -174,7 +186,8 @@ export function createMemoryCommands(context) {
             state.search = {
                 snapshot: snapshots,
                 ranges,
-                addresses: candidateAddresses,
+                addresses: Uint32Array.from(candidateAddresses),
+                candidateSetComplete: totalCandidates <= ResourceLimits.memorySearchCandidates,
                 address: ranges[0]?.address ?? 0,
                 length: ranges.reduce((sum, range) => sum + range.length, 0),
                 size,
@@ -191,8 +204,9 @@ export function createMemoryCommands(context) {
                 size,
                 condition,
                 totalShown: matches.length,
-                totalCandidates: candidateAddresses.length,
-                truncated: candidateAddresses.length > matches.length,
+                totalCandidates,
+                candidateSetComplete: totalCandidates <= ResourceLimits.memorySearchCandidates,
+                truncated: totalCandidates > matches.length,
                 matches,
                 text
             };
@@ -203,6 +217,7 @@ export function createMemoryCommands(context) {
                 snapshot: null,
                 ranges: null,
                 addresses: null,
+                candidateSetComplete: true,
                 address: 0,
                 length: 0,
                 size: 1,

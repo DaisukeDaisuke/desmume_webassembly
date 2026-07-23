@@ -6,7 +6,7 @@ export function createRomCommands({
     ui,
     native,
     cancelAndWait = async () => false,
-    fileTransactionService = { run: async (reason, task) => task({}) },
+    fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
     ensureReady,
     ensureWasmReady,
     bytesFromParams,
@@ -22,13 +22,14 @@ export function createRomCommands({
 }) {
     const commands = {
         async loadRomFile() {
-            return fileTransactionService.run("ROM file load", async () => {
-                await cancelAndWait("rom-load");
+            return fileTransactionService.run("ROM file load", async ({ commit }) => {
                 const selection = ui.romFile.files && ui.romFile.files[0]
                     ? await readFileFromInput(ui.romFile)
                     : await openPicker(ui.romFile);
                 const { file, bytes } = selection;
                 await ensureWasmReady();
+                await commit();
+                await cancelAndWait("rom-load");
                 pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -52,10 +53,11 @@ export function createRomCommands({
         },
 
         async loadRomBytes(params = {}) {
-            return fileTransactionService.run("ROM byte load", async () => {
-                await cancelAndWait("rom-load");
-                await ensureWasmReady();
+            return fileTransactionService.run("ROM byte load", async ({ commit }) => {
                 const bytes = bytesFromParams(params);
+                await ensureWasmReady();
+                await commit();
+                await cancelAndWait("rom-load");
                 pauseForFileLoad();
                 const resume = params.resume !== false;
                 const name = params.name || "mcp-rom.nds";
@@ -81,8 +83,7 @@ export function createRomCommands({
         },
 
         async loadRomUrl(params = {}) {
-            return fileTransactionService.run("ROM URL load", async () => {
-                await cancelAndWait("rom-load");
+            return fileTransactionService.run("ROM URL load", async ({ commit }) => {
                 ensureReady();
                 const url = String(params.url || "");
                 if (!url) throw codedError(ErrorCode.INVALID_ARGUMENT, "url is required");
@@ -97,6 +98,8 @@ export function createRomCommands({
                 if (!response.ok) throw codedError(ErrorCode.INVALID_ARGUMENT, `ROM fetch failed: ${response.status}`);
                 const bytes = new Uint8Array(await response.arrayBuffer());
                 await ensureWasmReady();
+                await commit();
+                await cancelAndWait("rom-load");
                 pauseForFileLoad();
                 const resume = params.resume !== false;
                 const name = params.name || url.split("/").pop() || "url-rom.nds";

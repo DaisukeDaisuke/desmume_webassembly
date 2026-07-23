@@ -56,7 +56,10 @@ export function createRomService({
 
     async function reload(options = {}) {
         if (!state.fileTransactionActive && fileTransactionService) {
-            return fileTransactionService.run("ROM/save transaction", () => reload(options));
+            return fileTransactionService.run("ROM/save transaction", async ({ commit }) => {
+                await commit();
+                return reload(options);
+            });
         }
         if (!state.fileTransactionActive) {
             state.fileTransactionActive = true;
@@ -127,6 +130,8 @@ export function createRomService({
             state.breakRefreshKey = "";
             state.breakLabel = "";
             state.traceStateSynchronized = true;
+            state.traceEnabled = state.traceEnabled !== false;
+            native.setTraceSuspended?.(false);
             native.clearBreakStatus();
             state.running = options.resume === true;
             state.paused = options.resume !== true;

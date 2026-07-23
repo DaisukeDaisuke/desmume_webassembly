@@ -48,7 +48,7 @@ export function createDisassemblyCommands(context) {
             const ret = native.setRegister(params.cpu, index, value);
             if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Register write failed (${ret})`, { nativeCode: ret });
             if (index === 15) {
-                return { ret, pc: getRegisters(params.cpu).pc >>> 0 };
+                return { ret, pc: getPc(params.cpu) >>> 0 };
             }
             return { ret };
         },

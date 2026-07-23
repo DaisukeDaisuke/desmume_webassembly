@@ -7,7 +7,7 @@ export function createRecentFileCommands(context) {
         blockSaveFlush,
         bootWaitMs,
         cancelAndWait = async () => false,
-        fileTransactionService = { run: async (reason, task) => task({}) },
+        fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
         drawLoadedStateFrame,
         ensureReady,
         ensureRomLoaded,
@@ -37,8 +37,7 @@ export function createRecentFileCommands(context) {
             const saveFlushBlockMs = item.kind === "state"
                 ? nonNegativeNumber(params.saveFlushBlockMs ?? 30000, "saveFlushBlockMs")
                 : 0;
-            return fileTransactionService.run("Recent file reload", async () => {
-                await cancelAndWait(item.kind === "save" ? "reset" : "state-load");
+            return fileTransactionService.run("Recent file reload", async ({ commit }) => {
                 if (item.slot) rememberSlot(item.slot);
                 const bytes = item.key
                     ? await idbGet(item.key)
@@ -46,6 +45,11 @@ export function createRecentFileCommands(context) {
                         ? await idbGet(`${item.kind}:${item.slot}`)
                         : null;
                 if (!bytes) throw new Error(`recent bytes not found: ${id}`);
+                if (item.kind === "state") {
+                    ensureRomLoaded("recent state reload requires a loaded ROM");
+                }
+                await commit();
+                await cancelAndWait(item.kind === "save" ? "reset" : "state-load");
 
                 if (item.kind === "save") {
                     const runState = pauseForFileLoad();
@@ -77,7 +81,6 @@ export function createRecentFileCommands(context) {
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
-                    ensureRomLoaded("recent state reload requires a loaded ROM");
                     const ret = item.slot ? loadStateBytesFromMemory(bytes) : native.loadStateFile(bytes);
                     if (ret !== 0) throw codedError(
                         ErrorCode.NATIVE_ERROR,
@@ -85,6 +88,7 @@ export function createRecentFileCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
+                    native.setTraceSuspended(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({

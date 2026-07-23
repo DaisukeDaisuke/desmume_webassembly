@@ -9,6 +9,7 @@ export const ResourceLimits = Object.freeze({
     scriptTriggers: 64,
     pendingWorkerRpc: 32,
     pendingScriptEvents: 128,
+    memorySearchCandidates: 1000000,
     scriptOutputBytes: 256 * 1024,
     scriptSourceOutputChars: 64 * 1024,
     flattenDepth: 12,

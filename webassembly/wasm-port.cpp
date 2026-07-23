@@ -45,6 +45,7 @@ static bool paused = true;
 static bool debuggerEnabled = true;
 static int debuggerSuspendDepth = 0;
 static bool traceEnabled = false;
+static bool traceSuspended = false;
 static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
 static bool specialBreakpoints[3] = {false, false, false};
@@ -300,7 +301,7 @@ extern "C" int wasmDebuggerShouldBreak(int proc, int kind, u32 address, int size
 }
 
 extern "C" void wasmEnterFunctionHook(int proc) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   const u32 sp = cpu->R[13];
@@ -325,7 +326,7 @@ extern "C" void wasmEnterFunctionHook(int proc) {
 }
 
 extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   const u32 sp = cpu->R[13];
@@ -343,7 +344,7 @@ extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
 }
 
 extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePendingIrqResume[proc] != 0 && ((tracePendingIrqResume[proc] & ~1U) == (target & ~1U)) && (kind == 4 || kind == 6)) {
     int irqFrameIndex = -1;
@@ -390,7 +391,7 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
 }
 
 extern "C" void wasmTraceIrqEnterHook(int proc, u32 sourcePc, u32 vectorPc, u32 resumePc, u32 irqSp, u32 irqCpsr) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   tracePendingIrqResume[proc] = resumePc;
   if (tracePrivilegeCheck) return;
   int frameIndex = -1;
@@ -711,8 +712,14 @@ int debuggerSetEnabled(int value) {
 
 int traceSetEnabled(int value) {
   traceEnabled = value != 0;
+  traceSuspended = false;
   if (!traceEnabled) clearTraceRuntimeState();
   return traceEnabled ? 1 : 0;
+}
+
+int traceSetSuspended(int value) {
+  traceSuspended = traceEnabled && value != 0;
+  return traceSuspended ? 1 : 0;
 }
 
 int traceSetPrivilegeCheck(int value) {

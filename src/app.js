@@ -58,6 +58,7 @@ const nativeBridge = createNativeBridge({
     onFault: (error, operation) => handleNativeFault(error, operation),
     onInitialized: async () => {
         nativeBridge.setTraceEnabled(ui.traceToggle.checked);
+        state.traceEnabled = ui.traceToggle.checked;
         state.imageData = ui.screen.getContext("2d").createImageData(256, 384);
         applyScaleRotation();
     },

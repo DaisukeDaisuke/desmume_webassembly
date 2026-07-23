@@ -31,6 +31,7 @@ export function createAppState() {
         imageData: null,
         loadingFile: false,
         fileTransactionActive: false,
+        fileTransactionBoundaryActive: false,
         fileTransactionOwner: null,
         fileTransactionReason: "",
         fileTransactionSerial: 0,
@@ -42,7 +43,7 @@ export function createAppState() {
         romBytes: null,
         pendingRomCandidate: null,
         frameBudget: 0,
-        search: { snapshot: null, ranges: null, addresses: null, address: 0, length: 0, size: 1, rangeKey: "" },
+        search: { snapshot: null, ranges: null, addresses: null, candidateSetComplete: true, address: 0, length: 0, size: 1, rangeKey: "" },
         highlightedDisasmAddress: null,
         highlightedCallstackAddress: null,
         highlightedCallstackCpsr: null,
@@ -78,6 +79,7 @@ export function createAppState() {
         screenValid: false,
         framesSinceStateLoad: 0,
         stateLoadSerial: 0,
+        traceEnabled: true,
         traceStateSynchronized: true
     };
 }

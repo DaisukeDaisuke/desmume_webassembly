@@ -23,6 +23,7 @@ const NATIVE_FUNCTIONS = Object.freeze([
     ["isPaused", "number", []],
     ["debuggerSetEnabled", "number", ["number"]],
     ["traceSetEnabled", "number", ["number"]],
+    ["traceSetSuspended", "number", ["number"]],
     ["traceSetPrivilegeCheck", "number", ["number"]],
     ["traceGetDepth", "number", []],
     ["dbgGetReg", "number", ["number", "number"]],
@@ -263,6 +264,10 @@ export function createNativeBridge({
 
     function setTraceEnabled(enabled) {
         return checkResult(state.fns.traceSetEnabled(enabled ? 1 : 0), "traceSetEnabled");
+    }
+
+    function setTraceSuspended(suspended) {
+        return checkResult(state.fns.traceSetSuspended(suspended ? 1 : 0), "traceSetSuspended");
     }
 
     function setTracePrivilegeCheck(enabled) {
@@ -510,6 +515,7 @@ export function createNativeBridge({
         step,
         stepOver,
         setTraceEnabled,
+        setTraceSuspended,
         setTracePrivilegeCheck,
         saveStateBytes,
         stackTrace,

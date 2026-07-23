@@ -19,7 +19,7 @@ export function createStateCommands(context) {
         loadStateBytesFromMemory,
         log,
         native,
-        fileTransactionService = { run: async (reason, task) => task({}) },
+        fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
         openPicker,
         pauseForFileLoad,
         readFileFromInput,
@@ -68,17 +68,19 @@ export function createStateCommands(context) {
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "analysis baseline slots are reserved");
             }
-            return fileTransactionService.run("State load", async () => {
-                await cancelAndWait("state-load");
-                const runState = pauseForFileLoad();
+            const ownerToken = getInternalMetadata(params).fileTransactionToken ?? null;
+            return fileTransactionService.run("State load", async ({ commit }) => {
                 let bytes = null;
                 let loaded = false;
+                if (params.slot) bytes = await idbGet(String(params.slot));
+                if (params.slot && !bytes) {
+                    throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
+                }
+                await commit();
+                await cancelAndWait("state-load");
+                const runState = pauseForFileLoad();
                 try {
                     if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
-                    if (params.slot) bytes = await idbGet(String(params.slot));
-                    if (params.slot && !bytes) {
-                        throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
-                    }
                     const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
                     if (ret !== 0) throw codedError(
                         ErrorCode.NATIVE_ERROR,
@@ -86,6 +88,7 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
+                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -97,7 +100,7 @@ export function createStateCommands(context) {
                     if (loaded) restoreAfterFileLoad(runState);
                     else stopAfterFailedStateLoad();
                 }
-            });
+            }, ownerToken);
         },
 
         async importStateFile(params = {}) {
@@ -106,12 +109,13 @@ export function createStateCommands(context) {
                 params.saveFlushBlockMs ?? 30000,
                 "saveFlushBlockMs"
             );
-            return fileTransactionService.run("State import", async () => {
-                await cancelAndWait("state-load");
+            return fileTransactionService.run("State import", async ({ commit }) => {
                 const selected = ui.stateFile.files && ui.stateFile.files[0]
                     ? await readFileFromInput(ui.stateFile)
                     : await openPicker(ui.stateFile);
                 const { file, bytes } = selected;
+                await commit();
+                await cancelAndWait("state-load");
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -122,6 +126,7 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
+                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -143,9 +148,10 @@ export function createStateCommands(context) {
                 params.saveFlushBlockMs ?? 30000,
                 "saveFlushBlockMs"
             );
-            return fileTransactionService.run("State byte load", async () => {
-                await cancelAndWait("state-load");
+            return fileTransactionService.run("State byte load", async ({ commit }) => {
                 const bytes = bytesFromParams(params);
+                await commit();
+                await cancelAndWait("state-load");
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -156,6 +162,7 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
+                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -171,14 +178,15 @@ export function createStateCommands(context) {
         },
 
         async loadStateUrl(params = {}) {
-            ensureReady();
+            ensureRomLoaded("state URL load requires a loaded ROM");
             const url = String(params.url || "");
             if (!url) throw new Error("url is required");
-            return fileTransactionService.run("State URL load", async () => {
-                await cancelAndWait("state-load");
+            return fileTransactionService.run("State URL load", async ({ commit }) => {
                 const response = await fetch(url, { cache: "no-store" });
                 if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
                 const bytes = new Uint8Array(await response.arrayBuffer());
+                await commit();
+                await cancelAndWait("state-load");
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -189,6 +197,7 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
+                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(nonNegativeNumber(params.saveFlushBlockMs ?? 30000, "saveFlushBlockMs"));
                     drawLoadedStateFrame({

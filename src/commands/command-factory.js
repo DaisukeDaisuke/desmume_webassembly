@@ -127,6 +127,7 @@ export function createCommands(context) {
             currentRomIdentity,
             emulatorActivity,
             ensureRomLoaded,
+            fileTransactionService,
             hasLoadedRom,
             idbGet,
             native,

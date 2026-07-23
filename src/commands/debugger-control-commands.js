@@ -177,6 +177,7 @@ export function createDebuggerControlCommands(context) {
             ensureReady();
             const wasEnabled = !!ui.traceToggle.checked;
             native.setTraceEnabled(params.enabled);
+            state.traceEnabled = !!params.enabled;
             ui.traceToggle.checked = !!params.enabled;
             if (!params.enabled) {
                 state.selectedCallstackLaneId = null;

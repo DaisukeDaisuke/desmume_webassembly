@@ -5,7 +5,7 @@ export function createSaveCommands({
     ui,
     native,
     cancelAndWait = async () => false,
-    fileTransactionService = { run: async (reason, task) => task({}) },
+    fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
     ensureReady,
     ensureRomLoaded,
     readFileFromInput,
@@ -24,13 +24,14 @@ export function createSaveCommands({
 }) {
     return Object.freeze({
         async importSaveFile() {
-            return fileTransactionService.run("Save import", async () => {
-                await cancelAndWait("reset");
+            return fileTransactionService.run("Save import", async ({ commit }) => {
                 ensureReady();
                 const selection = ui.saveFile.files && ui.saveFile.files[0]
                     ? await readFileFromInput(ui.saveFile)
                     : await openPicker(ui.saveFile);
                 const { file, bytes } = selection;
+                await commit();
+                await cancelAndWait("reset");
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {
@@ -90,13 +91,14 @@ export function createSaveCommands({
         },
 
         async loadSaveSlot(params = {}) {
-            return fileTransactionService.run("Save slot load", async () => {
-                await cancelAndWait("reset");
+            return fileTransactionService.run("Save slot load", async ({ commit }) => {
                 ensureReady();
                 const slot = String(params.slot ?? ui.stateSlot.value);
                 rememberSlot(slot);
                 const bytes = await idbGet(`save:${slot}`);
                 if (!bytes) throw new Error(`save slot not found: ${slot}`);
+                await commit();
+                await cancelAndWait("reset");
                 const runState = pauseForFileLoad();
                 let loaded = false;
                 try {

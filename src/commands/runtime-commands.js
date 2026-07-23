@@ -14,7 +14,7 @@ export function createRuntimeCommands(context) {
         bootWaitMs,
         cancelAndWait = async () => false,
         cancelOperation,
-        fileTransactionService = { run: async (reason, task) => task({}) },
+        fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
         dispatchScriptEvent,
         drawFrame,
         ensureReady,
@@ -84,7 +84,8 @@ export function createRuntimeCommands(context) {
 
         async reset(params = {}) {
             ensureRomLoaded("reset requires a loaded ROM");
-            return fileTransactionService.run("ROM reset", async () => {
+            return fileTransactionService.run("ROM reset", async ({ commit }) => {
+                await commit();
                 await cancelAndWait("reset");
                 const runState = pauseForFileLoad();
                 const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
@@ -118,7 +119,8 @@ export function createRuntimeCommands(context) {
 
         async reloadRom(params = {}) {
             ensureRomLoaded("ROM reload requires a loaded ROM");
-            return fileTransactionService.run("ROM reload", async () => {
+            return fileTransactionService.run("ROM reload", async ({ commit }) => {
+                await commit();
                 await cancelAndWait("rom-load");
                 const runState = pauseForFileLoad();
                 const resume = params.resume === true

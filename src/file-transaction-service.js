@@ -15,31 +15,54 @@ export function createFileTransactionService({
         state.fileTransactionActive = true;
         state.fileTransactionOwner = token;
         state.fileTransactionReason = String(reason);
+        state.fileTransactionBoundaryActive = false;
+        return token;
+    }
+
+    async function commit(token) {
+        if (state.fileTransactionOwner !== token) {
+            throw codedError(ErrorCode.CANCELLED, "File transaction ownership was lost");
+        }
+        if (state.fileTransactionBoundaryActive) return false;
+        state.fileTransactionBoundaryActive = true;
         state.fileTransactionSerial++;
         state.nativeBreakSerial = Number(state.nativeBreakSerial || 0) + 1;
         state.currentBreakIdentity = null;
         state.lastBreakKey = "";
         state.breakRefreshKey = "";
-        return token;
+        await cancelPendingScriptEvents(`${state.fileTransactionReason} started`);
+        return true;
     }
 
     function end(token) {
         if (state.fileTransactionOwner !== token) return false;
         state.fileTransactionActive = false;
+        state.fileTransactionBoundaryActive = false;
         state.fileTransactionOwner = null;
         state.fileTransactionReason = "";
         return true;
     }
 
-    async function run(reason, task) {
+    async function run(reason, task, ownerToken = null) {
+        if (ownerToken !== null) {
+            if (state.fileTransactionOwner !== ownerToken) {
+                throw codedError(ErrorCode.BUSY, `Active file transaction is ${state.fileTransactionReason || "in progress"}`);
+            }
+            return task({
+                token: ownerToken,
+                commit: () => commit(ownerToken)
+            });
+        }
         const token = begin(reason);
         try {
-            await cancelPendingScriptEvents(`${reason} started`);
-            return await task({ token });
+            return await task({
+                token,
+                commit: () => commit(token)
+            });
         } finally {
             end(token);
         }
     }
 
-    return Object.freeze({ begin, end, run });
+    return Object.freeze({ begin, commit, end, run });
 }
