@@ -1,0 +1,429 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as esbuild from "esbuild";
+
+import { normalizeBoundedValue } from "../src/bounded-value.js";
+import { createBreakpointOwnerStore } from "../src/breakpoint-owner-store.js";
+import { createDebuggerCoordinator } from "../src/debugger-coordinator.js";
+import { createRomService } from "../src/rom-service.js";
+import { ResourceLimits } from "../src/resource-limits.js";
+
+function validRom(fill) {
+    const bytes = new Uint8Array(0x200);
+    bytes.fill(fill);
+    return bytes;
+}
+
+function createScriptBreakHarness({
+    type = "dataAbort",
+    kind = 3,
+    cpu = "arm9",
+    address = 0,
+    ownerSite = { cpu: "special", type, address: 0 }
+} = {}) {
+    const messages = [];
+    let resumeCount = 0;
+    let stepCount = 0;
+    let nativeStatus = { [cpu]: { pc: 0 }, lastBreak: { hit: false } };
+    const state = {
+        ready: true,
+        running: true,
+        paused: false,
+        selectedCpu: "arm9",
+        frame: 0,
+        romGeneration: 7,
+        fileTransactionSerial: 3,
+        fileTransactionActive: false,
+        loadingFile: false,
+        nativeBreakSerial: 0,
+        currentBreakIdentity: null,
+        breakpointsInSync: true,
+        explicitPauseSerial: 0,
+        lastBreakKey: "",
+        breakRefreshKey: "",
+        scriptTriggers: [{
+            id: 11, scriptId: 5, callbackId: 17,
+            type, cpu, address
+        }],
+        scripts: new Map([[5, {
+            running: true,
+            worker: { postMessage: (message) => messages.push(message) }
+        }]]),
+        pendingScriptEvents: new Map(),
+        nextScriptEventId: 1,
+        nextScriptCallbackToken: 1
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner(ownerSite, {
+        id: 11, origin: "script", scriptId: 5, triggerId: 11
+    });
+    const native = {
+        getStatus: () => nativeStatus,
+        pause: (paused) => { if (!paused) resumeCount++; },
+        step: () => { stepCount++; },
+        clearBreakStatus: () => {},
+        hasLoadedRom: () => true
+    };
+    const coordinator = createDebuggerCoordinator({
+        state,
+        native,
+        breakpointOwners: owners,
+        breakpointService: { publish: () => {} },
+        getQueueBreakpointRefresh: () => () => {},
+        log: () => {},
+        hex: String,
+        updateStatus: () => {}
+    });
+    const hit = (pc) => {
+        nativeStatus = {
+            frame: state.frame + 1,
+            [cpu]: { pc },
+            lastBreak: { hit: true, cpu, kind, address, pc, value: 0 }
+        };
+        coordinator.syncNativeBreakStatus(nativeStatus);
+        return messages.at(-1);
+    };
+    return { coordinator, state, messages, hit, resumeCount: () => resumeCount, stepCount: () => stepCount };
+}
+
+test("persistent callback cannot resume a different native break", async () => {
+    const harness = createScriptBreakHarness();
+    const first = harness.hit(0x02000000);
+    harness.hit(0x02000004);
+
+    assert.equal(await harness.coordinator.finishPersistentScriptEvent(first.eventId, {
+        scriptId: 5,
+        callbackId: first.callbackId,
+        callbackToken: first.callbackToken
+    }), true);
+    assert.equal(harness.resumeCount(), 0);
+    await harness.coordinator.cancelAllPersistentScriptEvents("test cleanup");
+});
+
+test("persistent callback cannot resume across a file transaction serial", async () => {
+    const harness = createScriptBreakHarness();
+    const event = harness.hit(0x02000000);
+    harness.state.fileTransactionSerial++;
+
+    await harness.coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 5,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    });
+    assert.equal(harness.resumeCount(), 0);
+    assert.equal(harness.state.pendingScriptEvents.size, 0);
+});
+
+test("read script breakpoint resumes once after callback without native step", async () => {
+    const harness = createScriptBreakHarness({
+        type: "read",
+        kind: 1,
+        cpu: "arm9",
+        address: 0x02000010,
+        ownerSite: { cpu: "arm9", type: "read", address: 0x02000010 }
+    });
+    const event = harness.hit(0x02000020);
+
+    assert.equal(await harness.coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 5,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    }), true);
+    assert.equal(harness.resumeCount(), 1);
+    assert.equal(harness.stepCount(), 0);
+});
+
+test("write script breakpoint resumes once after callback without native step", async () => {
+    const harness = createScriptBreakHarness({
+        type: "write",
+        kind: 2,
+        cpu: "arm9",
+        address: 0x02000010,
+        ownerSite: { cpu: "arm9", type: "write", address: 0x02000010 }
+    });
+    const event = harness.hit(0x02000020);
+
+    assert.equal(await harness.coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 5,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    }), true);
+    assert.equal(harness.resumeCount(), 1);
+    assert.equal(harness.stepCount(), 0);
+});
+
+test("pending script event overflow is tracked and fails closed", async () => {
+    const harness = createScriptBreakHarness();
+    for (let id = 100; id < 100 + ResourceLimits.pendingScriptEvents; id++) {
+        harness.state.pendingScriptEvents.set(id, { sentinel: true });
+    }
+    harness.hit(0x02000000);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.resumeCount(), 0);
+    assert.equal(harness.state.paused, true);
+    assert.equal(harness.state.lastScriptError.code, "BUSY");
+    assert.equal(harness.state.pendingScriptEvents.size, ResourceLimits.pendingScriptEvents);
+});
+
+test("ROM rollback failure preserves the original failure and closes the breakpoint gate", async () => {
+    const oldRom = validRom(1);
+    const oldSave = new Uint8Array([1, 2, 3]);
+    const files = new Map([["rom.nds", oldRom], ["rom.sav", oldSave]]);
+    const loadResults = [-5, -6];
+    const state = {
+        pendingRomCandidate: { name: "candidate.nds", bytes: validRom(2) },
+        romName: "old.nds",
+        romBytes: oldRom,
+        romSize: oldRom.length,
+        romGeneration: 4,
+        running: true,
+        paused: false,
+        fileTransactionSerial: 0,
+        fileTransactionActive: false,
+        nativeBreakSerial: 0,
+        breakpointsInSync: true
+    };
+    const native = {
+        fileExists: (path) => files.has(path),
+        readFile: (path) => new Uint8Array(files.get(path)),
+        writeFile: (path, bytes) => files.set(path, new Uint8Array(bytes)),
+        unlinkFile: (path) => files.delete(path),
+        isRomLoaded: () => true,
+        loadRom: () => loadResults.shift(),
+        pause: () => {},
+        clearBreakStatus: () => {}
+    };
+    let cancelled = 0;
+    const service = createRomService({
+        state,
+        native,
+        sleep: async () => {},
+        blockSaveFlush: () => {},
+        drawFrame: () => {},
+        cancelPendingScriptEvents: async () => { cancelled++; }
+    });
+
+    await assert.rejects(service.reload(), (error) => (
+        error.mcpCode === "NATIVE_ERROR"
+        && error.mcpDetails?.rollbackFailed === true
+        && error.mcpDetails?.nativeCode === -6
+        && error.mcpDetails?.breakpointsInSync === false
+    ));
+    assert.equal(cancelled, 1);
+    assert.equal(state.fileTransactionActive, false);
+    assert.equal(state.breakpointsInSync, false);
+    assert.deepEqual(files.get("rom.nds"), oldRom);
+    assert.deepEqual(files.get("rom.sav"), oldSave);
+    assert.equal(state.romGeneration, 4);
+    assert.equal(state.running, false);
+    assert.equal(state.paused, true);
+});
+
+test("breakpoint reconciliation clears partial native state before failing", () => {
+    const nativeSites = new Set();
+    let reconciling = false;
+    let failAddress = 2;
+    let inSync = true;
+    const store = createBreakpointOwnerStore({
+        onFirstOwner: (entry) => {
+            if (!reconciling) return;
+            nativeSites.add(entry.address);
+            if (entry.address === failAddress) throw new Error("native registration failed");
+        },
+        onClearNative: () => nativeSites.clear(),
+        onReconcileStart: () => { reconciling = true; inSync = false; },
+        onReconcileSuccess: () => { reconciling = false; inSync = true; },
+        onReconcileFailure: () => { reconciling = false; inSync = false; }
+    });
+    store.addOwner({ cpu: "arm9", type: "exec", address: 1 }, { id: 1, origin: "user" });
+    store.addOwner({ cpu: "arm9", type: "exec", address: 2 }, { id: 2, origin: "user" });
+
+    assert.throws(() => store.reconcileNativeBreakpoints(), /native registration failed/);
+    assert.equal(inSync, false);
+    assert.equal(nativeSites.size, 0);
+
+    failAddress = -1;
+    assert.deepEqual(store.reconcileNativeBreakpoints(), { cleared: true, registered: 2 });
+    assert.equal(inSync, true);
+    assert.deepEqual([...nativeSites], [1, 2]);
+});
+
+test("special breakpoint reconciliation clears a discarded owner after native disable failure", () => {
+    let nativeSpecial = false;
+    let failDisable = true;
+    let inSync = true;
+    const store = createBreakpointOwnerStore({
+        onFirstOwner: (entry) => { if (entry.type === "dataAbort") nativeSpecial = true; },
+        onLastOwner: (entry) => {
+            if (entry.type !== "dataAbort") return;
+            if (failDisable) throw new Error("injected native special disable failure");
+            nativeSpecial = false;
+        },
+        onClearNative: () => { nativeSpecial = false; },
+        onReconcileStart: () => { inSync = false; },
+        onReconcileSuccess: () => { inSync = true; },
+        onReconcileFailure: () => { inSync = false; }
+    });
+    store.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
+        id: 91, origin: "script", scriptId: 7
+    });
+    assert.equal(nativeSpecial, true);
+    assert.throws(() => store.removeOwner(91), /injected native special disable failure/);
+    store.discardOwner(91);
+    failDisable = false;
+    assert.deepEqual(store.reconcileNativeBreakpoints(), { cleared: true, registered: 0 });
+    assert.equal(nativeSpecial, false);
+    assert.equal(store.list().length, 0);
+    assert.equal(inSync, true);
+});
+
+test("structured Worker values reject cycles, exotic objects, and all configured limits", () => {
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizeBoundedValue({ ok: [1, "two", true] }).value)), { ok: [1, "two", true] });
+    const cyclic = {};
+    cyclic.self = cyclic;
+    assert.throws(() => normalizeBoundedValue(cyclic), /cyclic/);
+    assert.throws(() => normalizeBoundedValue(new Uint8Array([1])), /binary structured values/);
+    assert.throws(() => normalizeBoundedValue([1, 2], { maxArray: 1 }), /item budget/);
+    assert.throws(() => normalizeBoundedValue({ a: { b: 1 } }, { maxDepth: 1 }), /depth budget/);
+    assert.throws(() => normalizeBoundedValue("four", { maxBytes: 3 }), /byte budget/);
+    assert.throws(() => normalizeBoundedValue({ a: 1, b: 2 }, { maxNodes: 2 }), /node budget/);
+});
+
+async function bundle(entry, options = {}) {
+    const result = await esbuild.build({
+        entryPoints: [fileURLToPath(new URL(entry, import.meta.url))],
+        bundle: true,
+        write: false,
+        minify: options.minify ?? false,
+        platform: "browser",
+        format: "iife",
+        globalName: options.globalName,
+        target: ["chrome120"],
+        logLevel: "silent"
+    });
+    return result.outputFiles[0].text;
+}
+
+test("sandbox boundary self-test uses production supervisors and no dedicated probe dependency", async () => {
+    const selfTest = await readFile(new URL("../src/sandbox-boundary-self-test.js", import.meta.url), "utf8");
+    const buildScript = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
+    assert.match(selfTest, /eval-supervisor\.worker\.js/);
+    assert.match(selfTest, /parser\.worker\.js/);
+    assert.match(selfTest, /eval\.worker\.js/);
+    assert.match(selfTest, /pendingRpcBeforeShutdown/);
+    assert.match(selfTest, /childWorkerTerminateCalled/);
+    assert.match(selfTest, /childBlobUrlRevokeCalled/);
+    assert.match(selfTest, /host\.status\(\)/);
+    assert.equal(buildScript.includes(["security", "boundary.worker.js"].join("-")), false);
+    assert.equal(buildScript.includes(["boundary", "probe"].join("-")), false);
+    assert.equal(buildScript.includes(["Boundary", "Probe"].join("")), false);
+    assert.doesNotMatch(selfTest, /unauthenticatedMessageAccepted:\s*false/);
+    assert.doesNotMatch(selfTest, /tokenPredictionAccepted:\s*false/);
+    assert.doesNotMatch(selfTest, /listenersAfter:\s*0/);
+});
+
+test("automation security context preserves its boundary within the accessibility byte budget", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const note = html.match(/<aside class="automation-security-context"[^>]*>\s*([\s\S]*?)\s*<\/aside>/)?.[1] || "";
+    const bytes = Buffer.byteLength(note, "utf8");
+    assert.ok(bytes >= 1200 && bytes <= 1500, `security context byte length: ${bytes}`);
+    for (const expected of [
+        "NDS, Save, and State", "local emulation, debugging, and reverse engineering",
+        "No external CDN executable code", "Exact-version Acorn and SSIM", "fixed hashes",
+        "browser-native modelContext", "cross-origin or opaque-origin", "supervisor and sandbox Workers",
+        "raw-memory reads", "disassembly", "Ghidra-style", "large code analysis",
+        "full or near-full ROM", "repeated, periodic, or chunked exfiltration", "evaluate_script",
+        "window.DesmumeMCP", "window.memory", "one-character shortcuts"
+    ]) assert.match(note, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("persistent supervisor bounds queued non-tick events and terminates on overflow", async () => {
+    const source = await bundle("../src/workers/persistent-script-supervisor.worker.js");
+    const messages = [];
+    const workers = [];
+    class FakeWorker {
+        constructor() {
+            this.messages = [];
+            this.terminated = false;
+            workers.push(this);
+        }
+        postMessage(message) { this.messages.push(message); }
+        terminate() { this.terminated = true; }
+    }
+    const context = vm.createContext({
+        postMessage: (message) => messages.push(message),
+        TextEncoder,
+        Blob: class Blob {},
+        Worker: FakeWorker,
+        URL: { createObjectURL: () => "blob:bounded", revokeObjectURL: () => {} }
+    });
+    context.onmessage = null;
+    vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
+    const dependency = { source: "fixed", sha256: "fixed-hash" };
+    context.onmessage({ data: {
+        type: "start", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
+    } });
+    const parser = workers[0];
+    parser.onmessage({ data: {
+        type: "ready", hardened: true, layer: "parser",
+        channelToken: "parser-token", dependencyHash: dependency.sha256
+    } });
+    parser.onmessage({ data: {
+        type: "parsed", channelToken: "parser-token"
+    } });
+    const child = workers[1];
+    child.onmessage({ data: {
+        type: "ready", hardened: true, layer: "sandbox",
+        channelToken: "queue-token"
+    } });
+
+    for (let id = 1; id <= ResourceLimits.persistentEventQueue + 2; id++) {
+        context.onmessage({ data: {
+            type: "event", event: "exec", eventId: id,
+            callbackId: id, callbackToken: `token-${id}`, payload: {}
+        } });
+    }
+    assert.equal(child.terminated, true);
+    assert.ok(messages.some((message) => (
+        message.type === "failed"
+        && message.phase === "resource"
+        && message.error?.message.includes(String(ResourceLimits.persistentEventQueue))
+    )));
+});
+
+test("native source contracts preserve allocation, frame, dump, and pthread failure semantics", async () => {
+    const wasm = await readFile(new URL("../webassembly/wasm-port.cpp", import.meta.url), "utf8");
+    const support = await readFile(new URL("../webassembly/support.c", import.meta.url), "utf8");
+    assert.match(wasm, /prepareRomStorage\(romBuffer, romBufferCap, romLen, rl,/);
+    assert.match(wasm, /if \(!romLoaded\) return -1;\s*if \(paused\) return 1;/);
+    assert.match(wasm, /if \(result > 0\) break;\s*ran\+\+;/);
+    assert.match(wasm, /!uint32RangeFits\(addr, \(size_t\)len\)/);
+    assert.match(support, /pthread_attr_setschedpolicy[\s\S]*return ENOTSUP;/);
+    assert.match(support, /pthread_setname_np[\s\S]*return ENOTSUP;/);
+});
+
+test("native runtime contracts execute failure and reset transitions", {
+    skip: process.platform === "win32"
+}, () => {
+    const directory = mkdtempSync(join(tmpdir(), "desmume-native-contract-"));
+    const executable = join(directory, "native-runtime-harness");
+    try {
+        execFileSync("c++", [
+            "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+            fileURLToPath(new URL("./native-runtime-harness.cpp", import.meta.url)),
+            fileURLToPath(new URL("../webassembly/support.c", import.meta.url)),
+            "-pthread", "-o", executable
+        ], { stdio: "pipe" });
+        execFileSync(executable, [], { stdio: "pipe" });
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});

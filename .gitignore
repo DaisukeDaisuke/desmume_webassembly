@@ -1,5 +1,12 @@
 /cmake-build-debug
 /.idea
 /public/desmume.js
+/public/app.js
+/public/app.js.map
+/node_modules/
 /data
 /data/dq9_new2.nds
+/DESMUME_WEB_DEBUGGER_MERGED_INSTRUCTIONS.md
+/DESMUME_WEB_DEBUGGER_BUGS.md
+/DESMUME_WEB_DEBUGGER_MERGED_INSTRUCTIONS_original.md
+/sol_high_review.md
