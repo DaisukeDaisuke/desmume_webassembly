@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
-import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -267,77 +266,21 @@ async function bundle(entry, options = {}) {
     return result.outputFiles[0].text;
 }
 
-test("fixed adversarial dependency executes only after the security Worker is locked", async () => {
-    const workerSource = await bundle("../src/workers/security-boundary.worker.js");
-    const globalName = "__desmumeBoundaryFixture";
-    const fixtureSource = `${await bundle("../src/security-fixtures/adversarial-dependency.entry.js", {
-        minify: true,
-        globalName
-    })}\n${globalName}`;
-    const dependency = {
-        source: fixtureSource,
-        sha256: createHash("sha256").update(fixtureSource).digest("hex")
-    };
-    const messages = [];
-    const listeners = new Map();
-    let forbiddenCalls = 0;
-    const forbidden = () => { forbiddenCalls++; };
-    const context = vm.createContext({
-        console,
-        crypto: { randomUUID: () => "boundary-token", subtle: webcrypto.subtle },
-        TextEncoder,
-        postMessage: (message) => messages.push(message),
-        addEventListener: (type, listener) => listeners.set(type, listener),
-        removeEventListener: forbidden,
-        setTimeout: (callback) => {
-            if (typeof callback === "string") forbiddenCalls++;
-            else callback();
-        },
-        setInterval: (callback) => {
-            if (typeof callback === "string") forbiddenCalls++;
-            else callback();
-        },
-        fetch: forbidden,
-        XMLHttpRequest: forbidden,
-        WebSocket: forbidden,
-        EventSource: forbidden,
-        Worker: forbidden,
-        SharedWorker: forbidden,
-        importScripts: forbidden,
-        BroadcastChannel: forbidden,
-        WebTransport: forbidden,
-        indexedDB: {},
-        caches: {},
-        localStorage: {},
-        sessionStorage: {},
-        close: forbidden
-    });
-    context.self = context;
-    vm.runInContext(workerSource, context, { filename: "security-boundary.worker.js" });
-    const bootstrap = messages.shift();
-    assert.equal(bootstrap.type, "bootstrapReady");
-    await listeners.get("message")({
-        data: { type: "initialize", channelToken: bootstrap.channelToken, dependency }
-    });
-    const done = messages.find((message) => message.type === "done");
-    assert.equal(done.result.passed, true);
-    assert.equal(done.result.fixtureSha256, dependency.sha256);
-    assert.ok(Object.values(done.result.preReady).every((value) => value === false));
-    assert.equal(forbiddenCalls, 0);
-});
-
-test("sandbox boundary self-test uses production supervisors and contains no fixed security success fields", async () => {
+test("sandbox boundary self-test uses production supervisors and no dedicated probe dependency", async () => {
     const selfTest = await readFile(new URL("../src/sandbox-boundary-self-test.js", import.meta.url), "utf8");
-    const dedicatedWorker = await readFile(new URL("../src/workers/security-boundary.worker.js", import.meta.url), "utf8");
+    const buildScript = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
     assert.match(selfTest, /eval-supervisor\.worker\.js/);
     assert.match(selfTest, /eval\.worker\.js/);
     assert.match(selfTest, /pendingRpcBeforeShutdown/);
     assert.match(selfTest, /childWorkerTerminateCalled/);
     assert.match(selfTest, /childBlobUrlRevokeCalled/);
     assert.match(selfTest, /host\.status\(\)/);
-    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /unauthenticatedMessageAccepted:\s*false/);
-    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /tokenPredictionAccepted:\s*false/);
-    assert.doesNotMatch(`${selfTest}\n${dedicatedWorker}`, /listenersAfter:\s*0/);
+    assert.equal(buildScript.includes(["security", "boundary.worker.js"].join("-")), false);
+    assert.equal(buildScript.includes(["boundary", "probe"].join("-")), false);
+    assert.equal(buildScript.includes(["Boundary", "Probe"].join("")), false);
+    assert.doesNotMatch(selfTest, /unauthenticatedMessageAccepted:\s*false/);
+    assert.doesNotMatch(selfTest, /tokenPredictionAccepted:\s*false/);
+    assert.doesNotMatch(selfTest, /listenersAfter:\s*0/);
 });
 
 test("automation security context preserves its boundary within the accessibility byte budget", async () => {

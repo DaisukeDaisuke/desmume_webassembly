@@ -1,4 +1,4 @@
-import { normalizeTrustedValue, readOwnDataProperty } from "./trusted-value-normalizer.js";
+import { normalizeStructuredValue, readOwnDataProperty } from "./structured-value-normalizer.js";
 
 const DEFAULT_LIMITS = Object.freeze({
     maxDepth: 10,
@@ -52,7 +52,7 @@ function copySchemaOptions(options = {}) {
 
 export function normalizeWorkerProtocolValue(value, options = {}) {
     const safeOptions = copySchemaOptions(options);
-    return normalizeTrustedValue(value, {
+    return normalizeStructuredValue(value, {
         ...DEFAULT_LIMITS,
         ...safeOptions
     });

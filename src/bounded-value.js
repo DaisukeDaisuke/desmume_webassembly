@@ -1,5 +1,5 @@
-import { normalizeTrustedValue } from "./trusted-value-normalizer.js";
+import { normalizeStructuredValue } from "./structured-value-normalizer.js";
 
 export function normalizeBoundedValue(value, options = {}) {
-    return normalizeTrustedValue(value, options);
+    return normalizeStructuredValue(value, options);
 }

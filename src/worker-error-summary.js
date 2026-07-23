@@ -1,4 +1,4 @@
-import { readOwnDataProperty } from "./trusted-value-normalizer.js";
+import { readOwnDataProperty } from "./structured-value-normalizer.js";
 
 const NativeString = globalThis.String;
 const NativeNumber = globalThis.Number;
@@ -12,30 +12,45 @@ const NativeURIError = globalThis.URIError;
 const NativeTextEncoder = globalThis.TextEncoder;
 const nativeReflectApply = globalThis.Reflect.apply;
 const nativeGetPrototypeOf = globalThis.Object.getPrototypeOf;
-const nativeStringSlice = NativeString.prototype.slice;
-const nativeStringSplit = NativeString.prototype.split;
-const nativeStringJoin = globalThis.Array.prototype.join;
-const nativeArraySlice = globalThis.Array.prototype.slice;
+const nativeGetOwnPropertyDescriptor = globalThis.Object.getOwnPropertyDescriptor;
+const nativeStringPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [""]);
+const nativeStringSlice = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeStringPrototype, "slice"]).value;
+const nativeStringSplit = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeStringPrototype, "split"]).value;
+const nativeArrayPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [[]]);
+const nativeStringJoin = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeArrayPrototype, "join"]).value;
+const nativeArraySlice = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeArrayPrototype, "slice"]).value;
 const nativeMathFloor = globalThis.Math.floor;
 const nativeMathMax = globalThis.Math.max;
-const nativeTextEncode = NativeTextEncoder.prototype.encode;
-const nativeTypedArrayByteLength = nativeReflectApply(globalThis.Object.getOwnPropertyDescriptor, null, [
-    nativeReflectApply(globalThis.Object.getPrototypeOf, null, [globalThis.Uint8Array.prototype]),
+const trustedTextEncoder = new NativeTextEncoder();
+const nativeTextEncoderPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [trustedTextEncoder]);
+const nativeTextEncode = findPrototypeValue(nativeTextEncoderPrototype, "encode");
+const nativeUint8Prototype = nativeReflectApply(nativeGetPrototypeOf, null, [new globalThis.Uint8Array(0)]);
+const nativeTypedArrayByteLength = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [
+    nativeReflectApply(nativeGetPrototypeOf, null, [nativeUint8Prototype]),
     "byteLength"
 ]).get;
-const trustedTextEncoder = new NativeTextEncoder();
 const nativeErrorPrototypes = new Map([
-    [NativeError.prototype, "Error"],
-    [NativeEvalError.prototype, "EvalError"],
-    [NativeRangeError.prototype, "RangeError"],
-    [NativeReferenceError.prototype, "ReferenceError"],
-    [NativeSyntaxError.prototype, "SyntaxError"],
-    [NativeTypeError.prototype, "TypeError"],
-    [NativeURIError.prototype, "URIError"]
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeError()]), "Error"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeEvalError()]), "EvalError"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeRangeError()]), "RangeError"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeReferenceError()]), "ReferenceError"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeSyntaxError()]), "SyntaxError"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeTypeError()]), "TypeError"],
+    [nativeReflectApply(nativeGetPrototypeOf, null, [new NativeURIError()]), "URIError"]
 ]);
 
 function callIntrinsic(fn, receiver, args) {
     return nativeReflectApply(fn, receiver, args);
+}
+
+function findPrototypeValue(prototype, key) {
+    let current = prototype;
+    while (current) {
+        const descriptor = callIntrinsic(nativeGetOwnPropertyDescriptor, null, [current, key]);
+        if (descriptor && readOwnDataProperty(descriptor, "value") !== undefined) return descriptor.value;
+        current = callIntrinsic(nativeGetPrototypeOf, null, [current]);
+    }
+    throw new NativeTypeError(`${key} intrinsic is unavailable`);
 }
 
 function utf8Length(text) {

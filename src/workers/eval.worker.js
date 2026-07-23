@@ -2,8 +2,8 @@
 
 import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams } from "../worker-rpc-value.js";
-import { serializeWorkerError } from "../worker-error-serializer.js";
+import { normalizeWorkerRpcParams } from "../worker-rpc-payload.js";
+import { serializeWorkerError } from "../worker-error-summary.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -11,6 +11,7 @@ const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
 const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
 const NativeTextEncoder = globalThis.TextEncoder;
+const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -74,7 +75,7 @@ function lockDownRuntimeCodeGeneration() {
     collectPrototypeChain(function* () {});
     collectPrototypeChain(async function* () {});
     for (const prototype of prototypes) {
-        if (!Object.prototype.hasOwnProperty.call(prototype, "constructor")) continue;
+        if (!nativeObjectHasOwn(prototype, "constructor")) continue;
         try {
             Object.defineProperty(prototype, "constructor", {
                 value: undefined,
@@ -174,16 +175,6 @@ nativeAddEventListener("message", async (event) => {
         replies.delete(message.replyId);
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.result);
-        return;
-    }
-    if (message.type === "securityProbe") {
-        const forged = { type: "done", result: { forged: true } };
-        if (message.probe === "wrongToken") forged.channelToken = `${channelToken}-wrong`;
-        else if (message.probe === "guessedToken") forged.channelToken = "00000000-0000-4000-8000-000000000000";
-        else if (message.probe === "fakeCall") Object.assign(forged, { type: "call", id: "forged", command: "status", params: {} });
-        else if (message.probe === "fakePrint") Object.assign(forged, { type: "print", values: ["forged"] });
-        else if (message.probe === "fakeEventDone") Object.assign(forged, { type: "eventDone", eventId: 1 });
-        nativePostMessage(forged);
         return;
     }
     if (message.type !== "run" || typeof message.code !== "string") {

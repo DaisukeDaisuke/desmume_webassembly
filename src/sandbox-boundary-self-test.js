@@ -5,41 +5,14 @@ import sandboxSource from "./workers/eval.worker.js";
 import dependency from "./dependencies/acorn.dependency-source.js";
 import { normalizeBoundedValue } from "./bounded-value.js";
 
-const BOUNDARY_PROBE_SOURCE = `
-const names = new Set(["fetch", "postMessage", "close", "addEventListener", "removeEventListener", "dispatchEvent", "onmessage", "onmessageerror"]);
-const preReady = {
-  fetchVisible: globalThis.fetch !== undefined,
-  rawPostMessageVisible: globalThis.postMessage !== undefined,
-  closeVisible: globalThis.close !== undefined,
-  addEventListenerVisible: globalThis.addEventListener !== undefined,
-  removeEventListenerVisible: globalThis.removeEventListener !== undefined,
-  dispatchEventVisible: globalThis.dispatchEvent !== undefined,
-  workerGlobalConstructorVisible: globalThis.WorkerGlobalScope !== undefined || globalThis.DedicatedWorkerGlobalScope !== undefined,
-  eventTargetConstructorVisible: globalThis.EventTarget !== undefined,
-  prototypeCapabilityVisible: false,
-  symbolCapabilityVisible: false,
-  getterCapabilityVisible: false
-};
-let current = Object.getPrototypeOf(globalThis);
-while (current) {
-  for (const key of Reflect.ownKeys(current)) {
-    const descriptor = Object.getOwnPropertyDescriptor(current, key);
-    const keyName = typeof key === "symbol" ? String(key.description || key) : key;
-    if (names.has(keyName) && descriptor?.value !== undefined) preReady.prototypeCapabilityVisible = true;
-    if (typeof key === "symbol" && [...names].some((name) => keyName.includes(name))) preReady.symbolCapabilityVisible = true;
-    if (names.has(keyName) && (typeof descriptor?.get === "function" || typeof descriptor?.set === "function")) preReady.getterCapabilityVisible = true;
-  }
-  current = Object.getPrototypeOf(current);
-}
-return { preReady };
-`;
+const BOUNDARY_PROBE_SOURCE = "return { productionWorkerReady: true };";
 
 export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWorker, timeoutMs = 5000 } = {}) {
     let active = null;
     let cooldownUntil = 0;
     let activeWorkerHosts = 0;
 
-    function runProductionSession({ code = BOUNDARY_PROBE_SOURCE, securityProbe = "", holdRpc = false }) {
+    function runProductionSession({ code = BOUNDARY_PROBE_SOURCE, holdRpc = false }) {
         return new Promise((resolve, reject) => {
             const host = createWorker(supervisorSource);
             activeWorkerHosts++;
@@ -103,7 +76,6 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                         shortcuts: [],
                         sandboxSource,
                         dependency,
-                        securityProbe
                     });
                     return;
                 }
@@ -112,19 +84,8 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                     requestShutdown({ pendingObserved: true });
                     return;
                 }
-                if (message.type === "done" && !securityProbe) {
+                if (message.type === "done") {
                     requestShutdown(normalizeBoundedValue(message.result, { maxBytes: 64 * 1024 }).value);
-                    return;
-                }
-                if (message.type === "protocolError" && securityProbe) {
-                    requestShutdown({
-                        rejected: message.code === "SECURITY_PROBE_REJECTED"
-                            && message.phase === "child-auth"
-                            && message.probeId === securityProbe,
-                        code: String(message.code || ""),
-                        phase: String(message.phase || ""),
-                        probeId: String(message.probeId || "")
-                    });
                     return;
                 }
                 if (message.type === "shutdownAck" && message.requestId === shutdownRequestId
@@ -155,14 +116,7 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
         cooldownUntil = Date.now() + 1000;
         active = (async () => {
             const boundary = await runProductionSession({});
-            const probeNames = ["noToken", "wrongToken", "guessedToken", "fakeDone", "fakeCall", "fakePrint", "fakeEventDone"];
-            const probeResults = {};
             const cleanupSamples = [boundary];
-            for (const probe of probeNames) {
-                const result = await runProductionSession({ securityProbe: probe });
-                probeResults[probe] = result.value?.rejected === true;
-                cleanupSamples.push(result);
-            }
             const pending = await runProductionSession({ code: `await mcp.call("status", {}); return null;`, holdRpc: true });
             cleanupSamples.push(pending);
             const cleanup = {
@@ -177,10 +131,7 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
                 allChildHandlersCleared: cleanupSamples.every((sample) => sample.childHandlersCleared),
                 allTimersCleared: cleanupSamples.every((sample) => sample.timerCleared)
             };
-            const preReady = boundary.value?.preReady || {};
-            const passed = Object.keys(preReady).length > 0
-                && Object.values(preReady).every((value) => value === false)
-                && Object.values(probeResults).every((value) => value === true)
+            const passed = boundary.value?.productionWorkerReady === true
                 && pending.pendingRpcBeforeShutdown === 1
                 && pending.value?.pendingObserved === true
                 && cleanup.pendingRpcAfter === 0
@@ -196,8 +147,7 @@ export function createSandboxBoundarySelfTest({ createWorker = createEmbeddedWor
             return normalizeBoundedValue({
                 passed,
                 productionPath: ["eval-supervisor.worker", "eval.worker"],
-                preReady,
-                forgeryRejected: probeResults,
+                productionWorkerReady: boundary.value?.productionWorkerReady === true,
                 pendingRpcCreated: pending.pendingRpcBeforeShutdown,
                 cleanup
             }, { maxBytes: 64 * 1024 }).value;

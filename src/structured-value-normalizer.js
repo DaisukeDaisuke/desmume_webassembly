@@ -16,27 +16,35 @@ const nativeGetOwnPropertyDescriptors = globalThis.Object.getOwnPropertyDescript
 const nativeObjectKeys = globalThis.Object.keys;
 const nativeObjectCreate = globalThis.Object.create;
 const nativeDefineProperty = globalThis.Object.defineProperty;
-const nativeHasOwnProperty = globalThis.Object.prototype.hasOwnProperty;
-const nativeObjectPrototype = globalThis.Object.prototype;
+const nativeObjectPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [{}]);
+const nativeHasOwnProperty = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [
+    nativeObjectPrototype,
+    "hasOwnProperty"
+]).value;
 const nativeNumberIsFinite = globalThis.Number.isFinite;
 const nativeNumberIsInteger = globalThis.Number.isInteger;
 const nativeNumberIsSafeInteger = globalThis.Number.isSafeInteger;
-const nativeSetHas = NativeSet.prototype.has;
-const nativeSetAdd = NativeSet.prototype.add;
-const nativeSetDelete = NativeSet.prototype.delete;
-const nativeTextEncode = NativeTextEncoder.prototype.encode;
-const nativeStringTrim = globalThis.String.prototype.trim;
-const nativeStringReplace = globalThis.String.prototype.replace;
-const nativeRegExpTest = globalThis.RegExp.prototype.test;
+const nativeSetPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [new NativeSet()]);
+const nativeSetHas = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeSetPrototype, "has"]).value;
+const nativeSetAdd = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeSetPrototype, "add"]).value;
+const nativeSetDelete = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeSetPrototype, "delete"]).value;
 const trustedTextEncoder = new NativeTextEncoder();
-const nativeUint8Prototype = NativeUint8Array.prototype;
+const nativeTextEncoderPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [trustedTextEncoder]);
+const nativeTextEncode = findPrototypeValue(nativeTextEncoderPrototype, "encode");
+const nativeStringPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [""]);
+const nativeStringTrim = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeStringPrototype, "trim"]).value;
+const nativeStringReplace = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeStringPrototype, "replace"]).value;
+const nativeRegExpPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [/x/]);
+const nativeRegExpTest = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeRegExpPrototype, "test"]).value;
+const nativeUint8Prototype = nativeReflectApply(nativeGetPrototypeOf, null, [new NativeUint8Array(0)]);
 const nativeTypedArrayPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [nativeUint8Prototype]);
 const nativeTypedArrayByteLength = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [
     nativeTypedArrayPrototype,
     "byteLength"
 ]).get;
+const nativeArrayBufferPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [new NativeArrayBuffer(0)]);
 const nativeArrayBufferByteLength = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [
-    NativeArrayBuffer.prototype,
+    nativeArrayBufferPrototype,
     "byteLength"
 ]).get;
 
@@ -58,6 +66,16 @@ const MAXIMUM_LIMITS = Object.freeze({
 
 function callIntrinsic(fn, receiver, args) {
     return nativeReflectApply(fn, receiver, args);
+}
+
+function findPrototypeValue(prototype, key) {
+    let current = prototype;
+    while (current) {
+        const descriptor = callIntrinsic(nativeGetOwnPropertyDescriptor, null, [current, key]);
+        if (descriptor && hasOwn(descriptor, "value")) return descriptor.value;
+        current = callIntrinsic(nativeGetPrototypeOf, null, [current]);
+    }
+    throw new NativeTypeError(`${key} intrinsic is unavailable`);
 }
 
 function hasOwn(value, key) {
@@ -123,7 +141,7 @@ function defineDataProperty(target, key, value) {
     }]);
 }
 
-export function normalizeTrustedValue(value, options = {}) {
+export function normalizeStructuredValue(value, options = {}) {
     const limits = {
         maxDepth: readLimit(options, "maxDepth", DEFAULT_LIMITS.maxDepth),
         maxNodes: readLimit(options, "maxNodes", DEFAULT_LIMITS.maxNodes),
@@ -271,12 +289,3 @@ export function normalizeTrustedValue(value, options = {}) {
     };
     return { value: visit(value, 0, ""), bytes, nodes };
 }
-
-export const TrustedValueIntrinsics = Object.freeze({
-    isArray: (value) => callIntrinsic(nativeArrayIsArray, null, [value]),
-    isFinite: (value) => callIntrinsic(nativeNumberIsFinite, null, [value]),
-    isInteger: (value) => callIntrinsic(nativeNumberIsInteger, null, [value]),
-    isSafeInteger: (value) => callIntrinsic(nativeNumberIsSafeInteger, null, [value]),
-    toNumber: (value) => NativeNumber(value),
-    utf8Length
-});

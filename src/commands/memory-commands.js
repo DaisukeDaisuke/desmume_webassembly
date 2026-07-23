@@ -1,6 +1,6 @@
 import { codedError, memorySize, positiveInteger } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
-import { WorkerByteLimits } from "../worker-rpc-value.js";
+import { WorkerByteLimits } from "../worker-rpc-payload.js";
 
 export function createMemoryCommands(context) {
     const {

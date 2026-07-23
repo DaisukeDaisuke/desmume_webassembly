@@ -1,6 +1,6 @@
 import { ErrorCode } from "../error-codes.js";
 import { codedError, positiveInteger } from "../validation.js";
-import { WorkerByteLimits } from "../worker-rpc-value.js";
+import { WorkerByteLimits } from "../worker-rpc-payload.js";
 
 export function createDisassemblyCommands(context) {
     const {

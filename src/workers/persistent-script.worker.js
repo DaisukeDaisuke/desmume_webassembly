@@ -2,8 +2,8 @@
 
 import { assertLockedGlobals, initializeLockedDependency, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-value.js";
-import { serializeWorkerError } from "../worker-error-serializer.js";
+import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
+import { serializeWorkerError } from "../worker-error-summary.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -11,6 +11,7 @@ const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
 const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
 const NativeTextEncoder = globalThis.TextEncoder;
+const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -82,7 +83,7 @@ function lockDownRuntimeCodeGeneration() {
     collectPrototypeChain(function* () {});
     collectPrototypeChain(async function* () {});
     for (const prototype of prototypes) {
-        if (!Object.prototype.hasOwnProperty.call(prototype, "constructor")) continue;
+        if (!nativeObjectHasOwn(prototype, "constructor")) continue;
         try {
             Object.defineProperty(prototype, "constructor", {
                 value: undefined,
@@ -148,7 +149,7 @@ function unwrapLegacyScalar(result, command) {
         error.details = result.error?.details;
         throw error;
     }
-    if (result?.ok === true && Object.prototype.hasOwnProperty.call(result, "value")) {
+    if (result?.ok === true && nativeObjectHasOwn(result, "value")) {
         return result.value;
     }
     if (result == null || ["number", "string", "boolean"].includes(typeof result)) {

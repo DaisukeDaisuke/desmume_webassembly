@@ -1,7 +1,7 @@
 "use strict";
 
 import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-value.js";
+import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
 
 let sandbox = null;
 let sandboxUrl = "";

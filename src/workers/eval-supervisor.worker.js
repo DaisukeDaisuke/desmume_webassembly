@@ -1,13 +1,12 @@
 "use strict";
 
 import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams } from "../worker-rpc-value.js";
+import { normalizeWorkerRpcParams } from "../worker-rpc-payload.js";
 
 let sandbox = null;
 let sandboxUrl = "";
 let channelToken = "";
 let started = false;
-let activeSecurityProbe = "";
 let childWorkerTerminateCalled = false;
 let childBlobUrlRevokeCalled = false;
 let childHandlersCleared = false;
@@ -67,11 +66,7 @@ function shutdown(requestId) {
 }
 
 function rejectChild(message, options = {}) {
-    protocolError(message, activeSecurityProbe ? {
-        code: "SECURITY_PROBE_REJECTED",
-        phase: "child-auth",
-        probeId: activeSecurityProbe
-    } : options);
+    protocolError(message, options);
     disposeSandbox();
 }
 
@@ -128,7 +123,6 @@ onmessage = (event) => {
             return;
         }
         started = true;
-        activeSecurityProbe = typeof message.securityProbe === "string" ? message.securityProbe : "";
         try {
             sandboxUrl = URL.createObjectURL(new Blob([message.sandboxSource], { type: "text/javascript" }));
             sandbox = new Worker(sandboxUrl);
@@ -150,10 +144,6 @@ onmessage = (event) => {
                     return;
                 }
                 channelToken = childMessage.channelToken;
-                if (activeSecurityProbe) {
-                    sandbox.postMessage({ type: "securityProbe", probe: activeSecurityProbe });
-                    return;
-                }
                 sandbox.postMessage({ type: "run", code: message.code, shortcuts: message.shortcuts });
                 return;
             }

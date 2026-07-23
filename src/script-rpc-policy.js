@@ -1,6 +1,6 @@
 import { ErrorCode } from "./error-codes.js";
 import { codedError, isPlainObject } from "./validation.js";
-import { normalizeWorkerRpcParams } from "./worker-rpc-value.js";
+import { normalizeWorkerRpcParams } from "./worker-rpc-payload.js";
 
 const COMMON_COMMANDS = [
     "status", "snapshotContext", "pause", "resume", "continue", "step", "smartStep",

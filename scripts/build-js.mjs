@@ -9,8 +9,7 @@ for (const entryPoint of [
   "src/workers/eval-supervisor.worker.js",
   "src/workers/persistent-script.worker.js",
   "src/workers/persistent-script-supervisor.worker.js",
-  "src/workers/algorithm.worker.js",
-  "src/workers/security-boundary.worker.js"
+  "src/workers/algorithm.worker.js"
 ]) {
   const result = await esbuild.build({
     entryPoints: [entryPoint],
@@ -29,8 +28,7 @@ for (const entryPoint of [
 const dependencySources = new Map();
 for (const [entryPoint, sourceModule, globalName] of [
   ["src/dependencies/acorn.entry.js", "src/dependencies/acorn.dependency-source.js", "__desmumeAcorn"],
-  ["src/dependencies/ssim.entry.js", "src/dependencies/ssim.dependency-source.js", "__desmumeSsim"],
-  ["src/security-fixtures/adversarial-dependency.entry.js", "src/dependencies/adversarial.dependency-source.js", "__desmumeAdversarial"]
+  ["src/dependencies/ssim.entry.js", "src/dependencies/ssim.dependency-source.js", "__desmumeSsim"]
 ]) {
   const result = await esbuild.build({
     entryPoints: [entryPoint],
