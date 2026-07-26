@@ -250,7 +250,7 @@ test("input sequence rejects pause by default and awaits explicit manual resume"
 
 test("input sequence rejects frame-step pauses, stops later mutations, and releases held buttons", async () => {
     const breakCases = [
-        ["manual", undefined],
+        ["manual", null],
         ["executeBreakpoint", "exec"],
         ["memoryBreakpoint", "read"],
         ["memoryBreakpoint", "write"],
@@ -274,7 +274,7 @@ test("input sequence rejects frame-step pauses, stops later mutations, and relea
                         paused: true,
                         running: false,
                         pauseKind,
-                        ...(breakType ? {
+                        ...(breakType !== null ? {
                             breakType,
                             cpu: "arm9",
                             address: 0x02000010,
@@ -300,7 +300,9 @@ test("input sequence rejects frame-step pauses, stops later mutations, and relea
             harness.run([["wf", 1]]),
             (error) => error.mcpCode === "INPUT_UNAVAILABLE"
                 && error.mcpDetails.pauseKind === pauseKind
-                && (breakType === undefined || error.mcpDetails.breakType === breakType)
+                && (breakType === null
+                    ? !Object.prototype.hasOwnProperty.call(error.mcpDetails, "breakType")
+                    : error.mcpDetails.breakType === breakType)
         );
         assert.equal(harness.stepCalls(), 1);
     }
