@@ -36,6 +36,12 @@ export function createContextCommands(context) {
                 paused: state.paused,
                 running: state.running,
                 loadingFile: state.loadingFile,
+                fileTransaction: {
+                    active: !!state.fileTransactionActive,
+                    serial: Number(state.fileTransactionSerial || 0),
+                    reason: String(state.fileTransactionReason || "")
+                },
+                stateLoadSerial: Number(state.stateLoadSerial || 0),
                 romLoaded: hasLoadedRom(),
                 romSize: state.romSize,
                 frame: state.frame,

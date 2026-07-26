@@ -31,7 +31,7 @@ export function createScreenshotCommands(context) {
                 width: ui.screen.width,
                 height: ui.screen.height,
                 cooldownMs,
-                dataUrl: params.includeDataUrl ? dataUrl : undefined
+                ...(params.includeDataUrl ? { dataUrl } : {})
             };
         }
     };

@@ -5,6 +5,7 @@ import { createBreakpointOwnerStore } from "./breakpoint-owner-store.js";
 import { createBreakpointService } from "./breakpoint-service.js";
 import { createFrameService } from "./frame-service.js";
 import { createInputSequenceService } from "./input-service.js";
+import { describeInputPause } from "./input-pause.js";
 import { createApiDescriptions } from "./api-descriptions.js";
 import { createAppState } from "./state.js";
 import { installGlobalShortcuts } from "./shortcuts.js";
@@ -518,8 +519,7 @@ const inputSequenceService = createInputSequenceService({
     releaseAll: releaseAllKeys,
     touch: (active, x = 0, y = 0) => setTouchState(active, x, y),
     stepFrames: (frames) => commands.stepFrames({ frames, pauseWhenRunning: false }),
-    getPaused: () => state.paused,
-    pause: () => commands.pause(withInternalMetadata({}, { operation: true })),
+    getPauseDetails: () => describeInputPause(state, nativeBridge),
     resume: () => commands.resume(withInternalMetadata({}, { operation: true }))
 });
 const operationManager = createOperationManager({

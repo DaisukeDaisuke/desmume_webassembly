@@ -92,6 +92,14 @@ export function createScriptService({
             scriptFailureDetails(message, source)
         );
     }
+
+    function workerRpcError(error, fallbackCode = ErrorCode.INTERNAL_ERROR) {
+        return {
+            code: String(error?.mcpCode || fallbackCode),
+            message: String(error?.message || error || "Worker RPC failed").slice(0, 2048),
+            ...(error?.mcpDetails === undefined ? {} : { details: error.mcpDetails })
+        };
+    }
     
     function renderScriptConsole(script = state.scripts.get(state.activeScriptId)) {
         const text = script ? script.output.join("\n") : "No script selected.";
@@ -177,6 +185,17 @@ export function createScriptService({
             state.scriptTriggers = state.scriptTriggers.filter((item) => item.id !== trigger.id);
         }
         script.triggers = [];
+        for (const ownerId of [...script.ownedBreakpointIds]) {
+            try {
+                if (breakpointOwners.findBreakpointById(ownerId)) {
+                    await commands.removeBreakpoint({ id: ownerId });
+                }
+            } catch (error) {
+                breakpointOwners.discardOwner(ownerId);
+                failures.push({ ownerId, message: String(error?.message || error).slice(0, 300) });
+            }
+        }
+        script.ownedBreakpointIds.clear();
         try {
             breakpointOwners.reconcileNativeBreakpoints();
         } catch (error) {
@@ -242,6 +261,21 @@ export function createScriptService({
                 throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
             }
             if (command === "register") return registerScriptTrigger(script, params);
+            if (command === "setBreakpoint" || command === "setSpecialBreakpoint") {
+                const result = await commands[command](withInternalMetadata(params, {
+                    origin: "script",
+                    scriptId: script.id
+                }));
+                if (params.enabled !== false && Number.isSafeInteger(Number(result?.id))) {
+                    script.ownedBreakpointIds.add(Number(result.id));
+                }
+                return result;
+            }
+            if (command === "removeBreakpoint") {
+                const result = await runCommand(command, params);
+                if (result?.ok !== false) script.ownedBreakpointIds.delete(Number(params.id));
+                return result;
+            }
             const result = command === "pause" && eventId
                 ? await commands.pause(withInternalMetadata(params, {
                     scriptCallback: true,
@@ -310,6 +344,7 @@ export function createScriptService({
             running: true,
             output: [],
             triggers: [],
+            ownedBreakpointIds: new Set(),
             eventQueue: [],
             eventBusy: false,
             droppedEvents: 0,
@@ -383,7 +418,20 @@ export function createScriptService({
                             mcpCode: ErrorCode.BUSY
                         });
                     }
-                    const request = validateWorkerRpc(msg, PERSISTENT_RPC_ALLOWLIST, seenRequestIds);
+                    let request;
+                    try {
+                        request = validateWorkerRpc(msg, PERSISTENT_RPC_ALLOWLIST, seenRequestIds);
+                    } catch (error) {
+                        if (error?.mcpCode === ErrorCode.COMMAND_NOT_ALLOWED
+                            && typeof msg.id === "string" && msg.id) {
+                            worker.postMessage({
+                                replyId: msg.id,
+                                error: workerRpcError(error, ErrorCode.COMMAND_NOT_ALLOWED)
+                            });
+                            return;
+                        }
+                        throw error;
+                    }
                     try {
                         const result = await queuePersistentScriptOperation(
                             script,
@@ -393,7 +441,7 @@ export function createScriptService({
                         );
                         worker.postMessage({ replyId: msg.id, result });
                     } catch (error) {
-                        worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                        worker.postMessage({ replyId: msg.id, error: workerRpcError(error) });
                     } finally {
                         seenRequestIds.delete(msg.id);
                     }
@@ -411,7 +459,7 @@ export function createScriptService({
                         const result = await queuePersistentScriptOperation(script, "register", msg.trigger);
                         worker.postMessage({ replyId: msg.id, result });
                     } catch (error) {
-                        worker.postMessage({ replyId: msg.id, error: String(error?.message || error) });
+                        worker.postMessage({ replyId: msg.id, error: workerRpcError(error) });
                     } finally {
                         seenRequestIds.delete(msg.id);
                     }

@@ -138,10 +138,18 @@ export function createScriptCommands({
                     maxBytes: ResourceLimits.batchResultBytes - resultBytes
                 });
             } catch (error) {
+                const reason = String(error?.message || error);
+                if (!reason.includes("exceeds byte budget")) {
+                    throw codedError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        `batch result for ${command} is not a supported structured value`,
+                        { completedCommands: results.length, command, reason }
+                    );
+                }
                 throw codedError(
                     ErrorCode.INVALID_ARGUMENT,
                     `batch results exceed ${ResourceLimits.batchResultBytes} bytes`,
-                    { maximumBytes: ResourceLimits.batchResultBytes, completedCommands: results.length, reason: String(error?.message || error) }
+                    { maximumBytes: ResourceLimits.batchResultBytes, completedCommands: results.length }
                 );
             }
             resultBytes += bounded.bytes;

@@ -189,9 +189,10 @@ async function runAlgorithmSandbox() {
     return { messages, networkCalls, storageCalls };
 }
 
-test("input sequence restores pause without cancelling its own operation", async () => {
+test("input sequence rejects pause by default and awaits explicit manual resume", async () => {
     const state = { ready: true, paused: true, running: false, explicitPauseSerial: 0 };
     const native = { pause: () => {}, clearBreakStatus: () => {} };
+    let pauseKind = "manual";
     let manager;
     const commands = createRuntimeCommands({
         cancelOperation: (reason) => manager.cancel(reason),
@@ -208,21 +209,42 @@ test("input sequence restores pause without cancelling its own operation", async
         releaseAll: () => {},
         touch: () => {},
         stepFrames: async () => {},
-        getPaused: () => state.paused,
-        pause: () => commands.pause(withInternalMetadata({}, { operation: true })),
+        getPauseDetails: () => ({
+            paused: state.paused,
+            running: state.running,
+            pauseKind
+        }),
         resume: () => commands.resume(withInternalMetadata({}, { operation: true })),
         storage: memoryStorage()
     });
     manager = createOperationManager({ responder });
 
-    const result = await manager.run({
+    const rejected = await manager.run({
         name: "runInputSequence",
         timeoutMs: 1000,
         task: (operation) => input.run({ seq: [["w", 0]] }, operation)
     });
-
-    assert.equal(result.ok, true);
+    assert.equal(rejected.error.code, "INPUT_UNAVAILABLE");
     assert.equal(state.paused, true);
+
+    pauseKind = "executeBreakpoint";
+    const breakpointRejected = await manager.run({
+        name: "runInputSequence",
+        timeoutMs: 1000,
+        task: (operation) => input.run({ seq: [["w", 0]], resume: true }, operation)
+    });
+    assert.equal(breakpointRejected.error.code, "INPUT_UNAVAILABLE");
+    assert.equal(state.paused, true);
+
+    pauseKind = "manual";
+    const result = await manager.run({
+        name: "runInputSequence",
+        timeoutMs: 1000,
+        task: (operation) => input.run({ seq: [["w", 0]], resume: true }, operation)
+    });
+    assert.equal(result.ok, true);
+    assert.equal(state.paused, false);
+    assert.equal(state.running, true);
     assert.equal(manager.current(), null);
 });
 
@@ -546,6 +568,40 @@ test("State service forwards notice ownership and preserves the requested run st
     assert.deepEqual(pauses, [true, false]);
 });
 
+test("status exposes a monotonic State application gate distinct from file selection", async () => {
+    const commands = createContextCommands({
+        state: {
+            ready: false,
+            paused: true,
+            running: false,
+            loadingFile: false,
+            fileTransactionActive: true,
+            fileTransactionSerial: 7,
+            fileTransactionReason: "State import",
+            stateLoadSerial: 3,
+            romSize: 0,
+            frame: 0,
+            speed: 1,
+            render: true,
+            audio: false,
+            selectedCpu: "arm9",
+            recentFiles: [],
+            autoUpdate: { enabled: false, hz: 1 }
+        },
+        hasLoadedRom: () => false,
+        native: {},
+        syncNativeBreakStatus: () => {}
+    });
+    const status = await commands.status();
+    assert.deepEqual(status.fileTransaction, {
+        active: true,
+        serial: 7,
+        reason: "State import"
+    });
+    assert.equal(status.stateLoadSerial, 3);
+    assert.equal(status.loadingFile, false);
+});
+
 test("State service preserves an explicit pause requested while a file load is active", () => {
     const pauses = [];
     const state = {
@@ -750,6 +806,47 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
 
     const uiSource = await readFile(new URL("../src/ui/ui-controller.js", import.meta.url), "utf8");
     assert.match(uiSource, /runCommand\("batch", \{\s*commands:/);
+
+    const screenshot = createScreenshotCommands({
+        requireValidScreen: () => null,
+        state: { screenshotCooldownUntil: 0 },
+        ui: {
+            screen: {
+                toDataURL: () => `data:image/png;base64,${"A".repeat(2048)}`,
+                width: 256,
+                height: 384
+            }
+        }
+    });
+    const screenshotResult = await screenshot.takeScreenshot({
+        includeDataUrl: false,
+        download: false,
+        cooldownMs: 250
+    });
+    assert.equal(Object.hasOwn(screenshotResult, "dataUrl"), false);
+    const screenshotBatch = createScriptCommands({
+        state: { scripts: new Map() },
+        ui: {},
+        runCommand: async () => screenshotResult
+    });
+    const batchResult = await screenshotBatch.batch({
+        commands: [{ command: "takeScreenshot", params: { includeDataUrl: false } }]
+    });
+    assert.equal(batchResult.results.length, 1);
+    assert.equal(Object.hasOwn(batchResult.results[0].result, "dataUrl"), false);
+
+    const invalidResultBatch = createScriptCommands({
+        state: { scripts: new Map() },
+        ui: {},
+        runCommand: async () => ({ ok: true, value: undefined })
+    });
+    await assert.rejects(
+        invalidResultBatch.batch({ commands: [{ command: "invalidResult" }] }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT"
+            && error.message.includes("not a supported structured value")
+            && error.mcpDetails.command === "invalidResult"
+            && !Object.hasOwn(error.mcpDetails, "maximumBytes")
+    );
 });
 
 test("reserved State storage and analysis baseline failures use stable error codes", async () => {
@@ -956,6 +1053,81 @@ test("input hold, tap, and touch waits enforce per-value and aggregate limits", 
     assert.deepEqual(inputEvents, [
         ["key", "A", true], ["key", "A", false],
         ["key", "A", true], ["key", "A", false]
+    ]);
+});
+
+test("paused input reports manual, execute, memory, and special pause kinds without mutation", async () => {
+    const inputEvents = [];
+    const state = {
+        ready: true,
+        paused: true,
+        running: false,
+        selectedCpu: "arm9",
+        keys: 0,
+        touch: { active: false },
+        keymap: {}
+    };
+    let lastBreak = { hit: false };
+    let resumes = 0;
+    const input = createInputCommands({
+        state,
+        native: { getStatus: () => ({ lastBreak }) },
+        ensureRomLoaded: () => {},
+        resumeInput: async () => {
+            resumes++;
+            inputEvents.push(["resume", "start"]);
+            await Promise.resolve();
+            state.paused = false;
+            state.running = true;
+            lastBreak = { hit: false };
+            inputEvents.push(["resume", "done"]);
+            return responder.ok();
+        },
+        renderHotkey: () => {},
+        saveKeymap: () => {},
+        setKey: (...args) => inputEvents.push(["key", ...args]),
+        setTouchState: (...args) => inputEvents.push(["touch", ...args]),
+        toButtonList: () => ["A"],
+        waitChecked: async () => {}
+    });
+
+    await assert.rejects(
+        input.setInput({ button: "A", pressed: true }),
+        (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+            && error.mcpDetails.pauseKind === "manual"
+    );
+    for (const [kind, pauseKind, breakType] of [
+        [0, "executeBreakpoint", "exec"],
+        [1, "memoryBreakpoint", "read"],
+        [2, "memoryBreakpoint", "write"],
+        [3, "specialBreakpoint", "dataAbort"],
+        [4, "specialBreakpoint", "prefetchAbort"],
+        [5, "specialBreakpoint", "undefinedInstruction"]
+    ]) {
+        lastBreak = {
+            hit: true,
+            kind,
+            cpu: "arm9",
+            address: 0x02000010,
+            pc: 0x02000020
+        };
+        await assert.rejects(
+            input.runInputTap({ button: "A", resume: true }),
+            (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+                && error.mcpDetails.pauseKind === pauseKind
+                && error.mcpDetails.breakType === breakType
+        );
+    }
+    assert.equal(resumes, 0);
+    assert.deepEqual(inputEvents, []);
+
+    lastBreak = { hit: false };
+    await input.setInput({ button: "A", pressed: true, resume: true });
+    assert.equal(resumes, 1);
+    assert.deepEqual(inputEvents, [
+        ["resume", "start"],
+        ["resume", "done"],
+        ["key", "A", true]
     ]);
 });
 
@@ -1209,6 +1381,23 @@ test("Worker RPC policy preserves normal debugger calls and bounded byte injecti
     assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
         id: "rpc-1", command: "status", params: { concise: true }
     }, EVAL_RPC_ALLOWLIST, seen))), { command: "status", params: { concise: true } });
+    assert.throws(
+        () => validateWorkerRpc({
+            id: "rpc-denied", command: "restoreAnalysisBaseline", params: {}
+        }, EVAL_RPC_ALLOWLIST, seen),
+        (error) => error.mcpCode === "COMMAND_NOT_ALLOWED"
+            && error.mcpDetails.command === "restoreAnalysisBaseline"
+    );
+    assert.equal(seen.has("rpc-denied"), false);
+});
+
+test("persistent service keeps command denial recoverable and owns direct script breakpoints", async () => {
+    const source = await readFile(new URL("../src/script-service.js", import.meta.url), "utf8");
+    assert.match(source, /error\?\.mcpCode === ErrorCode\.COMMAND_NOT_ALLOWED/);
+    assert.match(source, /error: workerRpcError\(error, ErrorCode\.COMMAND_NOT_ALLOWED\)/);
+    assert.match(source, /ownedBreakpointIds: new Set\(\)/);
+    assert.match(source, /script\.ownedBreakpointIds\.add/);
+    assert.match(source, /for \(const ownerId of \[\.\.\.script\.ownedBreakpointIds\]\)/);
 });
 
 test("normalizer rejects unsafe explicit limits", () => {
@@ -1381,10 +1570,16 @@ async function runPersistentScalarSandbox(
     let handled = 0;
     for (let attempt = 0; handled < replies.length && attempt < 50; attempt++) {
         await new Promise((resolve) => setImmediate(resolve));
-        const calls = messages.filter((message) => message.type === "call");
+        const calls = messages.filter((message) => message.type === "call" || message.type === "register");
         while (handled < calls.length) {
+            const reply = replies[handled];
+            const result = calls[handled].type === "register"
+                ? { id: reply }
+                : { ok: true, value: reply };
             await listeners.get("message")({
-                data: { replyId: calls[handled].id, result: { ok: true, value: replies[handled] } }
+                data: reply?.error
+                    ? { replyId: calls[handled].id, error: reply.error }
+                    : { replyId: calls[handled].id, result }
             });
             handled++;
         }
@@ -1393,7 +1588,12 @@ async function runPersistentScalarSandbox(
         throw new Error(`persistent scalar RPC stalled: ${messages.map((message) => message.type).join(",")}`);
     }
     await start;
-    return { messages, networkCalls, storageCalls };
+    return {
+        messages,
+        networkCalls,
+        storageCalls,
+        dispatch: (data) => listeners.get("message")({ data })
+    };
 }
 
 test("persistent sandbox accepts harmless text output", async () => {
@@ -1401,6 +1601,92 @@ test("persistent sandbox accepts harmless text output", async () => {
     assert.ok(messages.some((message) => message.type === "started"));
     assert.ok(messages.some((message) => message.type === "print" && message.values[0] === "plain text"));
     assert.equal(messages.some((message) => message.type === "failed"), false);
+});
+
+test("persistent sandbox preserves application RPC errors without a protocol failure", async () => {
+    const { messages } = await runPersistentScalarSandbox(`
+        try {
+            await mcp.call("restoreAnalysisBaseline", {});
+        } catch (error) {
+            print(error.code, error.message);
+        }
+    `, [{
+        error: {
+            code: "COMMAND_NOT_ALLOWED",
+            message: "Worker command is not allowed: restoreAnalysisBaseline",
+            details: { command: "restoreAnalysisBaseline" }
+        }
+    }]);
+    const printed = messages
+        .filter((message) => message.type === "print")
+        .flatMap((message) => Array.from(message.values, String));
+    assert.ok(printed.includes("COMMAND_NOT_ALLOWED"));
+    assert.ok(printed.some((value) => value.includes("restoreAnalysisBaseline")));
+    assert.equal(messages.some((message) => message.type === "failed"), false);
+});
+
+test("persistent callback accepts implicit undefined and undefined print arguments", async () => {
+    const harness = await runPersistentScalarSandbox(`
+        await memory.registerwrite(0x02000010, (hit) => {
+            print("write callback", hit.frame);
+        }, { cpu: "arm9" });
+    `, [1]);
+    const registration = harness.messages.find((message) => message.type === "register");
+    assert.ok(registration);
+    await harness.dispatch({
+        type: "event",
+        event: "write",
+        eventId: 41,
+        callbackId: registration.trigger.callbackId,
+        callbackToken: "write-callback",
+        payload: {
+            address: "0x02000010",
+            pc: "0x02000020",
+            value: "0x00000001",
+            cpu: "arm9"
+        }
+    });
+    for (let attempt = 0; attempt < 50
+        && !harness.messages.some((message) => message.type === "eventDone" && message.eventId === 41);
+        attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    const printed = harness.messages
+        .filter((message) => message.type === "print")
+        .flatMap((message) => Array.from(message.values, String));
+    assert.ok(printed.includes("write callback"));
+    assert.ok(printed.includes("undefined"));
+    assert.equal(printed.some((value) => value.includes("callback error")), false);
+    assert.ok(harness.messages.some((message) => message.type === "eventDone" && message.eventId === 41));
+});
+
+test("persistent memory callback errors identify the API, address input, and trigger", async () => {
+    const harness = await runPersistentScalarSandbox(`
+        await memory.registerexec(0x02000010, async () => {
+            await memory.read32(undefined, "arm9");
+        }, { cpu: "arm9" });
+    `, [1]);
+    const registration = harness.messages.find((message) => message.type === "register");
+    await harness.dispatch({
+        type: "event",
+        event: "exec",
+        eventId: 42,
+        callbackId: registration.trigger.callbackId,
+        callbackToken: "exec-callback",
+        payload: { address: "0x02000010", pc: "0x02000010", value: "0x00000000", cpu: "arm9" }
+    });
+    for (let attempt = 0; attempt < 50
+        && !harness.messages.some((message) => message.type === "eventDone" && message.eventId === 42);
+        attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    const line = harness.messages
+        .filter((message) => message.type === "print")
+        .flatMap((message) => Array.from(message.values, String))
+        .find((value) => value.includes("callback error"));
+    assert.match(line, /memoryReadDword/);
+    assert.match(line, /inputAddress/);
+    assert.match(line, /triggerId/);
 });
 
 test("persistent-script legacy memory reads remain numeric", async () => {
@@ -1513,6 +1799,7 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
     const messages = [];
     const listeners = new Map();
     let buttonValue = 0;
+    let overlayId = 2;
     const context = vm.createContext({
         console,
         crypto: testCrypto(),
@@ -1537,7 +1824,7 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
             if (request.params.address === 0x01ffd3b4 + 2 * 0x2c + 4) return { ok: true, value: 0x00000002 };
         }
         if (request.command === "memoryGetRegister") {
-            return { ok: true, value: request.params.register === "r0" ? 2 : 0x11111111 };
+            return { ok: true, value: request.params.register === "r0" ? overlayId : 0x11111111 };
         }
         throw new Error(`unexpected overlay request: ${request.command || request.type}`);
     };
@@ -1593,12 +1880,16 @@ test("overlay script registers load/unload/tick hooks and reports overlay transi
     await runEvent(registrations[1], 92, "exec");
     buttonValue = 7;
     await runEvent(registrations[2], 93, "tick", { frame: 60 });
+    overlayId = undefined;
+    await runEvent(registrations[0], 94, "exec");
 
     const allPrint = messages.filter((message) => message.type === "print")
         .flatMap((message) => message.values.map(String));
     assert.ok(allPrint.includes("overlay loaded: slot 3, id 2, start 0x02000000, caller: 0x11111111"));
     assert.ok(allPrint.includes("overlay unloaded: slot 0x00000003, id 2"));
     assert.ok(allPrint.includes("overlay log disabled"));
+    assert.ok(allPrint.includes("overlay event ignored: trigger 0x020a36b8, invalid r0 undefined"));
+    assert.equal(allPrint.some((value) => value.includes("callback error")), false);
     assert.equal(messages.some((message) => message.type === "call" && message.command === "resume"), false);
     assert.equal(messages.some((message) => message.type === "failed"), false);
 });
@@ -1723,4 +2014,16 @@ test("all bundled supervisor and sandbox Worker sources parse as classic scripts
         const source = await bundledWorkerSource(path);
         assert.doesNotThrow(() => new vm.Script(source, { filename: path }), path);
     }
+});
+
+test("page CSP permits the embedded single-file WASM data fetch", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    assert.match(html, /connect-src 'self' data:/);
+});
+
+test("DQ9 overlay logger validates register IDs before table address arithmetic", async () => {
+    const source = await readFile(new URL("../scripts/dq9/overlay_jp.js", import.meta.url), "utf8");
+    assert.match(source, /const MAX_OVERLAY_ID = 0x3f/);
+    assert.match(source, /checkedOverlayId\(await reg\("r0"\), 0x020a36b8\)/);
+    assert.match(source, /checkedOverlayId\(await reg\("r0"\), 0x020a392c\)/);
 });

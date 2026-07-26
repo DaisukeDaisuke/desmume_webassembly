@@ -4,7 +4,16 @@ import { subscribeAbort } from "./validation.js";
 const STORAGE_KEY = "desmume-input-sequences-v1";
 const BUTTONS = new Set(["A", "B", "X", "Y", "L", "R", "Start", "Select", "Up", "Down", "Left", "Right"]);
 
-export function createInputSequenceService({ responder, press, releaseAll, touch, stepFrames, getPaused, pause, resume, storage = localStorage }) {
+export function createInputSequenceService({
+    responder,
+    press,
+    releaseAll,
+    touch,
+    stepFrames,
+    getPauseDetails = () => null,
+    resume = async () => ({ ok: true }),
+    storage = localStorage
+}) {
     const sequences = new Map();
     try {
         const saved = JSON.parse(storage.getItem(STORAGE_KEY) || "null");
@@ -71,6 +80,19 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
             return responder.ok({ id });
         },
         async run(params, operation) {
+            let initialPause = getPauseDetails();
+            if (initialPause?.paused && initialPause.pauseKind === "manual" && params.resume === true) {
+                const resumed = await resume();
+                if (resumed?.ok === false) return resumed;
+                initialPause = getPauseDetails();
+            }
+            if (initialPause?.paused) {
+                return responder.fail(
+                    ErrorCode.INPUT_UNAVAILABLE,
+                    `input is unavailable while emulator is paused (${initialPause.pauseKind})`,
+                    initialPause
+                );
+            }
             let sequence = params.seq;
             const existing = sequences.get(params.id);
             if (!sequence) {
@@ -100,10 +122,8 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
                 save();
             }
 
-            const wasPaused = getPaused();
             const [holdMs, gapMs] = params.tap || [40, 50];
             try {
-                if (wasPaused) await resume();
                 for (const step of sequence) {
                     const [opcode, first, second] = step;
                     if (opcode === "w") {
@@ -111,12 +131,31 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
                     } else if (opcode === "wf") {
                         await stepFrames(Number(first));
                     } else if (opcode === "x") {
+                        const pauseDetails = getPauseDetails();
+                        if (pauseDetails?.paused) {
+                            return responder.fail(
+                                ErrorCode.INPUT_UNAVAILABLE,
+                                `input is unavailable while emulator is paused (${pauseDetails.pauseKind})`,
+                                pauseDetails
+                            );
+                        }
                         touch(true, Number(first), Number(second));
                         await wait(Number(step[3] || 0), operation.signal);
                         touch(false);
                     } else {
                         const selected = buttons(first);
-                        const down = () => selected.forEach((button) => press(button, true));
+                        const down = () => {
+                            const pauseDetails = getPauseDetails();
+                            if (pauseDetails?.paused) {
+                                const error = new Error(
+                                    `input is unavailable while emulator is paused (${pauseDetails.pauseKind})`
+                                );
+                                error.mcpCode = ErrorCode.INPUT_UNAVAILABLE;
+                                error.mcpDetails = pauseDetails;
+                                throw error;
+                            }
+                            selected.forEach((button) => press(button, true));
+                        };
                         const up = () => selected.forEach((button) => press(button, false));
                         if (opcode === "t") {
                             for (let index = 0; index < Number(second || 1); index++) {
@@ -150,7 +189,6 @@ export function createInputSequenceService({ responder, press, releaseAll, touch
             } finally {
                 releaseAll();
                 touch(false);
-                if (wasPaused) await pause();
             }
         }
     };

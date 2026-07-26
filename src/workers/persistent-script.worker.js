@@ -2,6 +2,7 @@
 
 import { assertLockedGlobals, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
+import { readOwnDataProperty } from "../structured-value-normalizer.js";
 import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
 import { serializeWorkerError } from "../worker-error-summary.js";
 
@@ -9,7 +10,10 @@ import { serializeWorkerError } from "../worker-error-summary.js";
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
 const nativeAddEventListener = globalThis.addEventListener.bind(globalThis);
 const nativeEval = globalThis.eval;
+const NativeError = globalThis.Error;
+const NativeString = globalThis.String;
 const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
+const nativeJsonStringify = globalThis.JSON.stringify.bind(globalThis.JSON);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
@@ -124,7 +128,12 @@ const mcp = {
     }
 };
 const webmcp = mcp;
-const print = (...values) => send({ type: "print", values: normalizeBoundedValue(values, { maxBytes: 64 * 1024 }).value });
+const print = (...values) => {
+    for (let index = 0; index < values.length; index++) {
+        if (values[index] === undefined) values[index] = "undefined";
+    }
+    send({ type: "print", values: normalizeBoundedValue(values, { maxBytes: 64 * 1024 }).value });
+};
 const printf = (format, ...values) => print(String(format).replace(/%#?\.?(\d*)x|%[sd]/g, (match, width) => {
     const value = values.shift();
     if (match.endsWith("x")) {
@@ -137,7 +146,20 @@ const printhex = (label, value) => print(
 );
 
 function callbackErrorMessage(error) {
-    return serializeWorkerError(error, { phase: "callback" }).message;
+    const code = readOwnDataProperty(error, "code");
+    const summary = serializeWorkerError(error, { phase: "callback", code });
+    const details = readOwnDataProperty(error, "details");
+    let detailText = "";
+    try {
+        if (details && typeof details === "object") {
+            detailText = nativeJsonStringify(normalizeBoundedValue(details, {
+                maxBytes: 4096,
+                maxArray: 32,
+                maxProperties: 32
+            }).value);
+        }
+    } catch {}
+    return `${summary.details.code ? `[${summary.details.code}] ` : ""}${summary.message}${detailText ? ` details=${detailText}` : ""}`;
 }
 
 function unwrapLegacyScalar(result, command) {
@@ -156,8 +178,25 @@ function unwrapLegacyScalar(result, command) {
     throw new TypeError(`${command} did not return a scalar result`);
 }
 
-async function callLegacyScalar(command, params) {
-    return unwrapLegacyScalar(await mcp.call(command, params), command);
+async function callLegacyScalar(command, params, invoke = mcp.call) {
+    return unwrapLegacyScalar(await invoke(command, params), command);
+}
+
+async function callMemory(command, params) {
+    try {
+        return await mcp.call(command, params);
+    } catch (cause) {
+        const error = cause && typeof cause === "object"
+            ? cause
+            : new NativeError(NativeString(cause || `${command} failed`));
+        const address = params?.address;
+        error.details = {
+            memoryApi: command,
+            inputAddress: address === undefined ? "undefined" : NativeString(address),
+            triggerId: Number(activeEvent?.callbackId) || 0
+        };
+        throw error;
+    }
 }
 
 async function register(kind, address, callback, options = {}) {
@@ -182,12 +221,12 @@ async function register(kind, address, callback, options = {}) {
 const memory = {
     getregister: (registerName, cpu) => callLegacyScalar("memoryGetRegister", { register: registerName, cpu }),
     setregister: (registerName, value, cpu) => mcp.call("memorySetRegister", { register: registerName, value, cpu }),
-    readbyte: (address, cpu) => callLegacyScalar("memoryReadByte", { address, cpu }),
-    readword: (address, cpu) => callLegacyScalar("memoryReadWord", { address, cpu }),
-    readdword: (address, cpu) => callLegacyScalar("memoryReadDword", { address, cpu }),
-    writebyte: (address, value, cpu) => mcp.call("memoryWriteByte", { address, value, cpu }),
-    writeword: (address, value, cpu) => mcp.call("memoryWriteWord", { address, value, cpu }),
-    writedword: (address, value, cpu) => mcp.call("memoryWriteDword", { address, value, cpu }),
+    readbyte: (address, cpu) => callLegacyScalar("memoryReadByte", { address, cpu }, callMemory),
+    readword: (address, cpu) => callLegacyScalar("memoryReadWord", { address, cpu }, callMemory),
+    readdword: (address, cpu) => callLegacyScalar("memoryReadDword", { address, cpu }, callMemory),
+    writebyte: (address, value, cpu) => callMemory("memoryWriteByte", { address, value, cpu }),
+    writeword: (address, value, cpu) => callMemory("memoryWriteWord", { address, value, cpu }),
+    writedword: (address, value, cpu) => callMemory("memoryWriteDword", { address, value, cpu }),
     registerwrite: (address, callback, options) => register("write", address, callback, options),
     registerread: (address, callback, options) => register("read", address, callback, options),
     registerexec: (address, callback, options) => register("exec", address, callback, options),
@@ -295,8 +334,19 @@ nativeAddEventListener("message", async (event) => {
         const pending = replies.get(message.replyId);
         if (!pending) return fail(new Error(`unknown reply id: ${message.replyId}`), "protocol");
         replies.delete(message.replyId);
-        if (message.error) pending.reject(new Error(message.error));
-        else pending.resolve(message.result);
+        if (message.error) {
+            const payload = message.error;
+            const error = new NativeError(typeof payload === "object"
+                ? NativeString(readOwnDataProperty(payload, "message") || "Worker RPC failed")
+                : NativeString(payload));
+            if (payload && typeof payload === "object") {
+                const code = readOwnDataProperty(payload, "code");
+                const details = readOwnDataProperty(payload, "details");
+                if (typeof code === "string") error.code = code;
+                if (details !== undefined) error.details = details;
+            }
+            pending.reject(error);
+        } else pending.resolve(message.result);
         return;
     }
     if (message.type === "start") {

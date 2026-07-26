@@ -260,7 +260,9 @@ export function createCommands(context) {
         }),
         ...createInputCommands({
             state,
+            native,
             ensureRomLoaded,
+            resumeInput: () => runCommand("resume", {}),
             renderHotkey,
             saveKeymap,
             setKey,

@@ -286,7 +286,7 @@ export function registerWaitCommands({
     Object.assign(descriptions, {
         waitForBreak: "通常breakpointの次のhitまで待機します。timeoutMsは必須です。",
         runUntil: "PC到達またはbreakpoint hit回数まで実行します。",
-        runInputSequence: "保存・再利用可能な短い入力sequenceを実行します。",
+        runInputSequence: "実行中に保存・再利用可能な短い入力sequenceを実行します。停止中はerrorになり、手動pauseだけresume:trueを指定できます。",
         listInputSequences: "保存済み入力sequenceを返します。",
         deleteInputSequence: "保存済み入力sequenceを削除します。",
         captureFrame: "現在の有効frameを名前付きsnapshotへ保存します。",

@@ -760,7 +760,7 @@ test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once
     await secondWorker.onmessage({
         data: { type: "call", id: "1", command: "runPersistentScript", params: {} }
     });
-    assert.equal((await deniedRun).error.code, "WORKER_PROTOCOL_ERROR");
+    assert.equal((await deniedRun).error.code, "COMMAND_NOT_ALLOWED");
 });
 
 test("pending script callbacks validate identity and clean up after script stop", async () => {

@@ -1,11 +1,14 @@
 import { codedError, nonNegativeNumber, positiveInteger } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
+import { describeInputPause, requireInputRunning } from "../input-pause.js";
 
 const MAX_INPUT_WAIT_MS = 600000;
 
 export function createInputCommands({
     state,
+    native,
     ensureRomLoaded,
+    resumeInput,
     renderHotkey,
     saveKeymap,
     setKey,
@@ -27,14 +30,31 @@ export function createInputCommands({
         }
     }
 
+    async function requireInputReady(params, requirement) {
+        ensureRomLoaded(requirement);
+        const pauseDetails = state.paused ? describeInputPause(state, native) : null;
+        if (pauseDetails?.pauseKind === "manual" && params.resume === true) {
+            const result = await resumeInput();
+            if (result?.ok === false) {
+                throw codedError(
+                    result.error?.code || ErrorCode.INPUT_UNAVAILABLE,
+                    result.error?.message || "emulator could not resume before input",
+                    result.error?.details
+                );
+            }
+        }
+        requireInputRunning(state, native);
+    }
+
     async function setInput(params) {
+        await requireInputReady(params, "input requires a loaded ROM");
         const [button] = toButtonList(params);
         setKey(button, !!params.pressed);
         return { keys: state.keys };
     }
 
     async function runInputHold(params = {}) {
-        ensureRomLoaded("input hold requires a loaded ROM");
+        await requireInputReady(params, "input hold requires a loaded ROM");
         const buttons = toButtonList(params);
         const durationMs = nonNegativeNumber(
             params.durationMs ?? params.holdMs ?? 0,
@@ -46,6 +66,7 @@ export function createInputCommands({
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runInputHold");
         const deadline = inputDeadline(params);
         await waitChecked(waitBeforeMs, deadline, "runInputHold");
+        requireInputRunning(state, native);
         buttons.forEach((button) => setKey(button, true));
         try {
             await waitChecked(durationMs, deadline, "runInputHold");
@@ -57,7 +78,7 @@ export function createInputCommands({
     }
 
     async function runInputTap(params = {}) {
-        ensureRomLoaded("input tap requires a loaded ROM");
+        await requireInputReady(params, "input tap requires a loaded ROM");
         const buttons = toButtonList(params);
         const repeat = positiveInteger(params.repeat ?? params.count ?? 1, "repeat", 10000);
         const holdMs = nonNegativeNumber(params.holdMs ?? params.pressMs ?? 50, "holdMs", MAX_INPUT_WAIT_MS);
@@ -71,6 +92,7 @@ export function createInputCommands({
         const deadline = inputDeadline(params);
         await waitChecked(waitBeforeMs, deadline, "runInputTap");
         for (let index = 0; index < repeat; index++) {
+            requireInputRunning(state, native);
             buttons.forEach((button) => setKey(button, true));
             try {
                 await waitChecked(holdMs, deadline, "runInputTap");
@@ -84,7 +106,7 @@ export function createInputCommands({
     }
 
     async function runTouchHold(params = {}) {
-        ensureRomLoaded("touch hold requires a loaded ROM");
+        await requireInputReady(params, "touch hold requires a loaded ROM");
         const x = Number(params.x);
         const y = Number(params.y);
         if (!Number.isInteger(x) || x < 0 || x > 255 || !Number.isInteger(y) || y < 0 || y > 191) {
@@ -100,6 +122,7 @@ export function createInputCommands({
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runTouchHold");
         const deadline = inputDeadline(params);
         await waitChecked(waitBeforeMs, deadline, "runTouchHold");
+        requireInputRunning(state, native);
         setTouchState(true, x, y);
         try {
             await waitChecked(durationMs, deadline, "runTouchHold");

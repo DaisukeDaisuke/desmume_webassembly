@@ -31,9 +31,15 @@ export function validateWorkerRpc(message, allowlist, seenIds) {
         || typeof message.id !== "string"
         || !message.id
         || typeof message.command !== "string"
-        || !allowlist.has(message.command)
         || !isPlainObject(message.params ?? {})) {
         throw codedError(ErrorCode.WORKER_PROTOCOL_ERROR, "Worker sent an invalid RPC request");
+    }
+    if (!allowlist.has(message.command)) {
+        throw codedError(
+            ErrorCode.COMMAND_NOT_ALLOWED,
+            `Worker command is not allowed: ${message.command}`,
+            { command: message.command }
+        );
     }
     if (seenIds.has(message.id)) {
         throw codedError(ErrorCode.WORKER_PROTOCOL_ERROR, "Worker reused an RPC request ID");

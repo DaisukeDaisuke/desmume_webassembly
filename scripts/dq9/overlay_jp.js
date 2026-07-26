@@ -5,6 +5,7 @@ const CPU = "arm9";
 const LOADED_OVERLAY_TABLE = 0x01ffd384;
 const WHERE_TO_LOAD_TABLE = 0x020e9034;
 const Y9_BIN_START = 0x01ffd3b4;
+const MAX_OVERLAY_ID = 0x3f;
 const reg = (name) => memory.reg(name, CPU);
 const loaded = new Map();
 let enabled = true;
@@ -26,6 +27,13 @@ async function overlayStart(overlayId) {
 
 async function overlaySlot(overlayId) {
   return native32(WHERE_TO_LOAD_TABLE + overlayId * 8);
+}
+
+function checkedOverlayId(value, triggerAddress) {
+  const id = Number(value);
+  if (Number.isInteger(id) && id >= 0 && id <= MAX_OVERLAY_ID) return id;
+  print(`overlay event ignored: trigger 0x${triggerAddress.toString(16).padStart(8, "0")}, invalid r0 ${String(value)}`);
+  return null;
 }
 
 async function refreshSlots(forceLog = false) {
@@ -53,7 +61,8 @@ async function trace(callback) {
 }
 
 await memory.registerexec(0x020a36b8, () => trace(async () => {
-  const id = await reg("r0");
+  const id = checkedOverlayId(await reg("r0"), 0x020a36b8);
+  if (id === null) return;
   const slot = await overlaySlot(id);
   const start = await overlayStart(id);
   const lr = await reg("r14");
@@ -62,7 +71,8 @@ await memory.registerexec(0x020a36b8, () => trace(async () => {
 }), { cpu: CPU });
 
 await memory.registerexec(0x020a392c, () => trace(async () => {
-  const id = await reg("r0");
+  const id = checkedOverlayId(await reg("r0"), 0x020a392c);
+  if (id === null) return;
   const slot = await overlaySlot(id);
   loaded.delete(slot);
   print(`overlay unloaded: slot 0x${slot.toString(16).padStart(8, "0")}, id ${id}`);
