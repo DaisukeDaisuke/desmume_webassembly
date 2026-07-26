@@ -329,6 +329,52 @@ test("view service converts call stack disassembly modes", () => {
     assert.deepEqual(modes, [1, 0]);
 });
 
+test("public call stack matches UI rows without exposing internal frame data", () => {
+    const view = createViewService({
+        state: { selectedCpu: "arm9" },
+        ui: {},
+        native: { disassemble: () => "" },
+        getIdbPut: () => () => {}
+    });
+    const frame = (caller, options = {}) => ({
+        caller,
+        returnAddress: caller + 4,
+        callee: caller + 8,
+        sp: 0x023ffff0,
+        cpsr: 0x1f,
+        cpsrHex: "0x0000001f",
+        modeName: "System",
+        thumb: false,
+        id: caller,
+        ...options
+    });
+    const data = {
+        enabled: true,
+        activeStackId: 1,
+        stacks: [{
+            id: 1,
+            active: true,
+            spHex: "0x023ffff0",
+            nowPcHex: "0x02000000",
+            frames: [
+                frame(0x02000000),
+                frame(0x02000010, { synthetic: true }),
+                frame(0x02000020, { synthetic: true }),
+                frame(0x02000030)
+            ]
+        }]
+    };
+
+    const result = view.publicCallStackData(view.normalizeCallStackData(data));
+    assert.deepEqual(result.frames.map((item) => item.ageLabel), ["newest", "↑+1d", "↑+2d", "↑+3d"]);
+    assert.deepEqual(result.frames.slice(1, 3).map((item) => item.mode), ["pc-write ", "pc-write "]);
+    assert.equal(result.frames.some((item) => item.synthetic), false);
+    assert.equal(result.frames.some((item) => item.kind !== undefined), false);
+    assert.equal(result.frames.some((item) => item.expected !== undefined), false);
+    assert.equal(result.frames.some((item) => item.target !== undefined), false);
+    assert.equal("frames" in result.stacks[0], false);
+});
+
 test("public dispatcher rejects internal metadata fields", async () => {
     let executed = 0;
     const dispatcher = createCommandDispatcher({

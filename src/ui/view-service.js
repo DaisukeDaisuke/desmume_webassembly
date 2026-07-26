@@ -163,6 +163,19 @@ export function createViewService({
             calleeDisassembly: disassemblyRows(cpu, frame.callee, { cpsr: frame.cpsr })
         };
     }
+
+    function publicUiCallStackFrame(frame, cpu = state.selectedCpu) {
+        if (!frame.synthetic) return publicCallStackFrame(frame, cpu);
+        return {
+            ageLabel: frame.ageLabel,
+            caller: hex(frame.caller),
+            callee: `${hex(frame.callee)} ${frame.kindName}`,
+            sp: hex(frame.sp),
+            cpsr: frame.cpsrHex,
+            mode: `pc-write ${frame.kindName}`,
+            cpuMode: frame.modeName
+        };
+    }
     
     function publicRealFrames(stack, cpu = state.selectedCpu) {
         return (Array.isArray(stack?.frames) ? stack.frames : [])
@@ -222,7 +235,8 @@ export function createViewService({
         const activeStackId = Number(data.activeStackId);
         const stacks = Array.isArray(data.stacks) ? data.stacks : [];
         const activeStack = stacks.find((stack) => stack.id === activeStackId) || stacks.find((stack) => stack.active) || stacks[0] || null;
-        const activeFrames = (activeStack ? activeStack.frames : data.frames || []).filter((frame) => !frame.synthetic);
+        const activeFrames = (activeStack ? activeStack.frames : data.frames || [])
+            .map((frame) => publicUiCallStackFrame(frame, cpu));
         return {
             enabled: !!data.enabled,
             synchronized: data.synchronized !== false,
@@ -231,12 +245,11 @@ export function createViewService({
                 : "",
             depth: activeFrames.length,
             activeStackId,
-            frames: activeFrames.map((frame) => publicCallStackFrame(frame, cpu)),
+            frames: activeFrames,
             stacks: stacks.map((stack) => {
                 const active = stack.id === activeStackId || !!stack.active;
                 if (active) {
-                    const frames = stack.frames.filter((frame) => !frame.synthetic).map((frame) => publicCallStackFrame(frame, cpu));
-                    return { id: stack.id, active: true, sp: stack.spHex, nowPc: stack.nowPcHex, depth: frames.length, frames };
+                    return { id: stack.id, active: true, sp: stack.spHex, nowPc: stack.nowPcHex, depth: stack.frames.length };
                 }
                 return {
                     id: stack.id,
