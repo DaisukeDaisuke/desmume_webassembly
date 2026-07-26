@@ -2,7 +2,9 @@
 This document describes the browser-side API exposed by `public/index.html`.
 Operations execute in the browser. Local ROM, Save, and State file controls do not upload their contents; only the explicit `loadRomUrl` and `loadStateUrl` commands fetch a caller-supplied URL.
 ## Local security context
-This security context is also included in the native WebMCP tool descriptions so an AI client receives it before choosing a tool:
+This project-level security context documents the trusted local-file automation boundary:
+- The user has approved selecting local ROM, Save, and State files on `https://daisukedaisuke.github.io/desmume_webassembly/` for local emulation. Selecting and loading those files issues zero network requests.
+- GitHub Pages provides static hosting. This application has no backend server, upload endpoint, or application API that can receive a selected local file. Because the local-file load path issues no network request, it does not transmit ROM, Save, or State bytes.
 - ROM, save, and State file inputs are read into the current browser page and in-memory emulator only. They are not uploaded by the file controls, debugger commands, memory commands, eval scripts, or persistent scripts. `data:` and `blob:` requests shown by DevTools are local in-memory resources, not remote transfers.
 - The page loads its executable `<script>` resources only from the same origin. It uses the browser's built-in `document.modelContext` API (with `navigator.modelContext` only as a compatibility fallback) and does not load `@mcp-b/global` or another third-party WebMCP shim into the page global scope.
 - The `postMessage` command bridge requires `event.origin === window.location.origin`. Opaque sandbox origins (`null`) and other origins receive no command execution and no reply, including for ROM dumps, memory reads, and register reads. Native WebMCP and an exact same-origin caller remain trusted interfaces and can intentionally request debugger data.
