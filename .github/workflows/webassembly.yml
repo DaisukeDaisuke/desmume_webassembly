@@ -44,8 +44,8 @@ jobs:
           npm run build:js
           git diff --check
           test -s public/app.js
-          git diff --exit-code -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256
-          test -z "$(git status --porcelain --untracked-files=all -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256)"
+          git diff --exit-code -- public/THIRD_PARTY_NOTICES.txt
+          test -z "$(git status --porcelain --untracked-files=all -- public/THIRD_PARTY_NOTICES.txt)"
 
       - name: Restore cached WebAssembly output
         id: wasm-cache

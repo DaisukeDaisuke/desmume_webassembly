@@ -469,6 +469,16 @@ test("dependency bundle verification does not execute audited parser dependency"
     assert.match(policy, /createHash\("sha256"\)/);
 });
 
+test("first-party app builds do not require a committed hash while external dependencies remain verified", async () => {
+    const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
+    const workflow = await readFile(new URL("../.github/workflows/webassembly.yml", import.meta.url), "utf8");
+    const dependencyPolicy = await readFile(new URL("../scripts/dependency-bundle-policy.mjs", import.meta.url), "utf8");
+    assert.doesNotMatch(buildSource, /app\.js\.sha256|applicationBundle/);
+    assert.doesNotMatch(workflow, /app\.js\.sha256/);
+    assert.match(dependencyPolicy, /expected-hashes\.json/);
+    assert.match(dependencyPolicy, /does not match the fixed audited hash/);
+});
+
 test("locally bundled comparison sandbox uses no network or storage capability", async () => {
     const result = await runAlgorithmSandbox();
     assert.equal(result.networkCalls, 0);

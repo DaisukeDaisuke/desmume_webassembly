@@ -1,6 +1,5 @@
 import * as esbuild from "esbuild";
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildDependencySources } from "./dependency-bundle-policy.mjs";
 
@@ -58,10 +57,3 @@ await esbuild.build({
   }],
   logLevel: "info"
 });
-
-const applicationBundle = await readFile("public/app.js");
-await writeFile(
-  "public/app.js.sha256",
-  `${createHash("sha256").update(applicationBundle).digest("hex")}  app.js\n`,
-  "utf8"
-);

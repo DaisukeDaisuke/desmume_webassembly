@@ -112,10 +112,14 @@ export function createInputSequenceService({
             if (initialPause?.paused && initialPause.pauseKind === "manual" && params.resume === true) {
                 const resumed = await resume();
                 if (resumed?.ok === false) return resumed;
-                initialPause = requireInputRunning();
+                initialPause = getPauseDetails();
             }
             if (initialPause?.paused) {
-                throw inputUnavailable(initialPause);
+                return responder.fail(
+                    ErrorCode.INPUT_UNAVAILABLE,
+                    `input is unavailable while emulator is paused (${initialPause.pauseKind || "manual"})`,
+                    initialPause
+                );
             }
             let sequence = params.seq;
             const existing = sequences.get(params.id);
