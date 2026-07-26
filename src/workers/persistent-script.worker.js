@@ -193,7 +193,7 @@ async function callMemory(command, params) {
         error.details = {
             memoryApi: command,
             inputAddress: address === undefined ? "undefined" : NativeString(address),
-            triggerId: Number(activeEvent?.callbackId) || 0
+            triggerId: Number(activeEvent?.triggerId) || 0
         };
         throw error;
     }
@@ -280,6 +280,7 @@ async function runEvent(message) {
     activeEvent = {
         eventId: Number(message.eventId) || 0,
         callbackId: Number(message.callbackId),
+        triggerId: Number(message.triggerId) || 0,
         callbackToken: String(message.callbackToken || "")
     };
     try {

@@ -271,6 +271,7 @@ export function createDebuggerCoordinator({
                         eventId,
                         scriptId: trigger.scriptId,
                         callbackId: trigger.callbackId,
+                        triggerId: trigger.id,
                         callbackToken: trigger.callbackToken,
                         event: type,
                         payload: {

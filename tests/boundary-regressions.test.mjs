@@ -248,6 +248,94 @@ test("input sequence rejects pause by default and awaits explicit manual resume"
     assert.equal(manager.current(), null);
 });
 
+test("input sequence rejects frame-step pauses, stops later mutations, and releases held buttons", async () => {
+    const breakCases = [
+        ["manual", undefined],
+        ["executeBreakpoint", "exec"],
+        ["memoryBreakpoint", "read"],
+        ["memoryBreakpoint", "write"],
+        ["specialBreakpoint", "dataAbort"],
+        ["specialBreakpoint", "prefetchAbort"],
+        ["specialBreakpoint", "undefinedInstruction"]
+    ];
+    const createHarness = ({ pauseKind = "executeBreakpoint", breakType = "exec", incompleteOnly = false } = {}) => {
+        let pauseDetails = { paused: false, running: true, pauseKind: "manual" };
+        let stepCalls = 0;
+        const inputEvents = [];
+        const input = createInputSequenceService({
+            responder,
+            press: (button, pressed) => inputEvents.push([button, pressed]),
+            releaseAll: () => {},
+            touch: () => {},
+            stepFrames: async (frames) => {
+                stepCalls++;
+                if (!incompleteOnly) {
+                    pauseDetails = {
+                        paused: true,
+                        running: false,
+                        pauseKind,
+                        ...(breakType ? {
+                            breakType,
+                            cpu: "arm9",
+                            address: 0x02000010,
+                            pc: 0x02000020
+                        } : {})
+                    };
+                }
+                return { frames: 0, requested: frames, paused: !incompleteOnly };
+            },
+            getPauseDetails: () => pauseDetails,
+            storage: memoryStorage()
+        });
+        return {
+            inputEvents,
+            run: (seq) => input.run({ seq }, { signal: new AbortController().signal }),
+            stepCalls: () => stepCalls
+        };
+    };
+
+    for (const [pauseKind, breakType] of breakCases) {
+        const harness = createHarness({ pauseKind, breakType });
+        await assert.rejects(
+            harness.run([["wf", 1]]),
+            (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+                && error.mcpDetails.pauseKind === pauseKind
+                && (breakType === undefined || error.mcpDetails.breakType === breakType)
+        );
+        assert.equal(harness.stepCalls(), 1);
+    }
+
+    const laterFrame = createHarness();
+    await assert.rejects(
+        laterFrame.run([["wf", 1], ["wf", 1]]),
+        (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+    );
+    assert.equal(laterFrame.stepCalls(), 1);
+
+    const laterInput = createHarness();
+    await assert.rejects(
+        laterInput.run([["wf", 1], ["h", "A", 1]]),
+        (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+    );
+    assert.deepEqual(laterInput.inputEvents, []);
+
+    const heldInput = createHarness({ pauseKind: "memoryBreakpoint", breakType: "write" });
+    await assert.rejects(
+        heldInput.run([["hf", "A", 1]]),
+        (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+            && error.mcpDetails.pauseKind === "memoryBreakpoint"
+            && error.mcpDetails.breakType === "write"
+    );
+    assert.deepEqual(heldInput.inputEvents, [["A", true], ["A", false]]);
+
+    const incomplete = createHarness({ incompleteOnly: true });
+    await assert.rejects(
+        incomplete.run([["wf", 2]]),
+        (error) => error.mcpCode === "INPUT_UNAVAILABLE"
+            && error.mcpDetails.paused === true
+    );
+});
+
 test("legacy scalar helpers unwrap values and preserve structured failures", async () => {
     assert.equal(unwrapLegacyScalar({ ok: true, value: 0x02075628 }, "memoryGetRegister"), 0x02075628);
     assert.equal(unwrapLegacyScalar(7, "memoryReadByte"), 7);
@@ -1672,6 +1760,7 @@ test("persistent memory callback errors identify the API, address input, and tri
         event: "exec",
         eventId: 42,
         callbackId: registration.trigger.callbackId,
+        triggerId: 731,
         callbackToken: "exec-callback",
         payload: { address: "0x02000010", pc: "0x02000010", value: "0x00000000", cpu: "arm9" }
     });
@@ -1686,7 +1775,10 @@ test("persistent memory callback errors identify the API, address input, and tri
         .find((value) => value.includes("callback error"));
     assert.match(line, /memoryReadDword/);
     assert.match(line, /inputAddress/);
-    assert.match(line, /triggerId/);
+    const detailMarker = " details=";
+    const details = JSON.parse(line.slice(line.indexOf(detailMarker) + detailMarker.length));
+    assert.equal(details.triggerId, 731);
+    assert.notEqual(details.triggerId, registration.trigger.callbackId);
 });
 
 test("persistent-script legacy memory reads remain numeric", async () => {

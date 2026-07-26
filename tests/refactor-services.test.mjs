@@ -819,6 +819,8 @@ test("pending script callbacks validate identity and clean up after script stop"
     });
     const event = messages[0];
     assert.equal(state.pendingScriptEvents.size, 1);
+    assert.equal(event.callbackId, 8);
+    assert.equal(event.triggerId, 1);
     assert.equal(await coordinator.finishPersistentScriptEvent(event.eventId, {
         scriptId: 99,
         callbackId: event.callbackId,

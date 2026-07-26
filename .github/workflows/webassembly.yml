@@ -47,18 +47,28 @@ jobs:
           git diff --exit-code -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256
           test -z "$(git status --porcelain --untracked-files=all -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256)"
 
+      - name: Restore cached WebAssembly output
+        id: wasm-cache
+        uses: actions/cache@v6
+        with:
+          path: public/desmume.js
+          key: wasm-output-${{ runner.os }}-${{ hashFiles('webassembly/runtime-state-contract.h', 'webassembly/support.c', 'webassembly/wasm-port.cpp') }}
+
       - name: Install Emscripten
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update > /dev/null 2>&1
           sudo apt-get install -y emscripten > /dev/null 2>&1
 
       - name: Build WebAssembly
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
         env:
           OUTPUT_DIR: ${{ github.workspace }}/public
         run: |
           bash webassembly/build.sh
 
       - name: Minify Emscripten JavaScript
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
         run: |
           npm run minify:wasm
 
