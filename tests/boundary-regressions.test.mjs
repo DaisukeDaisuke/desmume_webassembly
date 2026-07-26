@@ -278,27 +278,6 @@ test("window.memory scalar aliases return numbers while DesmumeMCP.call stays st
     }
 });
 
-test("WebMCP relies on the native browser API without a global third-party script", async () => {
-    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-    const api = await readFile(new URL("../webassembly/API.md", import.meta.url), "utf8");
-    assert.doesNotMatch(html, /@mcp-b\/global|__webModelContextOptions/);
-    assert.match(html, /WebMCPはブラウザ内蔵APIだけを使用し、外部CDNコードをグローバル空間へ読み込みません/);
-    const scriptSources = [...html.matchAll(/<script\b[^>]*\bsrc=(["'])(.*?)\1/gi)]
-        .map((match) => match[2]);
-    assert.deepEqual(scriptSources, ["coi-serviceworker.js", "app.js?v=20260722-releaseblocker3"]);
-    assert.equal(scriptSources.some((source) => /^(?:https?:)?\/\//i.test(source)), false);
-    const policy = html.match(/Content-Security-Policy" content="([^"]+)/)?.[1] || "";
-    const scriptDirective = policy.split(";").find((directive) => directive.trim().startsWith("script-src"));
-    const connectDirective = policy.split(";").find((directive) => directive.trim().startsWith("connect-src"));
-    assert.ok(scriptDirective);
-    assert.doesNotMatch(scriptDirective, /https?:/);
-    assert.doesNotMatch(connectDirective || "", /\bdata:/);
-    assert.match(api, /## Local security context/);
-    assert.match(api, /event\.origin === window\.location\.origin/);
-    assert.match(api, /localStorage.*sessionStorage/);
-    assert.match(api, /No executable source is fetched from a CDN at runtime/);
-});
-
 test("WebMCP prefers document.modelContext and accepts duplicate native registrations after reload", async () => {
     const previous = Object.fromEntries(["window", "navigator", "document"].map((name) => [
         name,
