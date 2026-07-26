@@ -24,10 +24,13 @@ Public deployment: https://daisukedaisuke.github.io/desmume_webassembly/
 ```mermaid
 flowchart LR
   User[Browser user] --> UI[public/index.html]
-  AI[AI / WebMCP client] --> MCP[DesmumeMCP command router]
-  Script[Isolated JS worker] --> MCP
+  AI[AI / WebMCP client] --> MCP[WebMCP boundary]
+  Script[Embedded isolated JS worker] --> MCP
   UI --> MCP
-  MCP --> Wasm[public/desmume.js single-file Emscripten build]
+  MCP --> Commands[Command registry and handlers]
+  Commands --> Services[ROM / Save / State / debugger / frame / input services]
+  Services --> Bridge[Native bridge]
+  Bridge --> Wasm[public/desmume.js single-file Emscripten build]
   Wasm --> Core[old/desmume DeSmuME core]
   Core --> Hooks[breakpoint, exception, call-stack hooks]
   Hooks --> Wasm
@@ -36,13 +39,57 @@ flowchart LR
 
 ## Build
 
-The production build runs in GitHub Actions. For a Codespace build:
+Application source lives under `src/`. `public/app.js` is a generated IIFE bundle and must not be edited directly. Worker source also lives under `src/workers/`; the JavaScript build embeds it as text in `public/app.js`, so production does not request separate first-party Worker files. `public/coi-serviceworker.js` remains an independent vendored asset and is neither bundled nor generically minified.
+
+Install the pinned JavaScript build dependencies in Codespace/CI with lifecycle scripts disabled, verify the dependency bundles before running tests, then run the checks:
 
 ```bash
-bash webassembly/build.sh
+npm ci --ignore-scripts
+test "$(npm config get ignore-scripts)" = "true"
+npm run check:dependency-bundles
+npm test
+npm run check:licenses
+npm run check:js
+npm run build:js
+npm run build:notices
 ```
 
-The build emits `public/desmume.js` as a single Emscripten JavaScript file with the wasm payload embedded. Open `public/index.html` through a cross-origin-isolated server so the bundled `coi-serviceworker.js` can enable real browser threading support when available.
+`npm run check:dependency-bundles` bundles Acorn and SSIM from the lockfile, rejects retained static or dynamic imports, parses the generated dependency bundles, and fails unless their SHA-256 values match `src/dependencies/expected-hashes.json`. `npm run build:js` repeats that gate before embedding the fixed dependency source into the minified production `public/app.js` without a source map. For local development, run:
+
+```bash
+npm run watch:js
+```
+
+The watch build writes the same `public/app.js` path with an inline source map and continues watching `src/**/*.js`. Stop it with `Ctrl+C`. Before copying or deploying an artifact after using the watcher, rerun `npm run build:js` to restore the minified production bundle.
+
+Serve `public/` through the existing local server so local and Pages use the same asset paths:
+
+```powershell
+C:\Users\owner\CLionProjects\deweb\start-test-server.ps1
+```
+
+Then open `http://localhost:8766/`. Do not open `public/index.html` directly as a `file:` URL.
+
+The native Emscripten build is run in a Codespace. Check the current Codespace name first, transfer locally edited source with `gh codespace cp -e`, and build from the repository root:
+
+```bash
+gh codespace list
+gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build.sh"
+```
+
+For C++, WASM export, native bridge, breakpoint, or frame-counter changes, also run the diagnostic build used for browser regression:
+
+```bash
+gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build_safe_heap.sh"
+```
+
+The native build emits `public/desmume.js` as a single Emscripten JavaScript file with the wasm payload embedded. Copy required generated artifacts back with `gh codespace cp -e`. If a task starts the Codespace, stop it after all build and browser verification is complete:
+
+```bash
+gh codespace stop -c <codespace-name>
+```
+
+GitHub Actions performs the production native build, `npm ci --ignore-scripts`, dependency-bundle SHA/import verification before tests, license verification, application bundle, notices, and targeted Emscripten JavaScript minification through the local `terser` package script. It must not use `npx` online fallback and must not re-minify `public/app.js` or `public/coi-serviceworker.js`.
 
 ## Local Operation
 

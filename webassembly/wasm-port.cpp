@@ -26,6 +26,7 @@
 #include "rasterize.h"
 #include "saves.h"
 #include "utils/colorspacehandler/colorspacehandler.h"
+#include "runtime-state-contract.h"
 
 CHEATSEXPORT *cheatsExport = NULL;
 
@@ -44,6 +45,7 @@ static bool paused = true;
 static bool debuggerEnabled = true;
 static int debuggerSuspendDepth = 0;
 static bool traceEnabled = false;
+static bool traceSuspended = false;
 static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
 static bool specialBreakpoints[3] = {false, false, false};
@@ -117,6 +119,11 @@ struct TraceControlEvent {
 
 static std::vector<TraceControlEvent> traceControlEvents;
 static u32 tracePendingIrqResume[2] = {0, 0};
+
+static void clearTraceRuntimeState() {
+  clearTraceState(callStackLanes, activeCallStackLane, nextCallStackLaneId,
+                  callCountMap, traceControlEvents, tracePendingIrqResume);
+}
 
 u32 dstFrameBuffer[2][256 * 192];
 
@@ -294,7 +301,7 @@ extern "C" int wasmDebuggerShouldBreak(int proc, int kind, u32 address, int size
 }
 
 extern "C" void wasmEnterFunctionHook(int proc) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   const u32 sp = cpu->R[13];
@@ -319,7 +326,7 @@ extern "C" void wasmEnterFunctionHook(int proc) {
 }
 
 extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePrivilegeCheck && ((cpu->CPSR.val & 0x1f) == IRQ)) return;
   const u32 sp = cpu->R[13];
@@ -337,7 +344,7 @@ extern "C" void wasmCallFunctionHook(int proc, u32 target, u32 returnAddress) {
 }
 
 extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   armcpu_t *cpu = cpuFor(proc);
   if (tracePendingIrqResume[proc] != 0 && ((tracePendingIrqResume[proc] & ~1U) == (target & ~1U)) && (kind == 4 || kind == 6)) {
     int irqFrameIndex = -1;
@@ -384,7 +391,7 @@ extern "C" void wasmTraceControlFlowHook(int proc, int kind, int reg, u32 target
 }
 
 extern "C" void wasmTraceIrqEnterHook(int proc, u32 sourcePc, u32 vectorPc, u32 resumePc, u32 irqSp, u32 irqCpsr) {
-  if (!traceEnabled || proc != 0) return;
+  if (!traceEnabled || traceSuspended || proc != 0) return;
   tracePendingIrqResume[proc] = resumePc;
   if (tracePrivilegeCheck) return;
   int frameIndex = -1;
@@ -470,15 +477,10 @@ void setSampleRate(int r) {
 }
 
 void *prepareRomBuffer(int rl) {
-  if (rl <= 0) return NULL;
-  romLen = rl;
-  if (romLen > romBufferCap) {
-    u8 *resized = (u8 *)realloc((void *)romBuffer, romLen);
-    if (!resized) return NULL;
-    romBuffer = resized;
-    romBufferCap = romLen;
-  }
-  return romBuffer;
+  return prepareRomStorage(romBuffer, romBufferCap, romLen, rl,
+                           [](void *buffer, size_t length) {
+                             return realloc(buffer, length);
+                           });
 }
 
 void *getSymbol(int id) {
@@ -493,6 +495,7 @@ int reset() {
   if (!romLoaded || romLen <= 0) return -1;
   paused = true;
   execute = false;
+  clearTraceRuntimeState();
   NDS_Reset();
   frameCounter = 0;
   lastBreak.hit = false;
@@ -501,10 +504,10 @@ int reset() {
 
 int loadROM(int len) {
   try {
-    romLen = len;
+    if (len <= 0) return -2;
     const bool hadRom = romLoaded;
-    romLoaded = false;
-    paused = true;
+    beginRomLoadState(romLoaded, paused, execute);
+    clearTraceRuntimeState();
     emuLastError = -2;
     if (hadRom) {
       NDS_FreeROM();
@@ -518,9 +521,7 @@ int loadROM(int len) {
     SPU_SetVolume(35);
 
     if (!NDS_LoadROM("rom.nds")) return emuLastError;
-    romLoaded = true;
-    paused = false;
-    execute = true;
+    finishRomLoadState(len, romLen, romLoaded, paused, execute);
     frameCounter = 0;
     lastBreak.hit = false;
     return 0;
@@ -537,9 +538,8 @@ int isRomLoaded() { return romLoaded ? 1 : 0; }
 
 int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   try {
-  if (paused || !romLoaded) return 0;
-  const u32 startPc9 = NDS_ARM9.instruct_adr;
-  const u32 startPc7 = NDS_ARM7.instruct_adr;
+  if (!romLoaded) return -1;
+  if (paused) return 1;
   if (!shouldDraw) NDS_SkipNextFrame();
   if (touched) {
     NDS_setTouchPos(touchX, touchY);
@@ -553,10 +553,9 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
   NDS_beginProcessingInput();
   NDS_endProcessingInput();
   NDS_exec<false>();
-  const bool retrappedSameExecBreakpoint = lastBreak.hit && lastBreak.kind == 0 &&
-    ((lastBreak.proc == 0 && lastBreak.address == startPc9 && lastBreak.pc == startPc9) ||
-     (lastBreak.proc == 1 && lastBreak.address == startPc7 && lastBreak.pc == startPc7));
-  if (!retrappedSameExecBreakpoint) frameCounter++;
+  // A debug trap returns from NDS_exec before the emulated frame is complete.
+  // Do not make State-loaded framebuffers valid or notify frame waiters for it.
+  if (!paused) frameCounter++;
   if (shouldDraw) gpu_screen_to_rgb((u32 *)dstFrameBuffer);
     return paused ? 1 : 0;
   } catch (const std::exception &) {
@@ -583,8 +582,8 @@ int runFrames(int count, int shouldDraw, u32 keys) {
   for (int i = 0; i < count; i++) {
     const int result = runFrame(shouldDraw && i == count - 1, keys, 0, 0, 0);
     if (result < 0) return result;
-    ran++;
     if (result > 0) break;
+    ran++;
   }
   return ran;
 }
@@ -635,7 +634,7 @@ int saveStateToBuffer() {
   try {
     stateFile->truncate(0);
     stateFile->fseek(0, SEEK_SET);
-    savestate_save(*stateFile, 0);
+    savestate_save(*stateFile);
     return stateFile->size();
   } catch (const std::exception &) {
     return nativeFaultCode();
@@ -713,16 +712,14 @@ int debuggerSetEnabled(int value) {
 
 int traceSetEnabled(int value) {
   traceEnabled = value != 0;
-  if (!traceEnabled) {
-    callStackLanes.clear();
-    activeCallStackLane = 0;
-    nextCallStackLaneId = 1;
-    callCountMap.clear();
-    traceControlEvents.clear();
-    tracePendingIrqResume[0] = 0;
-    tracePendingIrqResume[1] = 0;
-  }
+  traceSuspended = false;
+  if (!traceEnabled) clearTraceRuntimeState();
   return traceEnabled ? 1 : 0;
+}
+
+int traceSetSuspended(int value) {
+  traceSuspended = traceEnabled && value != 0;
+  return traceSuspended ? 1 : 0;
 }
 
 int traceSetPrivilegeCheck(int value) {
@@ -747,6 +744,10 @@ u32 dbgGetReg(int proc, int reg) {
 
 int dbgSetReg(int proc, int reg, u32 value) {
   armcpu_t *cpu = cpuFor(proc);
+  if (reg == 15) {
+    armcpu_set_pc(cpu, value);
+    return 0;
+  }
   if (reg >= 0 && reg < 16) {
     cpu->R[reg] = value;
     return 0;
@@ -781,6 +782,7 @@ void *dbgDumpMemory(int proc, u32 addr, int len) {
     static std::vector<u8> dump;
     if (len < 0) len = 0;
     if (len > 16 * 1024 * 1024) len = 16 * 1024 * 1024;
+    if (len > 0 && !uint32RangeFits(addr, (size_t)len)) return NULL;
     dump.resize(len);
     for (int i = 0; i < len; i++) dump[i] = (u8)dbgRead8(proc, addr + i);
     return dump.data();
@@ -844,11 +846,8 @@ int dbgClearBreakStatus() {
 
 int dbgClearAllBreakpoints() {
   try {
-  for (int i = 0; i < 2; i++) {
-    execBreakpoints[i].clear();
-    readBreakpoints[i].clear();
-    writeBreakpoints[i].clear();
-  }
+  clearAllBreakpointState(execBreakpoints, readBreakpoints, writeBreakpoints,
+                          specialBreakpoints);
   return 0;
   } catch (...) {
     return nativeFaultCode();

@@ -17,15 +17,36 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           submodules: recursive
           
+      - name: Install JavaScript dependencies
+        run: |
+          npm ci --ignore-scripts
+          test "$(npm config get ignore-scripts)" = "true"
+
+      - name: Verify bundled dependency boundary
+        run: |
+          npm run check:dependency-bundles
+
+      - name: Test and verify first-party JavaScript
+        run: |
+          npm test
+          npm run check:js
+          npm run check:licenses
+
+      - name: Build and verify source-derived artifacts
+        run: |
+          npm run build:notices
+          npm run build:js
+          git diff --check
+          test -s public/app.js
+          git diff --exit-code -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256
+          test -z "$(git status --porcelain --untracked-files=all -- public/THIRD_PARTY_NOTICES.txt public/app.js.sha256)"
+
       - name: Install Emscripten
         run: |
           sudo apt-get update > /dev/null 2>&1
@@ -37,25 +58,38 @@ jobs:
         run: |
           bash webassembly/build.sh
 
-      - name: Install JS minifier
+      - name: Minify Emscripten JavaScript
         run: |
-          npm install -g terser
+          npm run minify:wasm
 
-      - name: Minify JavaScript files
+      - name: Verify Pages output
         run: |
-          find public -maxdepth 1 -name "*.js" -print0 | while IFS= read -r -d '' f; do
-            terser "$f" -o "$f" --compress --mangle
-            echo "Minified: $f"
-          done
+          test -f public/index.html
+          test -f public/app.js
+          test -f public/coi-serviceworker.js
+          test -f public/desmume.js
+          test ! -d public/src
+          test ! -f public/app.js.map
+          grep -q "coi-serviceworker v0.1.7" public/coi-serviceworker.js
 
       - name: Setup Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v6
 
       - name: Upload artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
         with:
           path: "public"
 
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

@@ -16,12 +16,8 @@ async function native32(address) {
 }
 
 async function trace(callback) {
-  try {
-    await callback();
-  } finally {
-    // An execution trigger pauses before its instruction; this keeps the Lua-like trace running.
-    await mcp.call("resume");
-  }
+  // The main breakpoint coordinator resumes only after every callback for this event settles.
+  await callback();
 }
 
 async function exec(address, callback) {

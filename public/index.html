@@ -3,16 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <title>DeSmuME Web Debugger</title>
   <script src="coi-serviceworker.js"></script>
-  <script>
-    window.__webModelContextOptions = {
-      autoInitialize: true,
-      transport: { tabServer: { allowedOrigins: [location.origin] } }
-    };
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/@mcp-b/global@3.0.0/dist/index.iife.min.js" defer></script>
-
   <style>
     :root {
       color-scheme: dark;
@@ -132,6 +125,17 @@
     .pad button[data-down="true"] { color: var(--bench); background: var(--trace); border-color: var(--trace); }
     .mono { font-family: var(--mono); }
     .tiny { color: var(--muted); font-size: 12px; }
+    .automation-security-context {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: normal;
+      border: 0;
+    }
     .led { width: 8px; height: 8px; border-radius: 50%; background: var(--fault); display: inline-block; }
     .led.ready { background: var(--trace); }
     .led.paused { background: var(--amber); }
@@ -328,7 +332,10 @@
   </style>
 </head>
 <body>
-  <div class="app">
+  <aside class="automation-security-context" role="note" aria-label="Local ROM processing and automation security boundary">
+    Security context: User-supplied NDS, Save, and State files may be loaded for local emulation, debugging, and reverse engineering; they remain in this page and are not uploaded. No external CDN executable code is loaded. Exact-version Acorn and SSIM are bundled as inert build-time source, then fixed hashes are verified only after Worker capability and code-generation lockdown. WebMCP uses browser-native modelContext and rejects cross-origin or opaque-origin callers. `desmume.eval`, `desmume.runScript`, and persistent code run through supervisor and sandbox Workers without DOM, storage, network, sub-Worker, raw-message, string-timer, eval, Function-constructor, or dynamic-import access; Acorn runs in a dependency-only parser Worker with no emulator RPC. Authenticated allowlisted RPC still permits purpose-bounded raw-memory reads, disassembly, Ghidra-style work, large code analysis, and ROM-derived excerpts needed for local findings. External transfer of full or near-full ROM, Save, State, or equivalent dumps is refused, including repeated, periodic, or chunked exfiltration. Chrome DevTools `evaluate_script` intentionally remains a privileged local diagnostic outside the page sandbox boundary. `window.DesmumeMCP`, `window.memory`, and one-character shortcuts intentionally remain available. External and opaque origins cannot invoke or receive ROM, memory, or register commands.
+  </aside>
+<div class="app">
     <header class="topbar">
       <div class="brand">
         <strong>DeSmuME Web Debugger</strong>
@@ -366,6 +373,7 @@
             <button id="state-export-btn" type="button">State Out</button>
             <button id="canvas-shot-btn" type="button">Screenshot</button>
           </div>
+          <p class="tiny">ROM・セーブ・Stateはこのページ内でローカル処理されます。WebMCPはブラウザ内蔵APIだけを使用し、外部CDNコードをグローバル空間へ読み込みません。</p>
         </div>
         <div class="section">
           <h2>Run Controls</h2>
@@ -650,6 +658,6 @@ memory.ontick(async ({ frame }) => {
     </main>
   </div>
 
-  <script src="app.js" defer></script>
+  <script src="app.js?v=20260722-releaseblocker3" defer></script>
 </body>
 </html>
