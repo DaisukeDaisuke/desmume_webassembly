@@ -3,6 +3,9 @@ import { codedError, subscribeAbort } from "./validation.js";
 
 const STORAGE_KEY = "desmume-input-sequences-v1";
 const BUTTONS = new Set(["A", "B", "X", "Y", "L", "R", "Start", "Select", "Up", "Down", "Left", "Right"]);
+const MAX_DURATION_MS = 600000;
+const MAX_TAP_COUNT = 10000;
+const MAX_STEP_FRAMES = 1000000;
 
 export function createInputSequenceService({
     responder,
@@ -11,6 +14,7 @@ export function createInputSequenceService({
     touch,
     stepFrames,
     getPauseDetails = () => null,
+    waitForInputWindow = null,
     resume = async () => ({ ok: true }),
     storage = localStorage
 }) {
@@ -60,7 +64,7 @@ export function createInputSequenceService({
             });
         }
     };
-    const wait = (ms, signal) => new Promise((resolve, reject) => {
+    const waitFallback = (ms, signal) => new Promise((resolve, reject) => {
         let unsubscribeAbort = () => {};
         const cleanup = () => unsubscribeAbort();
         const complete = () => {
@@ -75,20 +79,84 @@ export function createInputSequenceService({
         };
         unsubscribeAbort = subscribeAbort(signal, aborted);
     });
+    const wait = (ms, signal) => waitForInputWindow
+        ? waitForInputWindow(ms, { signal, label: "runInputSequence" })
+        : waitFallback(ms, signal);
 
-    function validate(sequence) {
+    function validate(sequence, tapParams) {
         if (!Array.isArray(sequence) || !sequence.length) {
-            throw new Error("seq must be a non-empty array");
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "seq must be a non-empty array");
         }
+        const tap = tapParams === undefined ? [40, 50] : tapParams;
+        if (!Array.isArray(tap) || tap.length !== 2) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "tap must be [holdMs, gapMs]");
+        }
+        const holdMs = finiteDuration(tap[0], "tap holdMs");
+        const gapMs = finiteDuration(tap[1], "tap gapMs");
+        let totalDurationMs = 0;
         for (const step of sequence) {
-            if (!Array.isArray(step) || !["t", "s", "h", "hf", "w", "wf", "x"].includes(step[0])) {
-                throw new Error("invalid sequence opcode");
+            if (!Array.isArray(step)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "each sequence step must be an array");
             }
+            const opcode = step[0];
+            const validLength = (
+                (opcode === "t" && (step.length === 2 || step.length === 3))
+                || (["s", "h", "hf"].includes(opcode) && step.length === 3)
+                || (["w", "wf"].includes(opcode) && step.length === 2)
+                || (opcode === "x" && (step.length === 3 || step.length === 4))
+            );
+            if (!validLength) throw codedError(ErrorCode.INVALID_ARGUMENT, `invalid ${String(opcode)} tuple`);
             const usesButtons = ["t", "s", "h", "hf"].includes(step[0]);
-            if (usesButtons && buttons(step[1]).some((button) => !BUTTONS.has(button))) {
-                throw new Error(`unknown button in ${step[1]}`);
+            if (usesButtons) {
+                const selected = buttons(step[1]);
+                if (!selected.length || selected.some((button) => !BUTTONS.has(button))) {
+                    throw codedError(ErrorCode.INVALID_ARGUMENT, `unknown or empty button list in ${step[1]}`);
+                }
+            }
+            if (opcode === "t") {
+                const count = positiveStepInteger(step[2] ?? 1, "tap count", MAX_TAP_COUNT);
+                totalDurationMs += count * holdMs + Math.max(0, count - 1) * gapMs;
+            } else if (["s", "h"].includes(opcode)) {
+                totalDurationMs += finiteDuration(step[2], `${opcode} durationMs`);
+            } else if (opcode === "w") {
+                totalDurationMs += finiteDuration(step[1], "wait durationMs");
+            } else if (opcode === "hf") {
+                positiveStepInteger(step[2], "hold frames", MAX_STEP_FRAMES);
+            } else if (opcode === "wf") {
+                positiveStepInteger(step[1], "wait frames", MAX_STEP_FRAMES);
+            } else if (opcode === "x") {
+                const x = Number(step[1]);
+                const y = Number(step[2]);
+                if (!Number.isInteger(x) || x < 0 || x > 255
+                    || !Number.isInteger(y) || y < 0 || y > 191) {
+                    throw codedError(ErrorCode.INVALID_ARGUMENT, "touch x must be 0..255 and y must be 0..191 integers");
+                }
+                totalDurationMs += finiteDuration(step[3] ?? 0, "touch durationMs");
             }
         }
+        if (!Number.isFinite(totalDurationMs) || totalDurationMs > MAX_DURATION_MS) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                `sequence total duration must not exceed ${MAX_DURATION_MS}ms`
+            );
+        }
+        return { holdMs, gapMs, totalDurationMs };
+    }
+
+    function finiteDuration(value, name) {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 0 || number > MAX_DURATION_MS) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${name} must be a finite number from 0 to ${MAX_DURATION_MS}`);
+        }
+        return number;
+    }
+
+    function positiveStepInteger(value, name, maximum) {
+        const number = Number(value);
+        if (!Number.isSafeInteger(number) || number < 1 || number > maximum) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${name} must be an integer from 1 to ${maximum}`);
+        }
+        return number;
     }
 
     return {
@@ -108,6 +176,31 @@ export function createInputSequenceService({
             return responder.ok({ id });
         },
         async run(params, operation) {
+            let sequence = params.seq;
+            const existing = sequences.get(params.id);
+            if (!sequence) {
+                if (!existing) {
+                    return responder.fail(
+                        ErrorCode.SEQUENCE_NOT_FOUND,
+                        `Input sequence not found: ${params.id}`
+                    );
+                }
+                sequence = existing;
+            }
+            let tap;
+            try {
+                tap = validate(sequence, params.tap);
+            } catch (error) {
+                return responder.fail(error.mcpCode || ErrorCode.INVALID_ARGUMENT, error.message, error.mcpDetails);
+            }
+            const changedExisting = existing
+                && JSON.stringify(existing) !== JSON.stringify(sequence);
+            if (changedExisting && params.replace !== true) {
+                return responder.fail(
+                    ErrorCode.SEQUENCE_EXISTS,
+                    `Input sequence already exists: ${params.id}`
+                );
+            }
             let initialPause = getPauseDetails();
             if (initialPause?.paused && initialPause.pauseKind === "manual" && params.resume === true) {
                 const resumed = await resume();
@@ -121,36 +214,12 @@ export function createInputSequenceService({
                     initialPause
                 );
             }
-            let sequence = params.seq;
-            const existing = sequences.get(params.id);
-            if (!sequence) {
-                if (!existing) {
-                    return responder.fail(
-                        ErrorCode.SEQUENCE_NOT_FOUND,
-                        `Input sequence not found: ${params.id}`
-                    );
-                }
-                sequence = existing;
-            }
-            try {
-                validate(sequence);
-            } catch (error) {
-                return responder.fail(ErrorCode.INVALID_ARGUMENT, error.message);
-            }
-            const changedExisting = existing
-                && JSON.stringify(existing) !== JSON.stringify(sequence);
-            if (changedExisting && params.replace !== true) {
-                return responder.fail(
-                    ErrorCode.SEQUENCE_EXISTS,
-                    `Input sequence already exists: ${params.id}`
-                );
-            }
             if (params.id) {
                 sequences.set(params.id, sequence);
                 save();
             }
 
-            const [holdMs, gapMs] = params.tap || [40, 50];
+            const { holdMs, gapMs } = tap;
             try {
                 for (const step of sequence) {
                     requireInputRunning();
@@ -158,14 +227,14 @@ export function createInputSequenceService({
                     if (opcode === "w") {
                         await wait(first, operation.signal);
                     } else if (opcode === "wf") {
-                        const requestedFrames = Number(first);
+                        const requestedFrames = first;
                         requireInputRunning();
                         const result = await stepFrames(requestedFrames);
                         requireCompletedFrameStep(result, requestedFrames);
                     } else if (opcode === "x") {
                         requireInputRunning();
-                        touch(true, Number(first), Number(second));
-                        await wait(Number(step[3] || 0), operation.signal);
+                        touch(true, first, second);
+                        await wait(step[3] ?? 0, operation.signal);
                         touch(false);
                     } else {
                         const selected = buttons(first);
@@ -175,16 +244,17 @@ export function createInputSequenceService({
                         };
                         const up = () => selected.forEach((button) => press(button, false));
                         if (opcode === "t") {
-                            for (let index = 0; index < Number(second || 1); index++) {
+                            const count = second ?? 1;
+                            for (let index = 0; index < count; index++) {
                                 down();
                                 await wait(holdMs, operation.signal);
                                 up();
-                                if (index + 1 < Number(second || 1)) {
+                                if (index + 1 < count) {
                                     await wait(gapMs, operation.signal);
                                 }
                             }
                         } else if (opcode === "s") {
-                            const end = performance.now() + Number(second);
+                            const end = performance.now() + second;
                             while (performance.now() < end) {
                                 down();
                                 await wait(holdMs, operation.signal);
@@ -193,11 +263,11 @@ export function createInputSequenceService({
                             }
                         } else if (opcode === "h") {
                             down();
-                            await wait(Number(second), operation.signal);
+                            await wait(second, operation.signal);
                             up();
                         } else if (opcode === "hf") {
                             down();
-                            const requestedFrames = Number(second);
+                            const requestedFrames = second;
                             let result;
                             try {
                                 result = await stepFrames(requestedFrames);

@@ -15,6 +15,10 @@ const COMMON_COMMANDS = [
     "setStackTracePrivilegeCheck", "setInput", "runInputHold", "runInputTap", "runTouchHold",
     "runInputSequence", "captureFrame", "compareFrame", "waitForBreak", "runUntil",
     "waitForScreenChange", "saveState", "loadState", "saveSaveSlot", "loadSaveSlot",
+    "waitForPause", "waitForStateLoad", "waitForFileTransaction", "waitForFrameMatch",
+    "waitForScreenStable", "runUntilMemoryRead", "runUntilMemoryWrite", "getOperation",
+    "cancelOperation", "getInputState", "releaseInput", "recordInput", "replayInput",
+    "listInputRecordings",
     "reloadRecentFile", "listRecentFiles", "binaryFloat", "setCTableSeed", "wait", "waitMs"
 ];
 

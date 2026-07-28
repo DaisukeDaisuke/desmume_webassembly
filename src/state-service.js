@@ -4,7 +4,8 @@ export function createStateService({
     frameService,
     onScreenInvalid = () => {},
     onStatusChange = () => {},
-    onFault = () => {}
+    onFault = () => {},
+    eventService = null
 }) {
     function loadBytes(bytes) {
         return native.loadStateBytes(bytes);
@@ -17,6 +18,14 @@ export function createStateService({
         state.stateLoadSerial++;
         state.traceStateSynchronized = state.traceEnabled !== true;
         onScreenInvalid({ showResumeNotice });
+        eventService?.publish({
+            stateLoadSerial: Number(state.stateLoadSerial || 0),
+            fileTransactionSerial: Number(state.fileTransactionSerial || 0),
+            fileTransactionActive: !!state.fileTransactionActive,
+            paused: !!state.paused,
+            running: !!state.running,
+            frame: Number(state.frame || 0)
+        });
     }
 
     function pauseForLoad() {

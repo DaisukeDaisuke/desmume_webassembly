@@ -14,8 +14,12 @@ export function createInputCommands({
     setKey,
     setTouchState,
     toButtonList,
-    waitChecked
+    waitChecked,
+    waitForInputWindow = null
 }) {
+    const waitInput = (milliseconds, deadline, label) => waitForInputWindow
+        ? waitForInputWindow(milliseconds, { deadline, label })
+        : waitChecked(milliseconds, deadline, label);
     function inputDeadline(params) {
         if (params.timeoutMs === undefined) return 0;
         return performance.now() + positiveInteger(params.timeoutMs, "timeoutMs", MAX_INPUT_WAIT_MS);
@@ -65,15 +69,15 @@ export function createInputCommands({
         const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", MAX_INPUT_WAIT_MS);
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runInputHold");
         const deadline = inputDeadline(params);
-        await waitChecked(waitBeforeMs, deadline, "runInputHold");
+        await waitInput(waitBeforeMs, deadline, "runInputHold");
         requireInputRunning(state, native);
         buttons.forEach((button) => setKey(button, true));
         try {
-            await waitChecked(durationMs, deadline, "runInputHold");
+            await waitInput(durationMs, deadline, "runInputHold");
         } finally {
             buttons.forEach((button) => setKey(button, false));
         }
-        await waitChecked(waitAfterMs, deadline, "runInputHold");
+        await waitInput(waitAfterMs, deadline, "runInputHold");
         return { ok: true, buttons, durationMs };
     }
 
@@ -90,18 +94,18 @@ export function createInputCommands({
             "runInputTap"
         );
         const deadline = inputDeadline(params);
-        await waitChecked(waitBeforeMs, deadline, "runInputTap");
+        await waitInput(waitBeforeMs, deadline, "runInputTap");
         for (let index = 0; index < repeat; index++) {
             requireInputRunning(state, native);
             buttons.forEach((button) => setKey(button, true));
             try {
-                await waitChecked(holdMs, deadline, "runInputTap");
+                await waitInput(holdMs, deadline, "runInputTap");
             } finally {
                 buttons.forEach((button) => setKey(button, false));
             }
-            if (index < repeat - 1) await waitChecked(gapMs, deadline, "runInputTap");
+            if (index < repeat - 1) await waitInput(gapMs, deadline, "runInputTap");
         }
-        await waitChecked(waitAfterMs, deadline, "runInputTap");
+        await waitInput(waitAfterMs, deadline, "runInputTap");
         return { ok: true, buttons, repeat, holdMs, gapMs };
     }
 
@@ -121,15 +125,15 @@ export function createInputCommands({
         const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", MAX_INPUT_WAIT_MS);
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runTouchHold");
         const deadline = inputDeadline(params);
-        await waitChecked(waitBeforeMs, deadline, "runTouchHold");
+        await waitInput(waitBeforeMs, deadline, "runTouchHold");
         requireInputRunning(state, native);
         setTouchState(true, x, y);
         try {
-            await waitChecked(durationMs, deadline, "runTouchHold");
+            await waitInput(durationMs, deadline, "runTouchHold");
         } finally {
             setTouchState(false, x, y);
         }
-        await waitChecked(waitAfterMs, deadline, "runTouchHold");
+        await waitInput(waitAfterMs, deadline, "runTouchHold");
         return { ok: true, x, y, durationMs };
     }
 
@@ -146,10 +150,28 @@ export function createInputCommands({
         return { keymap: state.keymap };
     }
 
+    async function getInputState() {
+        return {
+            keyMask: Number(state.keys || 0) >>> 0,
+            buttons: Object.entries(state.buttons)
+                .filter(([, bit]) => (state.keys & (1 << bit)) !== 0)
+                .map(([button]) => button),
+            touch: { ...state.touch }
+        };
+    }
+
+    async function releaseInput() {
+        Object.keys(state.buttons).forEach((button) => setKey(button, false));
+        setTouchState(false, 0, 0);
+        return { ok: true, ...await getInputState() };
+    }
+
     return Object.freeze({
         runInputHold,
         runInputTap,
         runTouchHold,
+        getInputState,
+        releaseInput,
         setInput,
         setKeyBinding
     });

@@ -5,6 +5,7 @@ export function createDebuggerCoordinator({
     native,
     breakpointOwners,
     breakpointService,
+    pauseEventService = null,
     getQueueBreakpointRefresh,
     log,
     hex,
@@ -339,6 +340,18 @@ export function createDebuggerCoordinator({
             ownerSite,
             pc: Number(breakpoint.pc) >>> 0,
             value: Number(breakpoint.value) >>> 0
+        });
+        pauseEventService?.publish({
+            pauseKind: type === "exec"
+                ? "executeBreakpoint"
+                : type === "read" || type === "write"
+                    ? "memoryBreakpoint"
+                    : "specialBreakpoint",
+            breakType: type,
+            cpu: String(breakpoint.cpu),
+            address: Number(breakpoint.address) >>> 0,
+            pc: Number(breakpoint.pc) >>> 0,
+            frame: Number(state.frame || 0)
         });
         dispatchScriptTriggers(triggers, breakpoint, type, classification);
         return nativeStatus;

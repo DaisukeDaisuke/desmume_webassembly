@@ -4,6 +4,8 @@ export function createAppState() {
         moduleInitPromise: null,
         scriptLoadPromise: null,
         nativeInitState: "uninitialized",
+        emulatorBundleLoaded: false,
+        emulatorLoadError: null,
         ready: false,
         running: false,
         paused: true,

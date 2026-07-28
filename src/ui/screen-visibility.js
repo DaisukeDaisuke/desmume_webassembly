@@ -1,17 +1,12 @@
+import { applyScreenLayout } from "./screen-layout.js";
+
 export function createScreenVisibility({ state, ui, frameService, tryGetPc }) {
     function hex(value, width = 8) {
         return `0x${(Number(value) >>> 0).toString(16).padStart(width, "0")}`;
     }
 
     function applyScaleRotation() {
-        const vertical = state.rotation % 180 === 0;
-        const canvasWidth = 256 * state.scale;
-        const canvasHeight = 384 * state.scale;
-        ui.screenShell.style.setProperty("--canvas-w", `${canvasWidth}px`);
-        ui.screenShell.style.setProperty("--canvas-h", `${canvasHeight}px`);
-        ui.screenShell.style.setProperty("--screen-w", `${(vertical ? 256 : 384) * state.scale}px`);
-        ui.screenShell.style.setProperty("--screen-h", `${(vertical ? 384 : 256) * state.scale}px`);
-        ui.screenShell.style.setProperty("--screen-rotation", `${state.rotation}deg`);
+        applyScreenLayout(ui.screenShell, state);
     }
 
     function updateStatus() {

@@ -571,6 +571,39 @@ export function createDebuggerService({
         return value;
     }
 
+    async function idbKeys() {
+        const db = await new Promise((resolve, reject) => {
+            const req = indexedDB.open("desmume-web-debugger", 1);
+            req.onupgradeneeded = () => req.result.createObjectStore("states");
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        const keys = await new Promise((resolve, reject) => {
+            const tx = db.transaction("states", "readonly");
+            const req = tx.objectStore("states").getAllKeys();
+            req.onsuccess = () => resolve(req.result.map(String));
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return keys;
+    }
+
+    async function idbDelete(key) {
+        const db = await new Promise((resolve, reject) => {
+            const req = indexedDB.open("desmume-web-debugger", 1);
+            req.onupgradeneeded = () => req.result.createObjectStore("states");
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction("states", "readwrite");
+            tx.objectStore("states").delete(key);
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+        });
+        db.close();
+    }
+
     return {
         stripDisassemblyBytesLine,
         formatDisassemblyText,
@@ -610,6 +643,8 @@ export function createDebuggerService({
         readSized,
         matchSearchCondition,
         idbPut,
-        idbGet
+        idbGet,
+        idbKeys,
+        idbDelete
     };
 }

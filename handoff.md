@@ -218,3 +218,12 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - Re-enabling an already-enabled trace while State history is unsynchronized is a native no-op and reports the trace as suspended. Disabling/re-enabling remains the explicit destructive path for starting fresh trace history.
 - An operation whose task ignores abort returns its timeout result after a bounded settlement grace period. It remains `BUSY` until the late task actually settles, so cleanup is not run concurrently with code that can still mutate emulator state.
 - Verification: Codespace `check:js`, 100/100 tests, `build:js`, and safe-heap build passed. Chrome DevTools MCP loaded the local ROM and State and confirmed `setStackTraceMode({enabled:true})` returns `synchronized:false, suspended:true` after State load.
+
+## 2026-07-28 Debugger API and Lazy Runtime Addendum
+
+- Implemented the `new_plan.md` operation, pause wait, ordered frame wait, input validation, memory read/write wait, baseline verification, input recovery, State event helper, breakpoint bulk clear, storage management, and input recording/replay surfaces.
+- `runInputSequence` remains the compact caller-authored tuple runner. `recordInput` observes the central key/touch mutation boundary and stores complete input snapshots by completed-frame offset; `replayInput` can integrate an associated or named State and verifies ROM plus ARM9/ARM7 PC/CPSR before input.
+- Debug memory access continues through native `MMU_AT_DEBUG`, so debugger reads/writes do not count as CPU memory-breakpoint hits.
+- The initial first-party bundle is now `public/app.js` (6,531 bytes), which keeps the existing HTML canvas/UI, applies canvas scale/rotation before runtime load, and owns the shared loader. `public/emulator.js` (462,685 bytes) is minimized separately and loaded on the first ROM load or WebMCP invocation. The production build emits no shared chunk.
+- Codespace verification passed 118/118 tests before and after build, `check:js`, dependency bundle checks, license checks, and `build:js`. Generated `app.js`, `emulator.js`, and the existing Codespace `desmume.js` were synchronized to the host.
+- Direct Chrome DevTools MCP acceptance was not run because the provider was not started. Browser Use was not substituted. `NEW_PLAN_IMPLEMENTATION_HANDOFF.md` records the detailed implementation map and any remaining browser-only acceptance points.

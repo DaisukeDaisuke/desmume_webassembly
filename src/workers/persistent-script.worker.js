@@ -244,12 +244,16 @@ memory.write32 = memory.writedword;
 
 const emu_registerstart = (callback, options) => register("start", 0, callback, options);
 const emu_ontick = (callback, options) => register("tick", 0, callback, options);
+const emu_onstateload = (callback, options) => register("stateLoad", 0, callback, options);
+const emu_onstatesave = (callback, options) => register("stateSave", 0, callback, options);
 const emu = Object.fromEntries([
     "pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
     "trueNextBranch", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput",
     "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState",
     "reloadRecentFile"
 ].map((command) => [command, (params = {}) => mcp.call(command, params)]));
+emu.onStateLoad = emu_onstateload;
+emu.onStateSave = emu_onstatesave;
 
 function installShortcuts(definitions) {
     for (const [name, command, parameterNames, defaults = {}] of definitions || []) {
@@ -354,10 +358,22 @@ nativeAddEventListener("message", async (event) => {
         asyncMode = !!message.asyncMode;
         installShortcuts(message.shortcuts);
         try {
-            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
+            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             send({ type: "started" });
-            await run(mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick);
+            await run(
+                mcp,
+                webmcp,
+                memory,
+                print,
+                printf,
+                printhex,
+                emu,
+                emu_registerstart,
+                emu_ontick,
+                emu_onstateload,
+                emu_onstatesave
+            );
         } catch (error) {
             fail(error, error?.name === "SyntaxError" ? "compile" : "runtime");
         }

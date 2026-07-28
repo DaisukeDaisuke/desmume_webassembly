@@ -92,13 +92,16 @@ export function createFrameService({
         async comparePixels(baseline, params = {}) {
             const current = capture();
             if (!current.ok) return current;
+            return service.compareCapturedPixels(baseline, current.pixels, params);
+        },
+        async compareCapturedPixels(baseline, current, params = {}) {
             if (!Number.isFinite(Number(params.thresholdPct))) {
                 return responder.fail(ErrorCode.INVALID_ARGUMENT, "thresholdPct is required");
             }
             try {
                 const result = await compareImplementation({
                     baseline,
-                    current: current.pixels,
+                    current,
                     width: 256,
                     height: 384,
                     ...params
@@ -119,6 +122,12 @@ export function createFrameService({
                     );
                 return responder.fail(code, String(error?.message || error));
             }
+        },
+        getSnapshot(id) {
+            const snapshot = snapshots.get(id);
+            return snapshot
+                ? { ...snapshot, pixels: new Uint32Array(snapshot.pixels) }
+                : null;
         },
         captureCurrent: capture
     };

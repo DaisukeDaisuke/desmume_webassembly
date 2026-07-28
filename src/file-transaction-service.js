@@ -3,7 +3,8 @@ import { codedError } from "./validation.js";
 
 export function createFileTransactionService({
     state,
-    cancelPendingScriptEvents = async () => {}
+    cancelPendingScriptEvents = async () => {},
+    eventService = null
 }) {
     function begin(reason = "file transaction") {
         if (state.fileTransactionActive) {
@@ -16,6 +17,12 @@ export function createFileTransactionService({
         state.fileTransactionOwner = token;
         state.fileTransactionReason = String(reason);
         state.fileTransactionBoundaryActive = false;
+        eventService?.publish({
+            phase: "begin",
+            active: true,
+            fileTransactionSerial: Number(state.fileTransactionSerial || 0),
+            reason: state.fileTransactionReason
+        });
         return token;
     }
 
@@ -31,6 +38,12 @@ export function createFileTransactionService({
         state.lastBreakKey = "";
         state.breakRefreshKey = "";
         await cancelPendingScriptEvents(`${state.fileTransactionReason} started`);
+        eventService?.publish({
+            phase: "commit",
+            active: true,
+            fileTransactionSerial: Number(state.fileTransactionSerial || 0),
+            reason: state.fileTransactionReason
+        });
         return true;
     }
 
@@ -40,6 +53,12 @@ export function createFileTransactionService({
         state.fileTransactionBoundaryActive = false;
         state.fileTransactionOwner = null;
         state.fileTransactionReason = "";
+        eventService?.publish({
+            phase: "end",
+            active: false,
+            fileTransactionSerial: Number(state.fileTransactionSerial || 0),
+            reason: ""
+        });
         return true;
     }
 

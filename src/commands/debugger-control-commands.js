@@ -137,6 +137,31 @@ export function createDebuggerControlCommands(context) {
             return { ok: true, removed: breakpoint, breakpoints: state.breakpoints };
         },
 
+        async clearBreakpoints(params = {}) {
+            ensureReady();
+            const origin = params.origin === undefined ? "user" : String(params.origin);
+            if (!["user", "all"].includes(origin)) {
+                const error = new Error("origin must be user or all");
+                error.mcpCode = "INVALID_ARGUMENT";
+                throw error;
+            }
+            const removed = breakpointOwners.removeOwnersByOrigin(origin);
+            const removedIds = new Set(removed.map((item) => item.id));
+            state.breakpoints = state.breakpoints.filter((item) => !removedIds.has(item.id));
+            renderBreakpoints();
+            return {
+                ok: true,
+                removedIds: [...removedIds],
+                breakpoints: state.breakpoints,
+                remaining: breakpointOwners.list().map((site) => ({
+                    cpu: site.cpu,
+                    type: site.type,
+                    address: site.address,
+                    owners: breakpointOwners.getOwners(site)
+                }))
+            };
+        },
+
         async clearBreakStatus() {
             ensureReady();
             state.lastBreakKey = "";

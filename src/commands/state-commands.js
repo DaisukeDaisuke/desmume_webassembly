@@ -68,7 +68,8 @@ export function createStateCommands(context) {
                 && getInternalMetadata(params).analysisBaselineSlotToken !== analysisBaselineSlotToken) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "analysis baseline slots are reserved");
             }
-            const ownerToken = getInternalMetadata(params).fileTransactionToken ?? null;
+            const metadata = getInternalMetadata(params);
+            const ownerToken = metadata.fileTransactionToken ?? null;
             return fileTransactionService.run("State load", async ({ commit }) => {
                 let bytes = null;
                 let loaded = false;
@@ -76,11 +77,13 @@ export function createStateCommands(context) {
                 if (params.slot && !bytes) {
                     throw codedError(ErrorCode.STATE_NOT_LOADED, `state slot not found: ${params.slot}`);
                 }
-                await cancelAndWait("state-load");
+                if (!metadata.operation) await cancelAndWait("state-load");
                 await commit();
                 const runState = pauseForFileLoad();
                 try {
-                    if (params.slot && !isAnalysisBaselineSlot(params.slot)) rememberSlot(params.slot);
+                    if (params.slot && !isAnalysisBaselineSlot(params.slot) && !metadata.recordingReplay) {
+                        rememberSlot(params.slot);
+                    }
                     const ret = bytes ? loadStateBytesFromMemory(bytes) : native.loadBufferedState();
                     if (ret !== 0) throw codedError(
                         ErrorCode.NATIVE_ERROR,
@@ -97,7 +100,9 @@ export function createStateCommands(context) {
                     dispatchScriptEvent("stateLoad", { slot: params.slot || null });
                     return { ok: true, paused: runState.paused, reset: false };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(runState);
+                    if (loaded) restoreAfterFileLoad(metadata.holdPaused
+                        ? { ...runState, running: false, paused: true }
+                        : runState);
                     else stopAfterFailedStateLoad();
                 }
             }, ownerToken);

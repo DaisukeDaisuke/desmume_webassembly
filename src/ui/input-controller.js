@@ -2,6 +2,17 @@ import { codedError } from "../validation.js";
 import { ErrorCode } from "../error-codes.js";
 
 export function createInputController({ state, ui }) {
+    const mutationListeners = new Set();
+    const snapshot = () => ({
+        keyMask: Number(state.keys || 0) >>> 0,
+        touchActive: !!state.touch.active,
+        x: Number(state.touch.x || 0),
+        y: Number(state.touch.y || 0)
+    });
+    const publishMutation = () => {
+        const value = snapshot();
+        for (const listener of mutationListeners) listener(value);
+    };
     function normalizeButton(button) {
         const name = String(button);
         if (!Object.prototype.hasOwnProperty.call(state.buttons, name)) {
@@ -21,11 +32,13 @@ export function createInputController({ state, ui }) {
     function setKey(button, pressed) {
         button = normalizeButton(button);
         const bit = state.buttons[button];
+        const before = state.keys;
         if (pressed) state.keys |= 1 << bit;
         else state.keys &= ~(1 << bit);
         document.querySelectorAll("[data-button]").forEach((element) => {
             if (element.dataset.button === button) element.dataset.down = pressed ? "true" : "false";
         });
+        if (state.keys !== before) publishMutation();
     }
 
     function releaseAllKeys() {
@@ -33,11 +46,16 @@ export function createInputController({ state, ui }) {
     }
 
     function setTouchState(active, x = 0, y = 0) {
+        const before = snapshot();
         state.touch = {
             active: !!active,
             x: Number(x) || 0,
             y: Number(y) || 0
         };
+        const after = snapshot();
+        if (before.touchActive !== after.touchActive || before.x !== after.x || before.y !== after.y) {
+            publishMutation();
+        }
     }
 
     function isTypingTarget(element = document.activeElement) {
@@ -76,18 +94,23 @@ export function createInputController({ state, ui }) {
     function updateTouch(event, active) {
         const position = eventToTouch(event);
         if (!position) {
-            state.touch = { active: false, x: 0, y: 0 };
+            setTouchState(false, 0, 0);
             return;
         }
-        state.touch = { active, x: position.x, y: position.y };
+        setTouchState(active, position.x, position.y);
     }
 
     return Object.freeze({
         eventToTouch,
+        getInputSnapshot: snapshot,
         isTypingTarget,
         releaseAllKeys,
         setKey,
         setTouchState,
+        subscribeInputMutations(listener) {
+            mutationListeners.add(listener);
+            return () => mutationListeners.delete(listener);
+        },
         toButtonList,
         updateTouch
     });

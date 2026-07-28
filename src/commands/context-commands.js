@@ -13,9 +13,14 @@ export function createContextCommands(context) {
         fileTransactionService = {
             run: async (reason, task) => task({ token: null })
         },
+        getRegisters,
         hasLoadedRom,
         idbGet,
+        idbKeys,
+        idbDelete,
+        idbPut,
         native,
+        operationManager = () => null,
         readAnalysisBaseline,
         sha256Hex,
         snapshotContext,
@@ -25,6 +30,10 @@ export function createContextCommands(context) {
         writeAnalysisBaseline
     } = context;
 
+    const getOperationManager = () => typeof operationManager === "function"
+        ? operationManager()
+        : operationManager;
+
     return {
         async status(params = {}) {
             const waitMs = nonNegativeNumber(params.waitMs ?? params.ms ?? 0, "waitMs", 600000);
@@ -33,6 +42,10 @@ export function createContextCommands(context) {
             if (nativeStatus) syncNativeBreakStatus(nativeStatus);
             return {
                 ready: state.ready,
+                emulatorLoaded: !!state.emulatorBundleLoaded,
+                emulatorLoading: state.nativeInitState === "loading"
+                    || state.nativeInitState === "initializing",
+                emulatorLoadError: state.emulatorLoadError || null,
                 paused: state.paused,
                 running: state.running,
                 loadingFile: state.loadingFile,
@@ -42,6 +55,7 @@ export function createContextCommands(context) {
                     reason: String(state.fileTransactionReason || "")
                 },
                 stateLoadSerial: Number(state.stateLoadSerial || 0),
+                operation: getOperationManager()?.current() || null,
                 romLoaded: hasLoadedRom(),
                 romSize: state.romSize,
                 frame: state.frame,
@@ -56,6 +70,85 @@ export function createContextCommands(context) {
                 },
                 native: nativeStatus
             };
+        },
+
+        async getOperation() {
+            return {
+                operation: getOperationManager()?.current() || null
+            };
+        },
+
+        async cancelOperation() {
+            const manager = getOperationManager();
+            const operation = manager?.current() || null;
+            if (!operation) return { ok: true, cancelled: false, operation: null };
+            await manager.cancelAndWait("explicit-cancel");
+            return { ok: true, cancelled: true, operation };
+        },
+
+        async listStateSlots() {
+            const slots = (await idbKeys()).filter((key) => (
+                !key.startsWith("save:")
+                && !key.startsWith(ANALYSIS_BASELINE_SLOT_PREFIX)
+                && !key.startsWith("input-recording:")
+            ));
+            return { slots };
+        },
+
+        async deleteStateSlot(params = {}) {
+            const slot = String(params.slot || "");
+            if (!slot || slot.startsWith("save:")
+                || slot.startsWith(ANALYSIS_BASELINE_SLOT_PREFIX)
+                || slot.startsWith("input-recording:")) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "a normal State slot is required");
+            }
+            await idbDelete(slot);
+            return { ok: true, slot };
+        },
+
+        async listSaveSlots() {
+            return {
+                slots: (await idbKeys())
+                    .filter((key) => key.startsWith("save:"))
+                    .map((key) => key.slice(5))
+            };
+        },
+
+        async deleteSaveSlot(params = {}) {
+            const slot = String(params.slot || "");
+            if (!slot) throw codedError(ErrorCode.INVALID_ARGUMENT, "slot is required");
+            await idbDelete(`save:${slot}`);
+            return { ok: true, slot };
+        },
+
+        async listAnalysisBaselines() {
+            const baselines = [];
+            for (let index = 0; index < localStorage.length; index++) {
+                const key = localStorage.key(index);
+                if (!key?.startsWith("analysis-baseline:")) continue;
+                const name = key.slice("analysis-baseline:".length);
+                const baseline = readAnalysisBaseline(name);
+                if (baseline) baselines.push({
+                    name,
+                    savedAt: baseline.savedAt || null,
+                    romName: baseline.romName || "",
+                    stateSize: Number(baseline.stateSize || 0),
+                    stateFormatVersion: Number(baseline.stateFormatVersion || 0),
+                    pcVerified: !!baseline.cpuState
+                });
+            }
+            return { baselines };
+        },
+
+        async deleteAnalysisBaseline(params = {}) {
+            const name = String(params.name || "");
+            if (!name) throw codedError(ErrorCode.INVALID_ARGUMENT, "name is required");
+            const baseline = readAnalysisBaseline(name);
+            if (!baseline) throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
+            await idbDelete(String(baseline.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`));
+            state.analysisBaselines.delete(name);
+            localStorage.removeItem(`analysis-baseline:${name}`);
+            return { ok: true, name };
         },
 
         async snapshotContext(params = {}) {
@@ -74,28 +167,30 @@ export function createContextCommands(context) {
             }
             const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`;
             const generation = state.romGeneration;
-            const identity = await currentRomIdentity();
             const activity = emulatorActivity();
-            const result = await call("saveState", withInternalMetadata(
-                { slot },
-                { analysisBaselineSlotToken }
-            ));
+            const stateBytes = native.saveStateBytes();
+            const cpuState = {
+                arm9: {
+                    pc: Number(getRegisters("arm9").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
+                },
+                arm7: {
+                    pc: Number(getRegisters("arm7").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
+                }
+            };
+            const identity = await currentRomIdentity();
             if (generation !== state.romGeneration) {
                 throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
             }
-            const stateBytes = await idbGet(slot);
-            if (!stateBytes) {
-                throw codedError(
-                    ErrorCode.STATE_NOT_LOADED,
-                    "analysis baseline state was not stored"
-                );
-            }
+            await idbPut(slot, stateBytes);
             const baseline = {
                 name,
                 slot,
                 ...identity,
                 stateSize: stateBytes.length,
                 stateSha256: await sha256Hex(stateBytes),
+                cpuState,
                 ...activity,
                 skipIrq: !!ui.tracePrivilegeToggle.checked,
                 traceEnabled: !!ui.traceToggle.checked,
@@ -106,7 +201,9 @@ export function createContextCommands(context) {
                 ok: true,
                 name,
                 slot,
-                size: result.size,
+                size: stateBytes.length,
+                pcVerified: true,
+                cpuState,
                 ...emulatorActivity(),
                 skipIrq: baseline.skipIrq,
                 traceEnabled: baseline.traceEnabled
@@ -122,7 +219,7 @@ export function createContextCommands(context) {
                 throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
             }
             const rom = await currentRomIdentity();
-            for (const field of ["romName", "romSize", "romSha256", "stateFormatVersion"]) {
+            for (const field of ["romName", "romSize", "romSha256"]) {
                 if (baseline[field] !== rom[field]) {
                     throw codedError(
                         ErrorCode.STATE_INVALID,
@@ -148,6 +245,39 @@ export function createContextCommands(context) {
                 analysisBaselineSlotToken,
                 fileTransactionToken: token
             }));
+            state.paused = true;
+            state.running = false;
+            native.pause(true);
+            const restoredCpuState = {
+                arm9: {
+                    pc: Number(getRegisters("arm9").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
+                },
+                arm7: {
+                    pc: Number(getRegisters("arm7").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
+                }
+            };
+            const pcVerified = !!baseline.cpuState;
+            if (pcVerified) {
+                for (const cpu of ["arm9", "arm7"]) {
+                    for (const register of ["pc", "cpsr"]) {
+                        if ((Number(baseline.cpuState[cpu]?.[register]) >>> 0)
+                            !== restoredCpuState[cpu][register]) {
+                            throw codedError(
+                                ErrorCode.STATE_INVALID,
+                                `analysis baseline ${cpu} ${register} mismatch`,
+                                {
+                                    cpu,
+                                    register,
+                                    expected: Number(baseline.cpuState[cpu]?.[register]) >>> 0,
+                                    actual: restoredCpuState[cpu][register]
+                                }
+                            );
+                        }
+                    }
+                }
+            }
             if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
                 await call("setStackTraceMode", { enabled: baseline.traceEnabled });
             }
@@ -158,6 +288,8 @@ export function createContextCommands(context) {
                 ok: true,
                 name,
                 restored: true,
+                pcVerified,
+                cpuState: restoredCpuState,
                 ...await snapshotContext(params)
             };
             });

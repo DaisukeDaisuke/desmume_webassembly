@@ -65,7 +65,8 @@ export function createOperationManager({
             name,
             controller,
             signal: controller.signal,
-            startedAt: performance.now()
+            startedAt: performance.now(),
+            startedAtEpochMs: Date.now()
         };
         active = operation;
         let timer = 0;
@@ -139,6 +140,13 @@ export function createOperationManager({
         run,
         cancel,
         cancelAndWait,
-        current: () => active && ({ id: active.id, name: active.name, startedAt: active.startedAt })
+        current: () => active && ({
+            id: active.id,
+            name: active.name,
+            startedAt: active.startedAt,
+            startedAtEpochMs: active.startedAtEpochMs,
+            elapsedMs: Math.max(0, performance.now() - active.startedAt),
+            cancelling: active.signal.aborted
+        })
     };
 }

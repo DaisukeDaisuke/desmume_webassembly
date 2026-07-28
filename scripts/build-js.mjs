@@ -28,6 +28,38 @@ for (const entryPoint of [
 
 const dependencySources = await buildDependencySources();
 
+const embeddedWorkersPlugin = {
+  name: "embedded-workers",
+  setup(build) {
+    build.onLoad({ filter: /\.dependency-source\.js$/ }, ({ path }) => {
+      const dependency = dependencySources.get(resolve(path));
+      if (!dependency) throw new Error(`Unknown dependency source module: ${path}`);
+      return {
+        contents: `export default Object.freeze(${JSON.stringify({ source: dependency.source, sha256: dependency.sha256 })});`,
+        loader: "js"
+      };
+    });
+    build.onLoad({ filter: /\.worker\.js$/ }, async ({ path }) => ({
+      contents: bundledWorkers.get(resolve(path)) ?? await readFile(path, "utf8"),
+      loader: "text"
+    }));
+  }
+};
+
+await esbuild.build({
+  entryPoints: ["src/emulator-runtime.js"],
+  outfile: "public/emulator.js",
+  bundle: true,
+  minify: true,
+  platform: "browser",
+  format: "esm",
+  target: ["chrome120"],
+  sourcemap: false,
+  legalComments: "external",
+  plugins: [embeddedWorkersPlugin],
+  logLevel: "info"
+});
+
 await esbuild.build({
   entryPoints: ["src/app.js"],
   outfile: "public/app.js",
@@ -38,22 +70,6 @@ await esbuild.build({
   target: ["chrome120"],
   sourcemap: false,
   legalComments: "external",
-  plugins: [{
-    name: "embedded-workers",
-    setup(build) {
-      build.onLoad({ filter: /\.dependency-source\.js$/ }, ({ path }) => {
-        const dependency = dependencySources.get(resolve(path));
-        if (!dependency) throw new Error(`Unknown dependency source module: ${path}`);
-        return {
-          contents: `export default Object.freeze(${JSON.stringify({ source: dependency.source, sha256: dependency.sha256 })});`,
-          loader: "js"
-        };
-      });
-      build.onLoad({ filter: /\.worker\.js$/ }, async ({ path }) => ({
-        contents: bundledWorkers.get(resolve(path)) ?? await readFile(path, "utf8"),
-        loader: "text"
-      }));
-    }
-  }],
+  external: ["./emulator.js"],
   logLevel: "info"
 });

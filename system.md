@@ -38,6 +38,15 @@ This file contains durable context that is useful to every agent. Task-specific 
 
 - Read the newest checkpoint in `DEBUGGER_LOGIC_FIX_LIVE_HANDOFF.md` for current release-blocker status, exact patches already applied, and the next continuation point.
 
+## 2026-07-28 Operation, Input Recording, and Lazy Runtime Addendum
+
+- `NEW_PLAN_IMPLEMENTATION_HANDOFF.md` is the detailed continuation source for the 2026-07-28 API expansion.
+- Pause, State-load, and file-transaction waits use monotonic event services. Ordered screen waits copy completed-frame pixels into a bounded queue before asynchronous comparison.
+- Input sequence validation is atomic. Timed input windows subscribe to pause events, and central key/touch mutations support frame-offset input recording and replay.
+- Analysis baseline format 2 records and verifies ARM9/ARM7 PC and CPSR.
+- The browser build has two minimized first-party artifacts: the small initial `public/app.js` bootstrap and the on-demand `public/emulator.js` runtime. ROM load and WebMCP invocation trigger the shared runtime loader; ordinary bootstrap status does not.
+- Codespace verification passed 118/118 tests, JS checks, dependency bundle checks, license checks, and the two-artifact production build. The final bootstrap also applies canvas scale/rotation before runtime load. Chrome DevTools MCP acceptance remains pending because the provider was not started; do not substitute Browser Use.
+
 ## File/Feature Map From 2026-07-23 Context
 
 This table is based only on files and roles visible in the 2026-07-23 State/transaction/PC fix context.

@@ -30,7 +30,13 @@ const CANCELLING_COMMANDS = new Set([
 
 const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
     "pause", "status", "listRecentFiles", "listBreakpoints", "listMemoryFreezes",
-    "listScripts", "getScript", "listScriptPrint"
+    "listScripts", "getScript", "listScriptPrint", "getOperation", "cancelOperation",
+    "getInputState", "releaseInput", "listStateSlots", "listSaveSlots",
+    "listAnalysisBaselines", "listInputRecordings"
+]);
+
+const RECORDABLE_INPUT_COMMANDS = new Set([
+    "setInput", "runInputHold", "runInputTap", "runTouchHold"
 ]);
 
 const RESERVED_PARAM_FIELDS = Object.freeze([
@@ -89,6 +95,7 @@ export function createCommandDispatcher({
         if (active
             && ACTIVITY_COMMANDS.has(name)
             && !CANCELLING_COMMANDS.has(name)
+            && !(active.name === "recordInput" && RECORDABLE_INPUT_COMMANDS.has(name))
         ) {
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
         }

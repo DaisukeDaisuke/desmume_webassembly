@@ -117,6 +117,17 @@ export function createBreakpointOwnerStore({
                     || classification.operationOwned
                     || (includeScripts && classification.scriptOnly);
             });
+        },
+        removeOwnersByOrigin(origin) {
+            const removed = [];
+            for (const entry of [...sites.values()]) {
+                for (const owner of [...entry.owners.values()]) {
+                    if (origin !== "all" && owner.origin !== origin) continue;
+                    const result = this.removeOwner(owner.id);
+                    if (result) removed.push({ ...owner, site: result.entry });
+                }
+            }
+            return removed;
         }
     };
 }

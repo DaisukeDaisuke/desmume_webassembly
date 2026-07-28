@@ -1,4 +1,11 @@
-export function createNativeFaultHandler({ state, native, log, updateStatus, blockSaveFlush }) {
+export function createNativeFaultHandler({
+    state,
+    native,
+    log,
+    updateStatus,
+    blockSaveFlush,
+    pauseEventService = null
+}) {
     return function handleNativeFault(error, where) {
         state.nativeFault = true;
         state.paused = true;
@@ -10,6 +17,11 @@ export function createNativeFaultHandler({ state, native, log, updateStatus, blo
             log(`pause after ${where}: ${pauseError?.stack || pauseError?.message || pauseError}`);
         }
         state.breakLabel = `native fault ${where}`;
+        pauseEventService?.publish({
+            pauseKind: "nativeFault",
+            frame: Number(state.frame || 0),
+            where: String(where || "")
+        });
         blockSaveFlush(30000);
         log(`${where}: ${error?.stack || error?.message || error}`);
         updateStatus();

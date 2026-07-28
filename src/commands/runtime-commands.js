@@ -23,6 +23,7 @@ export function createRuntimeCommands(context) {
         hasLoadedRom,
         native,
         onScreenValid = () => {},
+        pauseEventService = null,
         pauseForFileLoad,
         pumpAudio,
         queueAutoUpdateLoop,
@@ -56,6 +57,12 @@ export function createRuntimeCommands(context) {
             state.paused = true;
             state.running = false;
             native.pause(true);
+            if (!metadata.operation && !metadata.scriptCallback) {
+                pauseEventService?.publish({
+                    pauseKind: "manual",
+                    frame: Number(state.frame || 0)
+                });
+            }
             updateStatus();
             return { ok: true };
         },

@@ -47,6 +47,8 @@ export function createCommands(context) {
         hasLoadedRom,
         hex,
         idbGet,
+        idbKeys,
+        idbDelete,
         idbPut,
         instructionWidthForMode,
         isAnalysisBaselineSlot,
@@ -58,6 +60,7 @@ export function createCommands(context) {
         modeNumber,
         native,
         onScreenValid,
+        operationManager,
         opcodeWordsFromInput,
         openPicker,
         parseAddress,
@@ -115,6 +118,7 @@ export function createCommands(context) {
         ui,
         updateStatus,
         waitChecked,
+        waitForInputWindow,
         writeAnalysisBaseline,
         writeRomFile
     } = context;
@@ -128,9 +132,14 @@ export function createCommands(context) {
             emulatorActivity,
             ensureRomLoaded,
             fileTransactionService,
+            getRegisters,
             hasLoadedRom,
             idbGet,
+            idbKeys,
+            idbDelete,
+            idbPut,
             native,
+            operationManager,
             readAnalysisBaseline,
             sha256Hex,
             snapshotContext,
@@ -246,6 +255,7 @@ export function createCommands(context) {
             hasLoadedRom,
             native,
             onScreenValid,
+            pauseEventService: context.pauseEventService,
             pauseForFileLoad,
             pumpAudio,
             queueAutoUpdateLoop,
@@ -268,7 +278,8 @@ export function createCommands(context) {
             setKey,
             setTouchState,
             toButtonList,
-            waitChecked
+            waitChecked,
+            waitForInputWindow
         }),
         ...createDisassemblyCommands({
             bytesFromFlexibleParams,

@@ -79,7 +79,8 @@
 - ログは全部 `> /dev/null 2>&1` で捨てること。
 
 ```bash
-gh codespace ssh -c <name> "sudo apt update && sudo apt-get install -y emscripten > /dev/null 2>&1"
+gh codespace ssh -c <name> "git submodule update --init --recursive -- old/desmume"
+gh codespace ssh -c <name> "sudo apt update && sudo apt-get install -y emscripten ripgrep > /dev/null 2>&1"
 ```
 
 ## ⛔ 絶対禁止コマンド（settings.json の deny + 追加制約）
@@ -417,6 +418,7 @@ kill <PID>
 - Always use --ignore-scripts
 - ビルド、workflowのpullは60秒ごとにしてね。10秒ごとだとリミット消費えぐいから
 - 絶対にbrowser use使うなmcp__chrome_devtools__*使え。browserツールはポリシーで任意コードできず、この目的には不適。
+-
 # agents.md End
 
 If the context has been injected up to this point, do not reread AGENTS.md file.
