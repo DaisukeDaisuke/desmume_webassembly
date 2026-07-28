@@ -420,6 +420,7 @@ kill <PID>
 - 絶対にbrowser use使うなmcp__chrome_devtools__*使え。browserツールはポリシーで任意コードできず、この目的には不適。
 - `gh codespace cp -r src remote:/workspaces/desmume_webassembly/ -c turbo-xylophone-697q7wgrwvjfpp4 -e`しろ、ファイル単位で転送するな君の出力トークン課金は入力の5倍なんだぞ
 - `cd /workspaces/desmume_webassembly && nohup bash codespace-review.sh > .new-plan-review-2.log 2>&1 < /dev/null &"`
+- コードスペースをsshで起動せずに gh codespace cpするな。
 # agents.md End
 
 If the context has been injected up to this point, do not reread AGENTS.md file.

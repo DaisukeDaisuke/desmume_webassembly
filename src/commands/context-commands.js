@@ -2,6 +2,8 @@ import { withInternalMetadata } from "../internal-command-metadata.js";
 import { ErrorCode } from "../error-codes.js";
 import { codedError, nonNegativeNumber } from "../validation.js";
 
+let analysisBaselineTemporarySerial = 0;
+
 export function createContextCommands(context) {
     const {
         ANALYSIS_BASELINE_SLOT_PREFIX,
@@ -29,6 +31,25 @@ export function createContextCommands(context) {
         ui,
         writeAnalysisBaseline
     } = context;
+    const analysisBaselineSaveLocks = new Map();
+
+    async function withAnalysisBaselineSaveLock(name, task) {
+        const previous = analysisBaselineSaveLocks.get(name) || Promise.resolve();
+        let release;
+        const current = new Promise((resolve) => {
+            release = resolve;
+        });
+        analysisBaselineSaveLocks.set(name, current);
+        await previous.catch(() => {});
+        try {
+            return await task();
+        } finally {
+            release();
+            if (analysisBaselineSaveLocks.get(name) === current) {
+                analysisBaselineSaveLocks.delete(name);
+            }
+        }
+    }
 
     const getOperationManager = () => typeof operationManager === "function"
         ? operationManager()
@@ -158,6 +179,7 @@ export function createContextCommands(context) {
         async saveAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline requires a loaded ROM");
             const name = String(params.name || "default");
+            return withAnalysisBaselineSaveLock(name, async () => {
             const existing = readAnalysisBaseline(name);
             if (existing && params.replace !== true) {
                 throw codedError(
@@ -165,7 +187,7 @@ export function createContextCommands(context) {
                     `analysis baseline already exists: ${name}; pass replace:true to overwrite it`
                 );
             }
-            const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}`;
+            const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}-${++analysisBaselineTemporarySerial}`;
             const generation = state.romGeneration;
             const activity = emulatorActivity();
             const stateBytes = native.saveStateBytes();
@@ -221,6 +243,7 @@ export function createContextCommands(context) {
                 skipIrq: baseline.skipIrq,
                 traceEnabled: baseline.traceEnabled
             };
+            });
         },
 
         async restoreAnalysisBaseline(params = {}) {

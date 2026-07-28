@@ -219,7 +219,13 @@ test("State and idle file watchers survive the file load that completes them", a
 function createRecordingHarness({
     store,
     failMetadataWrite = () => false,
-    cancelInputTasksForOperation = async () => false
+    cancelInputTasksForOperation = async () => false,
+    subscribeInputMutations = () => () => {},
+    getInputSnapshot = () => ({ keyMask: 0, touchActive: false, x: 0, y: 0 }),
+    releaseInput = () => {},
+    getFrame = () => 10,
+    frameService = { subscribe: () => () => {} },
+    waitForInputWindow = async () => {}
 } = {}) {
     const responder = createMcpResponder({ logger: {} });
     let activity = { paused: false, running: true };
@@ -243,14 +249,14 @@ function createRecordingHarness({
         },
         idbDelete: async (key) => { store.delete(key); },
         idbKeys: async () => [...store.keys()],
-        frameService: { subscribe: () => () => {} },
+        frameService,
         pauseEventService: createPauseEventService(),
         fileTransactionEventService: createSerialEventService(),
-        subscribeInputMutations: () => () => {},
-        getInputSnapshot: () => ({ keyMask: 0, touchActive: false, x: 0, y: 0 }),
+        subscribeInputMutations,
+        getInputSnapshot,
         applyInputSnapshot: () => {},
-        releaseInput: () => {},
-        getFrame: () => 10,
+        releaseInput,
+        getFrame,
         getActivity: () => activity,
         getCpuState: () => ({
             arm9: { pc: 1, cpsr: 2 },
@@ -264,7 +270,7 @@ function createRecordingHarness({
         sha256Hex: async () => "state-hash",
         saveStateBytes: () => new Uint8Array([1]),
         commands,
-        waitForInputWindow: async () => {},
+        waitForInputWindow,
         cancelInputTasksForOperation
     });
     return { responder, service, commands };
@@ -340,6 +346,48 @@ test("recording waits for operation-owned input tasks before returning success",
     releaseCancellation();
     assert.equal((await recording).ok, true);
     assert.equal(cancellationSettled, true);
+});
+
+test("recording fixes its frame boundary before task settlement and appends final neutral input", async () => {
+    const store = new Map();
+    let frame = 100;
+    let snapshot = { keyMask: 0, touchActive: false, x: 0, y: 0 };
+    let publishMutation = () => {};
+    const { service } = createRecordingHarness({
+        store,
+        getFrame: () => frame,
+        getInputSnapshot: () => snapshot,
+        subscribeInputMutations: (listener) => {
+            publishMutation = listener;
+            return () => { publishMutation = () => {}; };
+        },
+        frameService: {
+            subscribe: (listener) => {
+                queueMicrotask(() => {
+                    frame = 700;
+                    snapshot = { keyMask: 1, touchActive: false, x: 0, y: 0 };
+                    publishMutation(snapshot);
+                    listener();
+                });
+                return () => {};
+            }
+        },
+        cancelInputTasksForOperation: async () => {
+            frame = 704;
+        },
+        releaseInput: () => {
+            snapshot = { keyMask: 0, touchActive: false, x: 0, y: 0 };
+        }
+    });
+    const result = await service.record(
+        { id: "fixed-boundary", frames: 600 },
+        { signal: new AbortController().signal }
+    );
+    const events = store.get(result.dataKey);
+    assert.equal(result.ok, true);
+    assert.equal(result.totalFrames, 600);
+    assert.deepEqual(events.at(-2), ["i", 600, 1, false, 0, 0]);
+    assert.deepEqual(events.at(-1), ["i", 600, 0, false, 0, 0]);
 });
 
 test("file transactions abort and settle long input tasks before loading", async () => {
@@ -438,7 +486,9 @@ test("screen pointer release paths use the central touch mutation", () => {
     listeners.get("pointerup")();
     listeners.get("pointercancel")();
     listeners.get("lostpointercapture")();
+    listeners.get("pointerleave")();
     assert.deepEqual(releases, [
+        [false, 0, 0],
         [false, 0, 0],
         [false, 0, 0],
         [false, 0, 0]
@@ -657,4 +707,65 @@ test("analysis baseline replacement switches metadata before deleting the old St
     assert.notEqual(metadata.slot, "analysis:old");
     assert.equal(store.has(metadata.slot), true);
     assert.equal(store.has("analysis:old"), false);
+});
+
+test("parallel same-name baseline saves serialize and failed cleanup preserves the committed State", async () => {
+    const store = new Map();
+    const attemptedSlots = [];
+    let metadata = null;
+    let metadataWrites = 0;
+    let releaseFirstPut;
+    const firstPutBlocked = new Promise((resolve) => {
+        releaseFirstPut = resolve;
+    });
+    let firstPutStarted;
+    const firstPutReady = new Promise((resolve) => {
+        firstPutStarted = resolve;
+    });
+    const commands = createContextCommands({
+        ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
+        currentRomIdentity: async () => ({
+            romName: "game.nds",
+            romSize: 16,
+            romSha256: "rom"
+        }),
+        emulatorActivity: () => ({ paused: true, running: false }),
+        ensureRomLoaded: () => {},
+        getRegisters: (cpu) => cpu === "arm9"
+            ? { pc: 1, cpsr: 2 }
+            : { pc: 3, cpsr: 4 },
+        idbDelete: async (key) => { store.delete(key); },
+        idbPut: async (key, value) => {
+            attemptedSlots.push(key);
+            if (attemptedSlots.length === 1) {
+                firstPutStarted();
+                await firstPutBlocked;
+            }
+            store.set(key, value);
+        },
+        native: { saveStateBytes: () => new Uint8Array([9, 9]) },
+        readAnalysisBaseline: () => metadata,
+        sha256Hex: async () => "new-hash",
+        state: { romGeneration: 1 },
+        ui: {
+            traceToggle: { checked: false },
+            tracePrivilegeToggle: { checked: false }
+        },
+        writeAnalysisBaseline: (name, baseline) => {
+            metadataWrites++;
+            if (metadataWrites === 2) throw new Error("metadata write failed");
+            metadata = baseline;
+        }
+    });
+    const first = commands.saveAnalysisBaseline({ name: "default", replace: true });
+    await firstPutReady;
+    const second = commands.saveAnalysisBaseline({ name: "default", replace: true });
+    releaseFirstPut();
+    const results = await Promise.allSettled([first, second]);
+    assert.equal(results[0].status, "fulfilled");
+    assert.equal(results[1].status, "rejected");
+    assert.match(results[1].reason.message, /metadata write failed/);
+    assert.equal(new Set(attemptedSlots).size, 2);
+    assert.equal(store.has(metadata.slot), true);
+    assert.deepEqual([...store.keys()], [metadata.slot]);
 });

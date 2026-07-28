@@ -142,10 +142,10 @@ export function createInputRecordingService({
             if (resumed?.ok === false) return resumed;
         }
         const startCpuState = getCpuState();
-        const append = (snapshot) => {
+        const appendAt = (offset, snapshot) => {
             const event = [
                 "i",
-                Math.max(0, getFrame() - startedFrame),
+                Math.max(0, offset),
                 Number(snapshot.keyMask) >>> 0,
                 !!snapshot.touchActive,
                 Number(snapshot.x || 0),
@@ -159,6 +159,7 @@ export function createInputRecordingService({
             lastEncoded = encoded;
             events.push(event);
         };
+        const append = (snapshot) => appendAt(getFrame() - startedFrame, snapshot);
         try {
             let associatedState = null;
             if (params.captureState === true) {
@@ -185,11 +186,13 @@ export function createInputRecordingService({
             append(getInputSnapshot());
             unsubscribe = subscribeInputMutations(append);
             await waitForRecordingBoundary({ frames, durationMs, operation });
+            const boundaryFrame = getFrame();
+            const totalFrames = Math.max(0, boundaryFrame - startedFrame);
             unsubscribe();
             unsubscribe = () => {};
             await cancelInputTasksForOperation(operation.signal);
             releaseInput();
-            const totalFrames = Math.max(0, getFrame() - startedFrame);
+            appendAt(totalFrames, getInputSnapshot());
             const serialized = JSON.stringify(events);
             if (serialized.length > MAX_SERIALIZED_CHARS) {
                 throw codedError(ErrorCode.RESOURCE_LIMIT, "recording serialized size limit exceeded");

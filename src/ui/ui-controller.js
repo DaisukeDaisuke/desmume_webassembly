@@ -10,6 +10,7 @@ export function bindScreenTouch({ screenShell, state, updateTouch, setTouchState
     screenShell.addEventListener("pointerup", releaseTouch);
     screenShell.addEventListener("pointercancel", releaseTouch);
     screenShell.addEventListener("lostpointercapture", releaseTouch);
+    screenShell.addEventListener("pointerleave", releaseTouch);
 }
 
 export function bindUi(context) {
