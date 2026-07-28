@@ -20,6 +20,7 @@ import { createBootstrapWebMcpTools } from "../src/bootstrap-webmcp.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { getInternalMetadata } from "../src/internal-command-metadata.js";
 import { bindScreenTouch } from "../src/ui/ui-controller.js";
+import { createEmulationLoop } from "../src/emulation-loop.js";
 
 test("pause events use monotonic serials and kind filters", async () => {
     const service = createPauseEventService();
@@ -388,6 +389,90 @@ test("recording fixes its frame boundary before task settlement and appends fina
     assert.equal(result.totalFrames, 600);
     assert.deepEqual(events.at(-2), ["i", 600, 1, false, 0, 0]);
     assert.deepEqual(events.at(-1), ["i", 600, 0, false, 0, 0]);
+});
+
+test("frame recording limits a twelve-frame native batch to the exact five-frame boundary", async () => {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = () => 1;
+    try {
+        const store = new Map();
+        let frameListener = () => {};
+        let snapshot = { keyMask: 1, touchActive: false, x: 0, y: 0 };
+        const frameService = {
+            subscribe(listener) {
+                frameListener = listener;
+                return () => { frameListener = () => {}; };
+            },
+            onFrameCompleted(frame) {
+                frameListener({ frame });
+            },
+            isValid: () => false
+        };
+        const state = {
+            ready: true,
+            running: true,
+            paused: false,
+            loadingFile: false,
+            lastTick: 1000,
+            frameBudget: 12,
+            frame: 100,
+            speed: 1,
+            render: false,
+            audio: false,
+            freezes: [],
+            touch: { active: false },
+            keys: 0,
+            selectedCpu: "arm9",
+            framesSinceStateLoad: 0,
+            completedFrameSerial: 0
+        };
+        let nativeBatch = 0;
+        let arm9Pc = 0x02001000;
+        const { service } = createRecordingHarness({
+            store,
+            frameService,
+            getFrame: () => state.frame,
+            getInputSnapshot: () => snapshot,
+            releaseInput: () => {
+                snapshot = { keyMask: 0, touchActive: false, x: 0, y: 0 };
+            }
+        });
+        const loop = createEmulationLoop({
+            state,
+            ui: {},
+            frameService,
+            native: {
+                runFrames(count) {
+                    nativeBatch = count;
+                    state.frame += count;
+                    arm9Pc += count * 4;
+                    return count;
+                },
+                pause: () => {}
+            },
+            handleNativeFault: () => {},
+            syncNativeBreakStatus: () => ({}),
+            dispatchScriptEvent: () => {},
+            limitFrameBatch: service.limitFrameBatch,
+            updateStatus: () => {}
+        });
+        const recording = service.record(
+            { id: "five-frames", frames: 5 },
+            { signal: new AbortController().signal }
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        loop.tick(1000);
+        const result = await recording;
+        const events = store.get(result.dataKey);
+
+        assert.equal(nativeBatch, 5);
+        assert.equal(result.totalFrames, 5);
+        assert.equal(state.frame, 105);
+        assert.equal(arm9Pc, 0x02001014);
+        assert.deepEqual(events.at(-1), ["i", 5, 0, false, 0, 0]);
+    } finally {
+        globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
 });
 
 test("file transactions abort and settle long input tasks before loading", async () => {
@@ -768,4 +853,74 @@ test("parallel same-name baseline saves serialize and failed cleanup preserves t
     assert.equal(new Set(attemptedSlots).size, 2);
     assert.equal(store.has(metadata.slot), true);
     assert.deepEqual([...store.keys()], [metadata.slot]);
+});
+
+test("same-name baseline delete and save serialize without removing the new metadata or State", async () => {
+    const oldLocalStorage = globalThis.localStorage;
+    const oldBaseline = { name: "default", slot: "analysis:old" };
+    const store = new Map([[oldBaseline.slot, new Uint8Array([1])]]);
+    const baselines = new Map([["default", oldBaseline]]);
+    let metadata = oldBaseline;
+    let releaseDelete;
+    const deleteBlocked = new Promise((resolve) => { releaseDelete = resolve; });
+    let deleteStarted;
+    const deleteReady = new Promise((resolve) => { deleteStarted = resolve; });
+    let saveCommitted = false;
+    globalThis.localStorage = {
+        removeItem(key) {
+            if (key === "analysis-baseline:default") metadata = null;
+        }
+    };
+    try {
+        const commands = createContextCommands({
+            ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
+            currentRomIdentity: async () => ({
+                romName: "game.nds",
+                romSize: 16,
+                romSha256: "rom"
+            }),
+            emulatorActivity: () => ({ paused: true, running: false }),
+            ensureRomLoaded: () => {},
+            getRegisters: (cpu) => cpu === "arm9"
+                ? { pc: 1, cpsr: 2 }
+                : { pc: 3, cpsr: 4 },
+            idbDelete: async (key) => {
+                if (key === oldBaseline.slot) {
+                    deleteStarted();
+                    await deleteBlocked;
+                }
+                store.delete(key);
+            },
+            idbPut: async (key, value) => { store.set(key, value); },
+            native: { saveStateBytes: () => new Uint8Array([9, 9]) },
+            readAnalysisBaseline: () => metadata,
+            sha256Hex: async () => "new-hash",
+            state: { romGeneration: 1, analysisBaselines: baselines },
+            ui: {
+                traceToggle: { checked: false },
+                tracePrivilegeToggle: { checked: false }
+            },
+            writeAnalysisBaseline: (name, baseline) => {
+                saveCommitted = true;
+                metadata = baseline;
+                baselines.set(name, baseline);
+            }
+        });
+        const deleting = commands.deleteAnalysisBaseline({ name: "default" });
+        await deleteReady;
+        const saving = commands.saveAnalysisBaseline({ name: "default", replace: true });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(saveCommitted, false);
+        releaseDelete();
+        const [deleteResult, saveResult] = await Promise.all([deleting, saving]);
+
+        assert.equal(deleteResult.ok, true);
+        assert.equal(saveResult.ok, true);
+        assert.equal(metadata.slot, saveResult.slot);
+        assert.equal(store.has(metadata.slot), true);
+        assert.deepEqual([...store.keys()], [metadata.slot]);
+    } finally {
+        if (oldLocalStorage === undefined) delete globalThis.localStorage;
+        else globalThis.localStorage = oldLocalStorage;
+    }
 });

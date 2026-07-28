@@ -236,3 +236,9 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - Replay reports skipped PC/CPSR verification explicitly, honors `pauseAfter:false`, and returns the resulting run state. Analysis baseline restore holds pause through PC/CPSR verification.
 - Bootstrap WebMCP list/status/recovery/storage paths remain runtime-free. The runtime loader has a hard timeout, retry support, and stale-attempt rejection.
 - Permanent regression coverage was added in `tests/new-plan-services.test.mjs`. Browser acceptance was explicitly excluded by the user for this review-fix task.
+
+## 2026-07-28 Review Follow-up Addendum
+
+- Frame-count input recording now exposes its remaining frame boundary to the emulation loop. The loop limits the final native batch to that remainder, so `recordInput({frames})`, completed-frame events, and the resulting CPU state stop on the same exact frame.
+- Same-name analysis baseline save, delete, and restore operations share one lock. Each operation reads metadata only after acquiring the lock, preventing a delayed delete from removing a newly committed replacement State and metadata.
+- Regression coverage includes a 12-frame normal batch limited to a 5-frame recording and a concurrent same-name baseline delete/save.

@@ -1,133 +1,90 @@
 ## 判定
 
 **まだマージ不可です。**
-前回残っていた修正のうち、runtimeの遅延ロード再試行、WebMCPのエラー分類、親operation単位の入力task取消、baselineの通常時の原子的置換は反映されています。専用テストも19件すべて通りました。  
-ただし、2件のP1と1件のP2が残っています。
+前回の3件について、子入力taskのsettlement後に最終neutralを追加する処理、同名baseline保存の直列化、`pointerleave`でのtouch解放は反映されています。  
+ただし、実際のエミュレーション経路で2件のP1が残っています。
 
-## [P1] `recordInput`の終了フレームが入力taskの後処理分だけ延びる
+## [P1] `recordInput({frames})`がnativeのフレームバッチ分だけ超過する
 
-現在は記録境界へ到達した後、先にmutation購読を解除し、子入力taskの取消・settlementを待ってから`totalFrames`を取得しています。
-
-```js
-await waitForRecordingBoundary(...);
-unsubscribe();
-await cancelInputTasksForOperation(operation.signal);
-releaseInput();
-const totalFrames = getFrame() - startedFrame;
-```
-
-この順序には2つの問題があります。
-
-* 子taskの終了処理中に進んだframeまで`totalFrames`へ入る。
-* 購読解除後に入力を解放するため、最後のneutral inputがeventsへ記録されない。
-  最小再現では、記録境界をframe 5、子taskのsettlement終了をframe 8にすると、保存結果は次になりました。
+`waitForRecordingBoundary`はframe eventの`frame`を使わず、各通知時に`getFrame()`を参照しています。
+さらに、境界到達後も現在値の`getFrame()`を`boundaryFrame`として保存しています。
+実際のemulation loopは複数フレームをnative側でまとめて実行した後、完了通知を1フレームずつ発行します。その時点では`getFrame()`がバッチの最終フレームまで進んでいます。
+最小再現:
 
 ```text
-totalFrames: 8
-events:
-  neutral
-  A押下
-  最終neutralなし
+開始frame: 100
+要求: frames: 5
+native batch完了後のgetFrame(): 112
+完了通知: frame 101～112
+保存結果:
+  totalFrames: 12
 ```
 
-つまり、指定した記録範囲より3frame長く再生され、その追加区間では最後の入力状態が維持されます。
-修正は、記録境界を子taskの後処理より前に固定する必要があります。
+つまり`recordInput({frames:5})`が12フレームの記録として成功します。速度が高いほど、最大でnative batch幅まで超過します。
+追加テストは`frame`をちょうど100から700へ変更してlistenerを1回だけ呼んでいるため、複数フレームを一括実行する実経路を再現していません。
+単にeventの`frame`を結果へ使うだけでは不十分です。nativeはすでに要求数を超えて実行済みだからです。正しく直すには、frame-based recording中はemulation loopの1回の実行数を、
 
 ```js
-await waitForRecordingBoundary(...);
-const boundaryFrame = getFrame();
-const totalFrames = Math.max(0, boundaryFrame - startedFrame);
-unsubscribe();
-await cancelInputTasksForOperation(operation.signal);
-releaseInput();
-appendAt(totalFrames, neutralSnapshot);
+Math.min(normalBatchFrames, recordingTargetFrame - currentFrame)
 ```
 
-`appendAt()`相当で、現在の`getFrame()`ではなく固定済みoffsetへneutral eventを追加してください。同一offset内では既存の入力eventより後になるよう順序を維持します。
+のように制限し、最終batchが残りフレーム数を超えないようにする必要があります。
 必須テスト:
 
-* settlement中にframeが進んでも`totalFrames`が変わらない。
-* 最後のeventがneutralになる。
-* `frames:600`の保存結果がcleanup時間によって601以上にならない。
+* 1回のnative batchが12フレームの状態で`frames:5`を開始する。
+* nativeへ渡す実行数が5へ制限される。
+* `totalFrames`が5になる。
+* State、入力event、実際の最終PCが5フレーム後の状態と一致する。
 
-## [P1] analysis baselineのtemporary slotが並列保存で衝突する
+## [P1] baselineの保存と削除はまだ競合する
 
-temporary slotはbaseline名と`Date.now()`だけで生成されています。
-
-```js
-const slot =
-    `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}`;
-```
-
-同じbaseline名を同一ミリ秒に並列保存すると、両方が同じslotを使います。`saveAnalysisBaseline`はoperation lockやfile transactionで直列化されていないため、WebMCPからの並列呼び出しで実際に発生します。
-最小再現では、2件を並列実行し、
-
-* 1件目のmetadata保存は成功
-* 2件目のmetadata保存は失敗
-  としたところ、失敗側のcleanupが共有temporary slotを削除しました。
+今回追加されたmutexは`saveAnalysisBaseline`同士だけを直列化しています。
+`deleteAnalysisBaseline`はそのmutexを通らず、読み取ったStateを削除した後、現在のmetadataを無条件で消します。
+次の順序を再現しました。
 
 ```text
-1件目: ok:true
-2件目: metadata write failure
-最終metadata: 1件目を参照
-参照先State: 削除済み
+1. deleteAnalysisBaselineが旧metadataを読む
+2. 旧Stateの削除処理を一時停止
+3. saveAnalysisBaselineが新Stateと新metadataを正常commit
+4. deleteAnalysisBaselineを再開
+5. delete側がanalysisBaselinesとlocalStorageを削除
 ```
 
-通常の逐次置換に対するテストは追加されていますが、並列同名保存は検証されていません。
-修正には両方必要です。
+両commandは`ok:true`で完了しますが、結果は次の状態です。
 
-* temporary keyへ単調増加serialまたは十分な一意値を加える。
-* 同じbaseline名の保存をmutexなどで直列化する。
-
-```js
-const slot = `${prefix}${name}:temporary:${Date.now().toString(36)}-${++temporarySerial}`;
+```text
+metadata: なし
+新しいState: IndexedDBに孤立
 ```
 
-一意化だけでも破壊は防げますが、両方成功した並列保存では、metadata競合に負けた側のStateが孤立します。同名保存の直列化まで行うのが安全です。
-
-## [P2] touch releaseの`pointerleave`経路が未実装
-
-中央mutation経路へ変更されたのは、
-
-* `pointerup`
-* `pointercancel`
-* `lostpointercapture`
-  の3種類です。`pointerleave`は登録されていません。
-  前回の修正条件には、DS画面外へ出た場合も同じrelease helperを通すことが含まれていました。
-
-```js
-screenShell.addEventListener("pointerleave", releaseTouch);
-```
-
-pointer capture中の移動は`pointermove`から範囲外判定される場合もありますが、capture前の異常経路やイベント欠落時を含めて、明示的なrelease経路を残すべきです。現在の専用テストも`pointerup`、`pointercancel`、`lostpointercapture`しか呼んでいません。
+同名save同士のテストは追加されていますが、saveとdeleteの並列実行は対象外です。
+`deleteAnalysisBaseline`も同じ`withAnalysisBaselineSaveLock(name, ...)`で囲み、lock取得後にmetadataを読み直してください。できれば同じ名前に対するsave、delete、restoreを同一のbaseline lockへ統一する方が安全です。
 
 ## 修正確認済み
 
-次は適切に直っています。
-
-* runtime moduleはattemptごとに別URLで取得し、timeout済みmoduleのinitializerを実行しない。
-* WebMCPのJSON parse errorとcommand実行errorが分離された。
-* `cancelAndWaitForParent()`が追加され、親recordingに属する入力taskのsettlementを待つ。
-* analysis baselineはmetadataのcommit後に旧Stateを削除する逐次処理へ変更された。
-* `pointerup`、`pointercancel`、`lostpointercapture`は`setTouchState()`を通る。
+* 子入力taskのcleanup中に進んだframeを、そのまま終了frameへ加算する前回の問題は、通常の単一frame通知では修正されています。
+* 最終neutral inputが固定offsetへ追加されるようになっています。
+* temporary baseline slotへserialが追加されました。
+* 同名のsave同士は直列化されています。
+* `pointerup`、`pointercancel`、`lostpointercapture`、`pointerleave`が中央の`setTouchState()`を通ります。
 
 ## テスト結果
 
 ```text
 node --test tests/new-plan-services.test.mjs
-19 pass / 0 fail
+21 pass / 0 fail
 ```
 
 ```text
 npm test
-66 pass / 2 fail
+68 pass / 2 fail
 ```
 
-失敗した2件は今回も実装テストの失敗ではなく、ローカル環境に`esbuild`が存在しないため、次のテストファイル自体を起動できなかったものです。
+失敗した2件は今回も実装上のassert失敗ではなく、`esbuild`が配置されていないため次のテストファイルを起動できなかったものです。
 
 ```text
 tests/boundary-regressions.test.mjs
 tests/merge-blockers.test.mjs
 ```
 
-全`src/*.js`、`src/commands/*.js`、`src/ui/*.js`に対する`node --check`は成功しました。`check:js`、dependency bundle検査、license検査、buildは同じく`esbuild`未配置のため検証できていません。
+全`src` JavaScriptファイルの`node --check`は成功しました。`check:js`、dependency bundle検査、license検査は`esbuild`未配置のため実行不能でした。

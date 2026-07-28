@@ -306,6 +306,7 @@ const {
     stopPersistentScript,
     scriptSummary
 } = scriptService;
+let inputRecordingService = null;
 const emulationLoop = createEmulationLoop({
     state,
     ui,
@@ -314,6 +315,7 @@ const emulationLoop = createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
+    limitFrameBatch: (frames) => inputRecordingService?.limitFrameBatch(frames) ?? frames,
     onScreenValid: screenInvalidNotice.clear,
     updateStatus,
     log
@@ -580,7 +582,7 @@ const operationManager = createOperationManager({
     },
     releaseInput: async () => { releaseAllKeys(); setTouchState(false); }
 });
-const inputRecordingService = createInputRecordingService({
+inputRecordingService = createInputRecordingService({
     responder: mcpResponder,
     idbGet,
     idbPut,

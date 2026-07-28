@@ -11,6 +11,7 @@ export function createEmulationLoop({
     handleNativeFault,
     syncNativeBreakStatus,
     dispatchScriptEvent,
+    limitFrameBatch = (frames) => frames,
     onScreenValid = () => {},
     updateStatus,
     log = () => {}
@@ -95,7 +96,11 @@ export function createEmulationLoop({
             if (state.ready && state.running && !state.paused && !state.loadingFile) {
             const elapsed = Math.min(250, now - state.lastTick);
             state.frameBudget += elapsed * 59.8261 * state.speed / 1000;
-            const frames = Math.min(12, Math.floor(state.frameBudget));
+            const normalBatchFrames = Math.min(12, Math.floor(state.frameBudget));
+            const frames = Math.min(
+                normalBatchFrames,
+                Math.max(0, Math.floor(Number(limitFrameBatch(normalBatchFrames))))
+            );
             if (frames > 0) {
                 const frameBefore = state.frame;
                 state.frameBudget -= frames;

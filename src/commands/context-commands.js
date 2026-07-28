@@ -31,22 +31,22 @@ export function createContextCommands(context) {
         ui,
         writeAnalysisBaseline
     } = context;
-    const analysisBaselineSaveLocks = new Map();
+    const analysisBaselineLocks = new Map();
 
-    async function withAnalysisBaselineSaveLock(name, task) {
-        const previous = analysisBaselineSaveLocks.get(name) || Promise.resolve();
+    async function withAnalysisBaselineLock(name, task) {
+        const previous = analysisBaselineLocks.get(name) || Promise.resolve();
         let release;
         const current = new Promise((resolve) => {
             release = resolve;
         });
-        analysisBaselineSaveLocks.set(name, current);
+        analysisBaselineLocks.set(name, current);
         await previous.catch(() => {});
         try {
             return await task();
         } finally {
             release();
-            if (analysisBaselineSaveLocks.get(name) === current) {
-                analysisBaselineSaveLocks.delete(name);
+            if (analysisBaselineLocks.get(name) === current) {
+                analysisBaselineLocks.delete(name);
             }
         }
     }
@@ -164,12 +164,14 @@ export function createContextCommands(context) {
         async deleteAnalysisBaseline(params = {}) {
             const name = String(params.name || "");
             if (!name) throw codedError(ErrorCode.INVALID_ARGUMENT, "name is required");
+            return withAnalysisBaselineLock(name, async () => {
             const baseline = readAnalysisBaseline(name);
             if (!baseline) throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
             await idbDelete(String(baseline.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`));
             state.analysisBaselines.delete(name);
             localStorage.removeItem(`analysis-baseline:${name}`);
             return { ok: true, name };
+            });
         },
 
         async snapshotContext(params = {}) {
@@ -179,7 +181,7 @@ export function createContextCommands(context) {
         async saveAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline requires a loaded ROM");
             const name = String(params.name || "default");
-            return withAnalysisBaselineSaveLock(name, async () => {
+            return withAnalysisBaselineLock(name, async () => {
             const existing = readAnalysisBaseline(name);
             if (existing && params.replace !== true) {
                 throw codedError(
@@ -248,8 +250,9 @@ export function createContextCommands(context) {
 
         async restoreAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline restore requires a loaded ROM");
-            return fileTransactionService.run("Analysis baseline restore", async ({ token }) => {
             const name = String(params.name || "default");
+            return withAnalysisBaselineLock(name, async () => {
+            return fileTransactionService.run("Analysis baseline restore", async ({ token }) => {
             const baseline = readAnalysisBaseline(name);
             if (!baseline) {
                 throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
@@ -329,6 +332,7 @@ export function createContextCommands(context) {
                 cpuState: restoredCpuState,
                 ...await snapshotContext(params)
             };
+            });
             });
         }
     };

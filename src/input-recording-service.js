@@ -34,6 +34,7 @@ export function createInputRecordingService({
     cancelInputTasksForOperation = async () => false
 }) {
     const key = (prefix, id) => `${prefix}${id}`;
+    let recordingTargetFrame = null;
     const recordingId = (value) => {
         const id = String(value || "").trim();
         if (!id || id.length > 128 || !/^[A-Za-z0-9._-]+$/.test(id)) {
@@ -64,16 +65,16 @@ export function createInputRecordingService({
         return events;
     }
 
-    async function waitForRecordingBoundary({ frames, durationMs, operation }) {
+    async function waitForRecordingBoundary({ targetFrame, durationMs, operation }) {
         if (durationMs !== null) {
             await waitForInputWindow(durationMs, {
                 signal: operation.signal,
                 label: "recordInput"
             });
-            return;
+            return getFrame();
         }
-        const start = getFrame();
-        await new Promise((resolve, reject) => {
+        if (getFrame() >= targetFrame) return targetFrame;
+        return new Promise((resolve, reject) => {
             let unsubscribeFrame = () => {};
             let unsubscribePause = () => {};
             let unsubscribeFile = () => {};
@@ -88,10 +89,11 @@ export function createInputRecordingService({
                 cleanup();
                 reject(error);
             };
-            unsubscribeFrame = frameService.subscribe(() => {
-                if (getFrame() - start < frames) return;
+            unsubscribeFrame = frameService.subscribe(({ frame } = {}) => {
+                const completedFrame = Number.isFinite(Number(frame)) ? Number(frame) : getFrame();
+                if (completedFrame < targetFrame) return;
                 cleanup();
-                resolve();
+                resolve(targetFrame);
             });
             const afterPause = pauseEventService.currentSerial();
             unsubscribePause = pauseEventService.subscribe((event) => {
@@ -132,14 +134,11 @@ export function createInputRecordingService({
         let unsubscribe = () => {};
         const events = [];
         const startedFrame = getFrame();
+        const targetFrame = frames === null ? null : startedFrame + frames;
         let lastEncoded = "";
         const initialActivity = getActivity();
         if (initialActivity.paused && params.resume !== true) {
             return responder.fail(ErrorCode.INPUT_UNAVAILABLE, "recordInput requires a running emulator or resume:true");
-        }
-        if (initialActivity.paused && params.resume === true && params.captureState !== true) {
-            const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
-            if (resumed?.ok === false) return resumed;
         }
         const startCpuState = getCpuState();
         const appendAt = (offset, snapshot) => {
@@ -161,6 +160,11 @@ export function createInputRecordingService({
         };
         const append = (snapshot) => appendAt(getFrame() - startedFrame, snapshot);
         try {
+            recordingTargetFrame = targetFrame;
+            if (initialActivity.paused && params.resume === true && params.captureState !== true) {
+                const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
+                if (resumed?.ok === false) return resumed;
+            }
             let associatedState = null;
             if (params.captureState === true) {
                 const activity = getActivity();
@@ -185,8 +189,11 @@ export function createInputRecordingService({
             }
             append(getInputSnapshot());
             unsubscribe = subscribeInputMutations(append);
-            await waitForRecordingBoundary({ frames, durationMs, operation });
-            const boundaryFrame = getFrame();
+            const boundaryFrame = await waitForRecordingBoundary({
+                targetFrame,
+                durationMs,
+                operation
+            });
             const totalFrames = Math.max(0, boundaryFrame - startedFrame);
             unsubscribe();
             unsubscribe = () => {};
@@ -229,6 +236,7 @@ export function createInputRecordingService({
             }
             return responder.ok({ ...metadata, stateLoaded: false });
         } finally {
+            recordingTargetFrame = null;
             unsubscribe();
             await cancelInputTasksForOperation(operation.signal);
             releaseInput();
@@ -378,5 +386,10 @@ export function createInputRecordingService({
         return responder.ok({ id });
     }
 
-    return Object.freeze({ delete: remove, list, record, replay });
+    function limitFrameBatch(requestedFrames) {
+        if (recordingTargetFrame === null) return requestedFrames;
+        return Math.min(requestedFrames, Math.max(0, recordingTargetFrame - getFrame()));
+    }
+
+    return Object.freeze({ delete: remove, limitFrameBatch, list, record, replay });
 }
