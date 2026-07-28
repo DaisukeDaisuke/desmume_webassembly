@@ -147,7 +147,8 @@ const bootstrapApi = {
             status: "Returns bootstrap status without loading the emulator runtime.",
             loadRomFile: "Loads the emulator runtime once, then loads a selected local ROM.",
             loadRomBytes: "Loads the emulator runtime once, then loads supplied ROM bytes.",
-            loadRomUrl: "Loads the emulator runtime once, then fetches and loads the requested ROM."
+            loadRomUrl: "Loads the emulator runtime once, then fetches and loads the requested ROM.",
+            warning: "This is a warning. The emulator main and web assembly have not yet been loaded into memory. This list may be incomplete!"
         };
     }
 };
