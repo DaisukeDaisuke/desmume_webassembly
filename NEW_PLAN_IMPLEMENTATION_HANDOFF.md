@@ -295,3 +295,109 @@ Read these files in this order after any context compression. Do not restart dis
   - `public/app.js`: 6,531 bytes.
   - `public/emulator.js`: 462,685 bytes.
 - No shared chunk was emitted.
+
+## 2026-07-28 Updated Review Continuation
+
+### User request and constraints
+
+- Read the updated `new_plan.md`, fix its findings, and add permanent regression tests.
+- Do not use Browser Use or Chrome DevTools MCP for verification.
+- The updated `new_plan.md` is user-owned and is the only pre-existing tracked modification at this checkpoint. Do not edit or restore it.
+- Do not inspect generated `public/desmume.js`, `public/branches`, or `public/emulators.json`.
+
+### Current workspace state
+
+- No implementation changes for this updated review have been authored yet.
+- Before this handoff update, `git status --short` contained only:
+  - modified `new_plan.md`;
+  - existing unrelated untracked directories `old/coi-serviceworker/`, `old/interface-design/`, `pixelmatch/`, and `ssim/`.
+- The previous review-fix implementation is already in the repository history/worktree baseline; do not redo its discovery.
+- The project-required UI skill was read because one finding changes pointer release behavior. It does not require a visual redesign: preserve all existing hierarchy, palette, surfaces, typography, and spacing.
+
+### Updated review findings to implement
+
+1. **Recording-owned input tasks outlive normal `recordInput` completion**
+   - `src/emulator-runtime.js` passes `operationManager.signalFor("recordInput")` into long input commands.
+   - `src/input-task-manager.js` only reacts when that parent signal aborts.
+   - A normally completed operation does not abort its operation signal.
+   - Required fix: add parent-scoped input-task cancellation and settlement, then make `recordInput` await cancellation of children associated with its exact `operation.signal` before the recording task returns. Releasing input alone is insufficient.
+   - Preferred boundary: `inputTaskManager.cancelAndWait(parentSignal, reason)` called in a `finally` surrounding `inputRecordingService.record(params, operation)` inside `registerWaitCommands`.
+   - Required regression: a child `runInputHold` waiting in `waitBeforeMs` is cancelled on normal recording completion; `setKey(true)` is never called after completion; the recording result waits for child settlement.
+
+2. **UI touch release bypasses the central mutation layer**
+   - `src/ui/ui-controller.js` currently writes `state.touch.active = false` for `pointerup` and `pointercancel`.
+   - Replace direct writes with `setTouchState(false, 0, 0)`.
+   - Route `pointerleave` and `lostpointercapture` through the same release helper so leaving the DS screen or losing capture also publishes the mutation.
+   - Pass `setTouchState` into `bindUi` from `src/emulator-runtime.js`.
+   - For a focused permanent test, extract a small exported touch-event binder from `ui-controller.js` instead of constructing the entire large UI harness.
+   - No HTML/CSS/layout changes are needed.
+
+3. **A timed-out dynamic import can still initialize the old runtime**
+   - `src/runtime-loader.js` currently prevents adoption of a stale API but cannot stop `emulator.js` top-level side effects.
+   - `src/emulator-runtime.js` is still entirely top-level and must be split:
+     - keep imports and an inert entry marker at module evaluation;
+     - export `initializeEmulatorRuntime()`;
+     - move all UI binding, global API publication, Worker/service construction, and runtime side effects into a once-only initializer;
+     - return the published runtime API.
+   - `src/runtime-loader.js` must:
+     - call `loadRuntime(attempt)`;
+     - check that the attempt is still active after module resolution;
+     - only then call `initializeRuntime(module, attempt)`;
+     - never initialize a module resolved after its timeout.
+   - `src/app.js` must load a distinct retry URL, for example `./emulator.js?runtime-attempt=<attempt>`, so a permanently pending browser module-map entry is not reused.
+   - The existing test is insufficient because it gives each attempt an unrelated API Promise and does not model delayed module evaluation.
+   - Required regression: resolve the first module after timeout and prove its initializer is never called; the second attempt uses a different attempt URL/module Promise and only its initializer publishes the API.
+   - Production build must still emit exactly `public/app.js` and `public/emulator.js`, with no initial HTML runtime script.
+
+4. **Analysis baseline replacement is non-atomic**
+   - `src/commands/context-commands.js::saveAnalysisBaseline` currently overwrites the canonical State slot before hashing and metadata persistence.
+   - Write State bytes to a unique temporary analysis slot.
+   - Compute the hash and construct metadata referencing the temporary slot.
+   - Switch metadata last with `writeAnalysisBaseline`.
+   - Delete the previous State slot only after metadata commit; cleanup only the temporary slot on failure.
+   - `src/debugger-service.js::writeAnalysisBaseline` currently updates the in-memory map before `localStorage.setItem`. Reverse that order so a localStorage failure preserves the old cached metadata.
+   - Required regressions:
+     - hash failure after temporary State write preserves old bytes and old metadata;
+     - metadata write failure preserves old bytes and cached metadata and removes the temporary slot;
+     - successful `replace:true` points metadata to the new slot and removes the old slot.
+
+5. **Bootstrap WebMCP misclassifies handler failures as JSON parse errors**
+   - `src/bootstrap-webmcp.js` catches parsing and handler execution in one `try`.
+   - Catch only `parseInput` failures as `INVALID_ARGUMENT` / invalid JSON.
+   - Catch handler failures separately:
+     - preserve `error.mcpCode`, message, and details for stable coded errors;
+     - otherwise return `INTERNAL_ERROR` with a non-JSON-error message.
+   - Required regression: an IndexedDB-like handler exception must not be reported as invalid JSON; a coded handler error retains its stable code.
+
+### Exact minimal read list for continuation
+
+Do not restart broad discovery. Read only these implementation slices:
+
+1. This section of `NEW_PLAN_IMPLEMENTATION_HANDOFF.md`.
+2. Updated `new_plan.md` only if its contents are no longer present in context.
+3. `src/input-task-manager.js`.
+4. `src/commands/wait-commands.js` around `recordInput`.
+5. `src/emulator-runtime.js` only at:
+   - imports and the current top-level entry start;
+   - operation/input-task construction and `registerWaitCommands`;
+   - `bindUi` call;
+   - final lines needed to close the initializer.
+6. `src/ui/ui-controller.js` only its context destructuring and pointer-event block.
+7. `src/runtime-loader.js` and `src/app.js` loader construction.
+8. `src/commands/context-commands.js` only `saveAnalysisBaseline`.
+9. `src/debugger-service.js` only `writeAnalysisBaseline`.
+10. `src/bootstrap-webmcp.js`.
+11. `tests/new-plan-services.test.mjs` imports and the existing review-fix tests.
+
+### Implementation order
+
+1. Add parent-scoped input-task settlement and wire it to normal `recordInput` completion.
+2. Centralize touch release and add its focused event-binder test.
+3. Make baseline replacement temporary-key/metadata-last.
+4. Split runtime module evaluation from initialization and revise retry URL/loader semantics.
+5. Split WebMCP parse and handler error paths.
+6. Add all permanent tests to `tests/new-plan-services.test.mjs`.
+7. Run local dependency-free tests and syntax checks.
+8. Use the Codespace for full `npm test`, `check:js`, dependency-bundle/license checks, `build:js`, and post-build `npm test`.
+9. Copy generated `public/app.js`, `public/emulator.js`, and the existing `public/desmume.js` back, then stop the Codespace.
+10. Do not perform any browser verification for this task.

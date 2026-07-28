@@ -13,7 +13,7 @@ export function createInputTaskManager() {
             );
         }
         const controller = new AbortController();
-        const entry = { name, controller, done: null };
+        const entry = { name, controller, done: null, parentSignal };
         const unsubscribeParent = subscribeAbort(parentSignal, () => {
             controller.abort(parentSignal.reason || "parent-operation");
         });
@@ -41,6 +41,14 @@ export function createInputTaskManager() {
         await Promise.allSettled(pending.map((entry) => entry.done));
     }
 
+    async function cancelAndWaitForParent(parentSignal, reason = "parent-operation-ended") {
+        if (!parentSignal) return false;
+        const pending = [...active].filter((entry) => entry.parentSignal === parentSignal);
+        for (const entry of pending) entry.controller.abort(reason);
+        await Promise.allSettled(pending.map((entry) => entry.done));
+        return pending.length > 0;
+    }
+
     function unblock() {
         blocked = false;
     }
@@ -48,6 +56,7 @@ export function createInputTaskManager() {
     return Object.freeze({
         run,
         blockAndCancel,
+        cancelAndWaitForParent,
         unblock,
         current: () => [...active].map((entry) => entry.name)
     });

@@ -176,8 +176,8 @@ export function createDebuggerService({
     
     function writeAnalysisBaseline(name, baseline) {
         const key = String(name || "default");
-        state.analysisBaselines.set(key, baseline);
         localStorage.setItem(analysisBaselineKey(key), JSON.stringify(baseline));
+        state.analysisBaselines.set(key, baseline);
     }
     
     async function snapshotContext(params = {}) {

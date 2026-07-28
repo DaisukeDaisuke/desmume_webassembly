@@ -30,7 +30,8 @@ export function createInputRecordingService({
     sha256Hex,
     saveStateBytes,
     commands,
-    waitForInputWindow
+    waitForInputWindow,
+    cancelInputTasksForOperation = async () => false
 }) {
     const key = (prefix, id) => `${prefix}${id}`;
     const recordingId = (value) => {
@@ -184,6 +185,9 @@ export function createInputRecordingService({
             append(getInputSnapshot());
             unsubscribe = subscribeInputMutations(append);
             await waitForRecordingBoundary({ frames, durationMs, operation });
+            unsubscribe();
+            unsubscribe = () => {};
+            await cancelInputTasksForOperation(operation.signal);
             releaseInput();
             const totalFrames = Math.max(0, getFrame() - startedFrame);
             const serialized = JSON.stringify(events);
@@ -223,6 +227,7 @@ export function createInputRecordingService({
             return responder.ok({ ...metadata, stateLoaded: false });
         } finally {
             unsubscribe();
+            await cancelInputTasksForOperation(operation.signal);
             releaseInput();
             if (!committed) {
                 await Promise.allSettled([

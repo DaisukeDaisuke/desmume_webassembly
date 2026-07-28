@@ -5,12 +5,25 @@ export function createBootstrapWebMcpTools({
     fail
 }) {
     const execute = (handler) => async (input = {}) => {
+        let parsed;
         try {
-            return webMcpContent(await handler(parseInput(input)));
+            parsed = parseInput(input);
         } catch (error) {
             return webMcpContent(fail("INVALID_ARGUMENT", "WebMCP input is not valid JSON", {
                 message: String(error?.message || error).slice(0, 500)
             }));
+        }
+        try {
+            return webMcpContent(await handler(parsed));
+        } catch (error) {
+            const code = typeof error?.mcpCode === "string" ? error.mcpCode : "INTERNAL_ERROR";
+            return webMcpContent(fail(
+                code,
+                code === "INTERNAL_ERROR"
+                    ? "WebMCP command failed internally"
+                    : String(error?.message || error),
+                error?.mcpDetails
+            ));
         }
     };
     return [{

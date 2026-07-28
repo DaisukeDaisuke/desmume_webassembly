@@ -1,5 +1,6 @@
 export function createRuntimeLoader({
     loadRuntime,
+    initializeRuntime = (module) => module?.initializeEmulatorRuntime?.(),
     getApi,
     timeoutMs = 30000,
     onStart = () => {},
@@ -25,20 +26,20 @@ export function createRuntimeLoader({
                 reject(new Error(`emulator runtime load timed out after ${timeoutMs}ms`));
             }, timeoutMs);
         });
-        const loading = Promise.resolve()
-            .then(loadRuntime)
-            .then(() => {
-                const candidate = getApi();
+        const loading = Promise.resolve().then(() => loadRuntime(attempt));
+        const current = Promise.race([loading, timeout])
+            .then((module) => {
+                if (attempt !== activeAttempt) {
+                    throw new Error("stale emulator runtime load attempt");
+                }
+                const initialized = initializeRuntime(module, attempt);
+                const candidate = initialized || getApi();
                 if (!candidate || typeof candidate.call !== "function") {
                     throw new Error("emulator runtime did not publish its command API");
                 }
                 return candidate;
-            });
-        const current = Promise.race([loading, timeout])
+            })
             .then((candidate) => {
-                if (attempt !== activeAttempt) {
-                    throw new Error("stale emulator runtime load attempt");
-                }
                 api = candidate;
                 onLoaded(candidate, attempt);
                 return candidate;

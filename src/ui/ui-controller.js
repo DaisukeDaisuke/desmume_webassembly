@@ -1,3 +1,17 @@
+export function bindScreenTouch({ screenShell, state, updateTouch, setTouchState }) {
+    const releaseTouch = () => setTouchState(false, 0, 0);
+    screenShell.addEventListener("pointerdown", (event) => {
+        screenShell.setPointerCapture(event.pointerId);
+        updateTouch(event, true);
+    });
+    screenShell.addEventListener("pointermove", (event) => {
+        if (state.touch.active) updateTouch(event, true);
+    });
+    screenShell.addEventListener("pointerup", releaseTouch);
+    screenShell.addEventListener("pointercancel", releaseTouch);
+    screenShell.addEventListener("lostpointercapture", releaseTouch);
+}
+
 export function bindUi(context) {
     const {
         copyText,
@@ -29,6 +43,7 @@ export function bindUi(context) {
         selectScript,
         setFollowPc,
         setKey,
+        setTouchState,
         state,
         ui,
         updateStatus,
@@ -259,10 +274,7 @@ export function bindUi(context) {
     window.addEventListener("focusin", () => { if (isTypingTarget()) releaseAllKeys(); });
     window.addEventListener("keydown", (e) => { if (isTypingTarget(e.target)) return; const code = normalizeKeyboardCode(e); if (state.keymap[code]) { e.preventDefault(); setKey(state.keymap[code], true); } });
     window.addEventListener("keyup", (e) => { if (isTypingTarget(e.target)) return; const code = normalizeKeyboardCode(e); if (state.keymap[code]) { e.preventDefault(); setKey(state.keymap[code], false); } });
-    ui.screenShell.addEventListener("pointerdown", (e) => { ui.screenShell.setPointerCapture(e.pointerId); updateTouch(e, true); });
-    ui.screenShell.addEventListener("pointermove", (e) => { if (state.touch.active) updateTouch(e, true); });
-    ui.screenShell.addEventListener("pointerup", () => { state.touch.active = false; });
-    ui.screenShell.addEventListener("pointercancel", () => { state.touch.active = false; });
+    bindScreenTouch({ screenShell: ui.screenShell, state, updateTouch, setTouchState });
     ui.volumeRange.addEventListener("input", () => { if (state.audioContext) state.audioNextTime = state.audioContext.currentTime; });
     
     const maintenanceFailures = new Set();

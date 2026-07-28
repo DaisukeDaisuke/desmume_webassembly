@@ -46,6 +46,10 @@ import evalSandboxWorkerSource from "./workers/eval.worker.js";
 import parserWorkerSource from "./workers/parser.worker.js";
 
 export const emulatorRuntimeEntry = true;
+let initializedRuntimeApi = null;
+
+export function initializeEmulatorRuntime() {
+if (initializedRuntimeApi) return initializedRuntimeApi;
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
 const DESMUME_SCRIPT_URL = "desmume.js?v=20260619-immediate-memory-break";
 const state = createAppState();
@@ -613,7 +617,11 @@ const inputRecordingService = createInputRecordingService({
     sha256Hex,
     saveStateBytes: () => nativeBridge.saveStateBytes(),
     commands,
-    waitForInputWindow
+    waitForInputWindow,
+    cancelInputTasksForOperation: (signal) => inputTaskManager.cancelAndWaitForParent(
+        signal,
+        "recording-ended"
+    )
 });
 window.addEventListener("beforeunload", () => operationManager.cancel("page-unload"));
 
@@ -696,8 +704,13 @@ bindUi({
         selectScript,
         setFollowPc,
         setKey,
+        setTouchState,
         state,
         ui,
         updateStatus,
         updateTouch
 });
+
+initializedRuntimeApi = window.DesmumeMCP;
+return initializedRuntimeApi;
+}

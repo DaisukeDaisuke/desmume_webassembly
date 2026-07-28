@@ -25,8 +25,9 @@ ui.scaleSelect?.addEventListener("change", applyBootstrapLayout);
 ui.rotationSelect?.addEventListener("change", applyBootstrapLayout);
 
 let runtimeApi = null;
+const importRuntimeModule = (specifier) => import(specifier);
 const runtimeLoader = createRuntimeLoader({
-    loadRuntime: () => import("./emulator.js"),
+    loadRuntime: (attempt) => importRuntimeModule(`./emulator.js?attempt=${attempt}`),
     getApi: () => window.DesmumeMCP,
     onStart: () => {
         if (ui.readyText) ui.readyText.textContent = "loading emulator";

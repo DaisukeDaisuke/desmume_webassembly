@@ -19,6 +19,7 @@ import { createRuntimeLoader } from "../src/runtime-loader.js";
 import { createBootstrapWebMcpTools } from "../src/bootstrap-webmcp.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { getInternalMetadata } from "../src/internal-command-metadata.js";
+import { bindScreenTouch } from "../src/ui/ui-controller.js";
 
 test("pause events use monotonic serials and kind filters", async () => {
     const service = createPauseEventService();
@@ -215,7 +216,11 @@ test("State and idle file watchers survive the file load that completes them", a
     assert.equal(operationManager.current(), null);
 });
 
-function createRecordingHarness({ store, failMetadataWrite = () => false } = {}) {
+function createRecordingHarness({
+    store,
+    failMetadataWrite = () => false,
+    cancelInputTasksForOperation = async () => false
+} = {}) {
     const responder = createMcpResponder({ logger: {} });
     let activity = { paused: false, running: true };
     const commands = {
@@ -259,7 +264,8 @@ function createRecordingHarness({ store, failMetadataWrite = () => false } = {})
         sha256Hex: async () => "state-hash",
         saveStateBytes: () => new Uint8Array([1]),
         commands,
-        waitForInputWindow: async () => {}
+        waitForInputWindow: async () => {},
+        cancelInputTasksForOperation
     });
     return { responder, service, commands };
 }
@@ -306,6 +312,34 @@ test("recording replacement commits through temporary keys and preserves old dat
     assert.equal(store.has(oldMetadata.dataKey), false);
     assert.equal(store.has(oldMetadata.stateKey), false);
     assert.equal(store.get("input-recording:meta:demo").stateKey, null);
+});
+
+test("recording waits for operation-owned input tasks before returning success", async () => {
+    const store = new Map();
+    let releaseCancellation;
+    let cancellationSettled = false;
+    const cancellation = new Promise((resolve) => {
+        releaseCancellation = () => {
+            cancellationSettled = true;
+            resolve();
+        };
+    });
+    const { service } = createRecordingHarness({
+        store,
+        cancelInputTasksForOperation: async () => cancellation
+    });
+    const recording = service.record(
+        { id: "settlement", durationMs: 1 },
+        { signal: new AbortController().signal }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    let returned = false;
+    recording.then(() => { returned = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(returned, false);
+    releaseCancellation();
+    assert.equal((await recording).ok, true);
+    assert.equal(cancellationSettled, true);
 });
 
 test("file transactions abort and settle long input tasks before loading", async () => {
@@ -355,6 +389,60 @@ test("file transactions abort and settle long input tasks before loading", async
         assert.deepEqual(inputTaskManager.current(), []);
     });
     assert.equal((await holdOutcome).mcpCode, "CANCELLED");
+});
+
+test("parent input cancellation prevents delayed presses and waits for settlement", async () => {
+    const manager = createInputTaskManager();
+    const parent = new AbortController();
+    let pressed = false;
+    let settled = false;
+    let markTaskStarted;
+    const taskStarted = new Promise((resolve) => { markTaskStarted = resolve; });
+    const task = manager.run("runInputHold", async (signal) => {
+        await new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                pressed = true;
+                resolve();
+            }, 50);
+            markTaskStarted();
+            signal.addEventListener("abort", () => {
+                clearTimeout(timer);
+                setTimeout(() => {
+                    settled = true;
+                    resolve();
+                }, 5);
+            }, { once: true });
+        });
+    }, parent.signal).catch((error) => error);
+    await taskStarted;
+    assert.equal(await manager.cancelAndWaitForParent(parent.signal, "recording-ended"), true);
+    assert.equal(settled, true);
+    assert.equal(pressed, false);
+    await task;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(pressed, false);
+});
+
+test("screen pointer release paths use the central touch mutation", () => {
+    const listeners = new Map();
+    const releases = [];
+    bindScreenTouch({
+        screenShell: {
+            addEventListener: (name, listener) => listeners.set(name, listener),
+            setPointerCapture: () => {}
+        },
+        state: { touch: { active: true } },
+        updateTouch: () => {},
+        setTouchState: (...args) => releases.push(args)
+    });
+    listeners.get("pointerup")();
+    listeners.get("pointercancel")();
+    listeners.get("lostpointercapture")();
+    assert.deepEqual(releases, [
+        [false, 0, 0],
+        [false, 0, 0],
+        [false, 0, 0]
+    ]);
 });
 
 test("replay reports skipped verification and resumes for pauseAfter false", async () => {
@@ -409,23 +497,59 @@ test("bootstrap WebMCP list and status calls do not require a runtime loader", a
     assert.deepEqual(calls, [{ command: "status", params: {} }]);
 });
 
-test("runtime loader times out, retries, and ignores a late stale attempt", async () => {
+test("bootstrap WebMCP distinguishes parse failures from command failures", async () => {
+    const stableError = new Error("IndexedDB unavailable");
+    stableError.mcpCode = "STATE_NOT_LOADED";
+    stableError.mcpDetails = { storage: "states" };
+    const tools = createBootstrapWebMcpTools({
+        bootstrapApi: {
+            list: () => ({}),
+            call: async (command) => {
+                if (command === "stable") throw stableError;
+                throw new Error("unexpected failure");
+            }
+        },
+        webMcpContent: (value) => value,
+        parseInput: (value) => JSON.parse(value),
+        fail: (code, message, details) => ({ ok: false, error: { code, message, details } })
+    });
+    assert.equal((await tools[1].execute("{")).error.code, "INVALID_ARGUMENT");
+    const stable = await tools[1].execute('{"command":"stable"}');
+    assert.deepEqual(stable.error, {
+        code: "STATE_NOT_LOADED",
+        message: "IndexedDB unavailable",
+        details: { storage: "states" }
+    });
+    const internal = await tools[1].execute('{"command":"internal"}');
+    assert.equal(internal.error.code, "INTERNAL_ERROR");
+    assert.equal(internal.error.message, "WebMCP command failed internally");
+});
+
+test("runtime loader times out, retries with a new attempt, and never initializes the stale module", async () => {
     const resolvers = [];
-    let currentApi = null;
+    const requestedAttempts = [];
+    const initializedAttempts = [];
     const loader = createRuntimeLoader({
-        loadRuntime: () => new Promise((resolve) => resolvers.push(resolve)),
-        getApi: () => currentApi,
+        loadRuntime: (attempt) => {
+            requestedAttempts.push(attempt);
+            return new Promise((resolve) => resolvers.push(resolve));
+        },
+        initializeRuntime: (module, attempt) => {
+            initializedAttempts.push(attempt);
+            return module.initializeEmulatorRuntime();
+        },
+        getApi: () => null,
         timeoutMs: 10
     });
     await assert.rejects(loader.ensureLoaded(), /timed out/);
     const retry = loader.ensureLoaded();
-    currentApi = { call: () => "stale" };
-    resolvers[0]();
+    resolvers[0]({ initializeEmulatorRuntime: () => ({ call: () => "stale" }) });
     await new Promise((resolve) => setImmediate(resolve));
-    currentApi = { call: () => "current" };
-    resolvers[1]();
+    resolvers[1]({ initializeEmulatorRuntime: () => ({ call: () => "current" }) });
     const api = await retry;
     assert.equal(api.call(), "current");
+    assert.deepEqual(requestedAttempts, [1, 2]);
+    assert.deepEqual(initializedAttempts, [2]);
     assert.deepEqual(loader.status(), {
         loaded: true,
         loading: false,
@@ -485,4 +609,52 @@ test("analysis baseline State load remains paused through PC and CPSR verificati
     assert.equal(result.ok, true);
     assert.equal(loadMetadata.holdPaused, true);
     assert.equal(calls.at(-1), "resume");
+});
+
+test("analysis baseline replacement switches metadata before deleting the old State", async () => {
+    const oldBaseline = { slot: "analysis:old", name: "default" };
+    const store = new Map([["analysis:old", new Uint8Array([1])]]);
+    let metadata = oldBaseline;
+    let failMetadata = true;
+    const commands = createContextCommands({
+        ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
+        currentRomIdentity: async () => ({
+            romName: "game.nds",
+            romSize: 16,
+            romSha256: "rom"
+        }),
+        emulatorActivity: () => ({ paused: true, running: false }),
+        ensureRomLoaded: () => {},
+        getRegisters: (cpu) => cpu === "arm9"
+            ? { pc: 1, cpsr: 2 }
+            : { pc: 3, cpsr: 4 },
+        idbDelete: async (key) => { store.delete(key); },
+        idbPut: async (key, value) => { store.set(key, value); },
+        native: { saveStateBytes: () => new Uint8Array([9, 9]) },
+        readAnalysisBaseline: () => metadata,
+        sha256Hex: async () => "new-hash",
+        state: { romGeneration: 1 },
+        ui: {
+            traceToggle: { checked: false },
+            tracePrivilegeToggle: { checked: false }
+        },
+        writeAnalysisBaseline: (name, baseline) => {
+            if (failMetadata) throw new Error("metadata write failed");
+            assert.equal(store.has("analysis:old"), true);
+            metadata = baseline;
+        }
+    });
+    await assert.rejects(
+        commands.saveAnalysisBaseline({ replace: true }),
+        /metadata write failed/
+    );
+    assert.equal(metadata, oldBaseline);
+    assert.deepEqual([...store.keys()], ["analysis:old"]);
+
+    failMetadata = false;
+    const result = await commands.saveAnalysisBaseline({ replace: true });
+    assert.equal(result.ok, true);
+    assert.notEqual(metadata.slot, "analysis:old");
+    assert.equal(store.has(metadata.slot), true);
+    assert.equal(store.has("analysis:old"), false);
 });

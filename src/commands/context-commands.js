@@ -165,7 +165,7 @@ export function createContextCommands(context) {
                     `analysis baseline already exists: ${name}; pass replace:true to overwrite it`
                 );
             }
-            const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`;
+            const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}`;
             const generation = state.romGeneration;
             const activity = emulatorActivity();
             const stateBytes = native.saveStateBytes();
@@ -183,20 +183,33 @@ export function createContextCommands(context) {
             if (generation !== state.romGeneration) {
                 throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
             }
-            await idbPut(slot, stateBytes);
+            const stateSha256 = await sha256Hex(stateBytes);
             const baseline = {
                 name,
                 slot,
                 ...identity,
                 stateSize: stateBytes.length,
-                stateSha256: await sha256Hex(stateBytes),
+                stateSha256,
                 cpuState,
                 ...activity,
                 skipIrq: !!ui.tracePrivilegeToggle.checked,
                 traceEnabled: !!ui.traceToggle.checked,
                 savedAt: new Date().toISOString()
             };
-            writeAnalysisBaseline(name, baseline);
+            let committed = false;
+            try {
+                await idbPut(slot, stateBytes);
+                writeAnalysisBaseline(name, baseline);
+                committed = true;
+            } finally {
+                if (!committed) await idbDelete(slot).catch(() => {});
+            }
+            const previousSlot = existing
+                ? String(existing.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`)
+                : null;
+            if (previousSlot && previousSlot !== slot) {
+                await idbDelete(String(previousSlot)).catch(() => {});
+            }
             return {
                 ok: true,
                 name,
