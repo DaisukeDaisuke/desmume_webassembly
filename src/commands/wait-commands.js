@@ -28,6 +28,27 @@ export function registerWaitCommands({
         : type === "read" || type === "write"
             ? "memoryBreakpoint"
             : "specialBreakpoint";
+    async function runWatcher(name, timeoutValue, waitForEvent) {
+        const timeoutMs = positiveInteger(timeoutValue, "timeoutMs", 600000);
+        const controller = new AbortController();
+        let timer = 0;
+        try {
+            const result = await Promise.race([
+                Promise.resolve(waitForEvent(controller.signal)).then((value) => ({ value })),
+                new Promise((resolve) => {
+                    timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+                })
+            ]);
+            if (result.timedOut) {
+                controller.abort("timeout");
+                return responder.fail(ErrorCode.TIMEOUT, `${name} timed out`, { timeoutMs });
+            }
+            return result.value;
+        } finally {
+            clearTimeout(timer);
+            if (!controller.signal.aborted) controller.abort("settled");
+        }
+    }
     function raceScriptPause(operation, waitForValue) {
         const afterSerial = scriptPauseService.currentSerial();
         const controller = new AbortController();
@@ -458,10 +479,10 @@ export function registerWaitCommands({
         });
     };
 
-    commands.waitForStateLoad = async (params = {}) => operationManager.run({
-        name: "waitForStateLoad",
-        timeoutMs: Number(params.timeoutMs),
-        task: async (operation) => {
+    commands.waitForStateLoad = async (params = {}) => runWatcher(
+        "waitForStateLoad",
+        params.timeoutMs,
+        async (signal) => {
             const afterSerial = Number(params.afterSerial ?? 0);
             if (!Number.isSafeInteger(afterSerial) || afterSerial < 0) {
                 return responder.fail(ErrorCode.INVALID_ARGUMENT, "afterSerial must be a non-negative integer");
@@ -469,16 +490,16 @@ export function registerWaitCommands({
             const event = await stateLoadEventService.waitForEvent({
                 afterSerial: 0,
                 predicate: (candidate) => candidate.stateLoadSerial > afterSerial,
-                signal: operation.signal
+                signal
             });
             return responder.ok({ ...event, ...getActivity() });
         }
-    });
+    );
 
-    commands.waitForFileTransaction = async (params = {}) => operationManager.run({
-        name: "waitForFileTransaction",
-        timeoutMs: Number(params.timeoutMs),
-        task: async (operation) => {
+    commands.waitForFileTransaction = async (params = {}) => runWatcher(
+        "waitForFileTransaction",
+        params.timeoutMs,
+        async (signal) => {
             const afterSerial = Number(params.afterSerial ?? 0);
             if (!Number.isSafeInteger(afterSerial) || afterSerial < 0) {
                 return responder.fail(ErrorCode.INVALID_ARGUMENT, "afterSerial must be a non-negative integer");
@@ -490,7 +511,7 @@ export function registerWaitCommands({
                     candidate.fileTransactionSerial > afterSerial
                     && (!idle || candidate.active === false)
                 ),
-                signal: operation.signal
+                signal
             });
             return responder.ok({
                 fileTransactionSerial: event.fileTransactionSerial,
@@ -499,7 +520,7 @@ export function registerWaitCommands({
                 ...getActivity()
             });
         }
-    });
+    );
 
     Object.assign(descriptions, {
         waitForBreak: "通常breakpointの次のhitまで待機します。timeoutMsは必須です。",

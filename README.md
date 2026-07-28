@@ -63,11 +63,6 @@ npm run watch:js
 The watch build writes the same `public/app.js` path with an inline source map and continues watching `src/**/*.js`. Stop it with `Ctrl+C`. Before copying or deploying an artifact after using the watcher, rerun `npm run build:js` to restore the minified production bundle.
 
 Serve `public/` through the existing local server so local and Pages use the same asset paths:
-
-```powershell
-C:\Users\owner\CLionProjects\deweb\start-test-server.ps1
-```
-
 Then open `http://localhost:8766/`. Do not open `public/index.html` directly as a `file:` URL.
 
 The native Emscripten build is run in a Codespace. Check the current Codespace name first, transfer locally edited source with `gh codespace cp -e`, and build from the repository root:

@@ -140,6 +140,7 @@ export function createOperationManager({
         run,
         cancel,
         cancelAndWait,
+        signalFor: (name) => active?.name === name ? active.signal : null,
         current: () => active && ({
             id: active.id,
             name: active.name,

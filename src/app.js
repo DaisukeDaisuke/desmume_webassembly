@@ -1,4 +1,6 @@
 import { applyScreenLayout } from "./ui/screen-layout.js";
+import { createRuntimeLoader } from "./runtime-loader.js";
+import { createBootstrapWebMcpTools } from "./bootstrap-webmcp.js";
 
 const ui = Object.fromEntries(
     [...document.querySelectorAll("[id]")]
@@ -22,20 +24,29 @@ applyBootstrapLayout();
 ui.scaleSelect?.addEventListener("change", applyBootstrapLayout);
 ui.rotationSelect?.addEventListener("change", applyBootstrapLayout);
 
-let runtimeLoadPromise = null;
 let runtimeApi = null;
-let runtimeLoadError = null;
-let runtimeLoadAttempts = 0;
+const runtimeLoader = createRuntimeLoader({
+    loadRuntime: () => import("./emulator.js"),
+    getApi: () => window.DesmumeMCP,
+    onStart: () => {
+        if (ui.readyText) ui.readyText.textContent = "loading emulator";
+    },
+    onLoaded: (api) => {
+        runtimeApi = api;
+        removeBootstrapLayoutListeners();
+    },
+    onError: () => {
+        if (ui.readyText) ui.readyText.textContent = "emulator load failed — retry by loading ROM";
+    }
+});
 
 function unloadedStatus() {
     return {
         ok: true,
         ready: false,
         emulatorLoaded: false,
-        emulatorLoading: !!runtimeLoadPromise,
-        emulatorLoadError: runtimeLoadError
-            ? String(runtimeLoadError.message || runtimeLoadError).slice(0, 500)
-            : null,
+        emulatorLoading: runtimeLoader.status().loading,
+        emulatorLoadError: runtimeLoader.status().error?.slice(0, 500) || null,
         romLoaded: false,
         paused: true,
         running: false,
@@ -59,30 +70,7 @@ function fail(code, message, details) {
 }
 
 async function ensureEmulatorLoaded() {
-    if (runtimeApi) return runtimeApi;
-    if (runtimeLoadPromise) return runtimeLoadPromise;
-    runtimeLoadError = null;
-    runtimeLoadAttempts++;
-    if (ui.readyText) ui.readyText.textContent = "loading emulator";
-    runtimeLoadPromise = import("./emulator.js")
-        .then(() => {
-            const api = window.DesmumeMCP;
-            if (!api || typeof api.call !== "function") {
-                throw new Error("emulator runtime did not publish its command API");
-            }
-            runtimeApi = api;
-            removeBootstrapLayoutListeners();
-            return api;
-        })
-        .catch((error) => {
-            runtimeLoadError = error;
-            if (ui.readyText) ui.readyText.textContent = "emulator load failed — retry by loading ROM";
-            throw error;
-        })
-        .finally(() => {
-            runtimeLoadPromise = null;
-        });
-    return runtimeLoadPromise;
+    return runtimeLoader.ensureLoaded();
 }
 
 async function listStorageKeys() {
@@ -100,6 +88,25 @@ async function listStorageKeys() {
     });
     db.close();
     return keys;
+}
+
+async function readStorageValues(keys) {
+    if (!keys.length) return [];
+    const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("desmume-web-debugger", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("states");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    const transaction = db.transaction("states", "readonly");
+    const store = transaction.objectStore("states");
+    const values = await Promise.all(keys.map((storageKey) => new Promise((resolve, reject) => {
+        const request = store.get(storageKey);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    })));
+    db.close();
+    return values;
 }
 
 const bootstrapApi = {
@@ -125,7 +132,37 @@ const bootstrapApi = {
                         && !key.startsWith("__analysis_baseline__:")
                         && !key.startsWith("input-recording:")
                     ))
-            };
+                };
+        }
+        if (name === "listAnalysisBaselines") {
+            const baselines = [];
+            for (let index = 0; index < localStorage.length; index++) {
+                const storageKey = localStorage.key(index);
+                if (!storageKey?.startsWith("analysis-baseline:")) continue;
+                try {
+                    const baseline = JSON.parse(localStorage.getItem(storageKey) || "null");
+                    if (!baseline || typeof baseline !== "object") continue;
+                    baselines.push({
+                        name: storageKey.slice("analysis-baseline:".length),
+                        savedAt: baseline.savedAt || null,
+                        romName: baseline.romName || "",
+                        stateSize: Number(baseline.stateSize || 0),
+                        stateFormatVersion: Number(baseline.stateFormatVersion || 0),
+                        pcVerified: !!baseline.cpuState
+                    });
+                } catch (_) {
+                    // Ignore malformed legacy metadata while listing healthy entries.
+                }
+            }
+            return { ok: true, baselines };
+        }
+        if (name === "listInputRecordings") {
+            const keys = (await listStorageKeys())
+                .filter((storageKey) => storageKey.startsWith("input-recording:meta:"));
+            const recordings = (await readStorageValues(keys))
+                .filter(Boolean)
+                .map(({ dataKey, stateKey, cpuState, ...metadata }) => metadata);
+            return { ok: true, recordings };
         }
         if (["loadRomFile", "loadRomBytes", "loadRomUrl"].includes(name)) {
             try {
@@ -145,6 +182,14 @@ const bootstrapApi = {
     list() {
         return {
             status: "Returns bootstrap status without loading the emulator runtime.",
+            getOperation: "Returns the current operation without loading the emulator runtime.",
+            cancelOperation: "Cancels the current operation without loading the emulator runtime.",
+            getInputState: "Returns the neutral bootstrap input state.",
+            releaseInput: "Releases bootstrap input without loading the emulator runtime.",
+            listStateSlots: "Lists State slots without loading the emulator runtime.",
+            listSaveSlots: "Lists Save slots without loading the emulator runtime.",
+            listAnalysisBaselines: "Lists analysis baselines without loading the emulator runtime.",
+            listInputRecordings: "Lists input recordings without loading the emulator runtime.",
             loadRomFile: "Loads the emulator runtime once, then loads a selected local ROM.",
             loadRomBytes: "Loads the emulator runtime once, then loads supplied ROM bytes.",
             loadRomUrl: "Loads the emulator runtime once, then fetches and loads the requested ROM.",
@@ -156,12 +201,7 @@ const bootstrapApi = {
 window.DesmumeMCP = bootstrapApi;
 window.DesmumeRuntimeLoader = Object.freeze({
     ensureLoaded: ensureEmulatorLoaded,
-    status: () => ({
-        loaded: !!runtimeApi,
-        loading: !!runtimeLoadPromise,
-        attempts: runtimeLoadAttempts,
-        error: runtimeLoadError ? String(runtimeLoadError.message || runtimeLoadError) : null
-    })
+    status: runtimeLoader.status
 });
 
 function webMcpContent(result) {
@@ -184,60 +224,12 @@ async function registerBootstrapWebMcp() {
     const modelContext = ("modelContext" in document && document.modelContext)
         || ("modelContext" in navigator && navigator.modelContext);
     if (!modelContext || typeof modelContext.registerTool !== "function") return false;
-    const withRuntime = (handler) => async (input = {}) => {
-        try {
-            const api = await ensureEmulatorLoaded();
-            return webMcpContent(await handler(api, parseWebMcpInput(input)));
-        } catch (error) {
-            return webMcpContent(fail("WASM_NOT_READY", "emulator runtime could not be loaded", {
-                message: String(error?.message || error).slice(0, 500)
-            }));
-        }
-    };
-    const tools = [{
-        name: "desmume.list",
-        title: "DeSmuME command list",
-        description: "Loads the local DeSmuME runtime on demand, then lists its command surface.",
-        inputSchema: { type: "object", additionalProperties: false },
-        annotations: { readOnlyHint: true },
-        execute: withRuntime((api) => api.list())
-    }, {
-        name: "desmume.call",
-        title: "DeSmuME command",
-        description: "Loads the local DeSmuME runtime on demand, then runs one local command.",
-        inputSchema: {
-            type: "object",
-            required: ["command"],
-            properties: {
-                command: { type: "string" },
-                params: { type: "object", additionalProperties: true }
-            },
-            additionalProperties: false
-        },
-        execute: withRuntime((api, input) => api.call(String(input.command || ""), input.params || {}))
-    }, {
-        name: "desmume.eval",
-        title: "DeSmuME eval",
-        description: "Loads the local runtime, then runs isolated JavaScript in the hardened Worker sandbox.",
-        inputSchema: {
-            type: "object",
-            required: ["code"],
-            properties: { code: { type: "string" }, timeoutMs: { type: "number" } },
-            additionalProperties: false
-        },
-        execute: withRuntime((api, input) => api.call("eval", input))
-    }, {
-        name: "desmume.runScript",
-        title: "DeSmuME run script",
-        description: "Loads the local runtime, then runs isolated JavaScript in the hardened Worker sandbox.",
-        inputSchema: {
-            type: "object",
-            required: ["code"],
-            properties: { code: { type: "string" }, timeoutMs: { type: "number" } },
-            additionalProperties: false
-        },
-        execute: withRuntime((api, input) => api.call("runScript", input))
-    }];
+    const tools = createBootstrapWebMcpTools({
+        bootstrapApi,
+        webMcpContent,
+        parseInput: parseWebMcpInput,
+        fail
+    });
     for (const tool of tools) {
         try {
             await modelContext.registerTool(tool);

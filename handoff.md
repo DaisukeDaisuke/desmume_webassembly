@@ -224,6 +224,15 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - Implemented the `new_plan.md` operation, pause wait, ordered frame wait, input validation, memory read/write wait, baseline verification, input recovery, State event helper, breakpoint bulk clear, storage management, and input recording/replay surfaces.
 - `runInputSequence` remains the compact caller-authored tuple runner. `recordInput` observes the central key/touch mutation boundary and stores complete input snapshots by completed-frame offset; `replayInput` can integrate an associated or named State and verifies ROM plus ARM9/ARM7 PC/CPSR before input.
 - Debug memory access continues through native `MMU_AT_DEBUG`, so debugger reads/writes do not count as CPU memory-breakpoint hits.
-- The initial first-party bundle is now `public/app.js` (6,531 bytes), which keeps the existing HTML canvas/UI, applies canvas scale/rotation before runtime load, and owns the shared loader. `public/emulator.js` (462,685 bytes) is minimized separately and loaded on the first ROM load or WebMCP invocation. The production build emits no shared chunk.
+- The initial first-party bundle is now `public/app.js` (6,531 bytes), which keeps the existing HTML canvas/UI, applies canvas scale/rotation before runtime load, and owns the shared loader. `public/emulator.js` (462,685 bytes) is minimized separately and loaded on the first ROM load. The production build emits no shared chunk.
 - Codespace verification passed 118/118 tests before and after build, `check:js`, dependency bundle checks, license checks, and `build:js`. Generated `app.js`, `emulator.js`, and the existing Codespace `desmume.js` were synchronized to the host.
 - Direct Chrome DevTools MCP acceptance was not run because the provider was not started. Browser Use was not substituted. `NEW_PLAN_IMPLEMENTATION_HANDOFF.md` records the detailed implementation map and any remaining browser-only acceptance points.
+
+## 2026-07-28 Review Fix Addendum
+
+- State/file serial waits are independent watchers rather than exclusive operations, inspect the latest completed event before subscribing, and remain available during an active file transaction.
+- Long input commands are tracked separately. File transactions abort and settle them before native load work; recording-owned input commands inherit the recording operation signal.
+- Input recording replacement writes new data and optional State under temporary keys, commits by switching metadata last, then removes only the old blobs. Failed replacement preserves the previous recording.
+- Replay reports skipped PC/CPSR verification explicitly, honors `pauseAfter:false`, and returns the resulting run state. Analysis baseline restore holds pause through PC/CPSR verification.
+- Bootstrap WebMCP list/status/recovery/storage paths remain runtime-free. The runtime loader has a hard timeout, retry support, and stale-attempt rejection.
+- Permanent regression coverage was added in `tests/new-plan-services.test.mjs`. Browser acceptance was explicitly excluded by the user for this review-fix task.

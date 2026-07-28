@@ -15,10 +15,12 @@ export function createInputCommands({
     setTouchState,
     toButtonList,
     waitChecked,
-    waitForInputWindow = null
+    waitForInputWindow = null,
+    inputTaskManager = { run: async (name, task) => task() },
+    getInputParentSignal = () => null
 }) {
-    const waitInput = (milliseconds, deadline, label) => waitForInputWindow
-        ? waitForInputWindow(milliseconds, { deadline, label })
+    const waitInput = (milliseconds, deadline, label, signal) => waitForInputWindow
+        ? waitForInputWindow(milliseconds, { deadline, label, signal })
         : waitChecked(milliseconds, deadline, label);
     function inputDeadline(params) {
         if (params.timeoutMs === undefined) return 0;
@@ -58,6 +60,7 @@ export function createInputCommands({
     }
 
     async function runInputHold(params = {}) {
+        return inputTaskManager.run("runInputHold", async (signal) => {
         await requireInputReady(params, "input hold requires a loaded ROM");
         const buttons = toButtonList(params);
         const durationMs = nonNegativeNumber(
@@ -69,19 +72,21 @@ export function createInputCommands({
         const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", MAX_INPUT_WAIT_MS);
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runInputHold");
         const deadline = inputDeadline(params);
-        await waitInput(waitBeforeMs, deadline, "runInputHold");
+        await waitInput(waitBeforeMs, deadline, "runInputHold", signal);
         requireInputRunning(state, native);
         buttons.forEach((button) => setKey(button, true));
         try {
-            await waitInput(durationMs, deadline, "runInputHold");
+            await waitInput(durationMs, deadline, "runInputHold", signal);
         } finally {
             buttons.forEach((button) => setKey(button, false));
         }
-        await waitInput(waitAfterMs, deadline, "runInputHold");
+        await waitInput(waitAfterMs, deadline, "runInputHold", signal);
         return { ok: true, buttons, durationMs };
+        }, getInputParentSignal());
     }
 
     async function runInputTap(params = {}) {
+        return inputTaskManager.run("runInputTap", async (signal) => {
         await requireInputReady(params, "input tap requires a loaded ROM");
         const buttons = toButtonList(params);
         const repeat = positiveInteger(params.repeat ?? params.count ?? 1, "repeat", 10000);
@@ -94,22 +99,24 @@ export function createInputCommands({
             "runInputTap"
         );
         const deadline = inputDeadline(params);
-        await waitInput(waitBeforeMs, deadline, "runInputTap");
+        await waitInput(waitBeforeMs, deadline, "runInputTap", signal);
         for (let index = 0; index < repeat; index++) {
             requireInputRunning(state, native);
             buttons.forEach((button) => setKey(button, true));
             try {
-                await waitInput(holdMs, deadline, "runInputTap");
+                await waitInput(holdMs, deadline, "runInputTap", signal);
             } finally {
                 buttons.forEach((button) => setKey(button, false));
             }
-            if (index < repeat - 1) await waitInput(gapMs, deadline, "runInputTap");
+            if (index < repeat - 1) await waitInput(gapMs, deadline, "runInputTap", signal);
         }
-        await waitInput(waitAfterMs, deadline, "runInputTap");
+        await waitInput(waitAfterMs, deadline, "runInputTap", signal);
         return { ok: true, buttons, repeat, holdMs, gapMs };
+        }, getInputParentSignal());
     }
 
     async function runTouchHold(params = {}) {
+        return inputTaskManager.run("runTouchHold", async (signal) => {
         await requireInputReady(params, "touch hold requires a loaded ROM");
         const x = Number(params.x);
         const y = Number(params.y);
@@ -125,16 +132,17 @@ export function createInputCommands({
         const waitAfterMs = nonNegativeNumber(params.waitAfterMs ?? 0, "waitAfterMs", MAX_INPUT_WAIT_MS);
         validateTotalWait(waitBeforeMs + durationMs + waitAfterMs, "runTouchHold");
         const deadline = inputDeadline(params);
-        await waitInput(waitBeforeMs, deadline, "runTouchHold");
+        await waitInput(waitBeforeMs, deadline, "runTouchHold", signal);
         requireInputRunning(state, native);
         setTouchState(true, x, y);
         try {
-            await waitInput(durationMs, deadline, "runTouchHold");
+            await waitInput(durationMs, deadline, "runTouchHold", signal);
         } finally {
             setTouchState(false, x, y);
         }
-        await waitInput(waitAfterMs, deadline, "runTouchHold");
+        await waitInput(waitAfterMs, deadline, "runTouchHold", signal);
         return { ok: true, x, y, durationMs };
+        }, getInputParentSignal());
     }
 
     async function setKeyBinding(params) {

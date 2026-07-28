@@ -18,7 +18,7 @@ Aliases `reg`, `regw`, `read8`, `read16`, `read32`, `write8`, `write16`, and `wr
 
 Additive commands from the 2026-07-28 implementation are `getOperation`, `cancelOperation`, `waitForPause`, `waitForStateLoad`, `waitForFileTransaction`, `waitForFrameMatch`, `waitForScreenStable`, `runUntilMemoryRead`, `runUntilMemoryWrite`, `getInputState`, `releaseInput`, `clearBreakpoints`, `listStateSlots`, `deleteStateSlot`, `listSaveSlots`, `deleteSaveSlot`, `listAnalysisBaselines`, `deleteAnalysisBaseline`, `recordInput`, `replayInput`, `listInputRecordings`, and `deleteInputRecording`.
 
-The initial browser entry remains `public/app.js`, now as a minimized bootstrap. The emulator command implementation is emitted as the separate minimized `public/emulator.js` and is dynamically imported for ROM loading or a WebMCP request. Existing canvas and control IDs remain in the initial HTML, and the runtime still publishes the same `window.DesmumeMCP`, shortcut, message, and WebMCP transports after import.
+The initial browser entry remains `public/app.js`, now as a minimized bootstrap. The emulator command implementation is emitted as the separate minimized `public/emulator.js` and is dynamically imported only for ROM loading. Runtime-free WebMCP list/status/recovery/storage calls and ROM-unloaded debugger calls stay in the bootstrap. Existing canvas and control IDs remain in the initial HTML, and the runtime still publishes the same `window.DesmumeMCP`, shortcut, message, and WebMCP transports after import.
 
 `setSaveType` is the sole explicit removal. Its native option is ineffective and must not report false success.
 

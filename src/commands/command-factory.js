@@ -61,6 +61,8 @@ export function createCommands(context) {
         native,
         onScreenValid,
         operationManager,
+        inputTaskManager,
+        getInputParentSignal,
         opcodeWordsFromInput,
         openPicker,
         parseAddress,
@@ -279,7 +281,9 @@ export function createCommands(context) {
             setTouchState,
             toButtonList,
             waitChecked,
-            waitForInputWindow
+            waitForInputWindow,
+            inputTaskManager,
+            getInputParentSignal
         }),
         ...createDisassemblyCommands({
             bytesFromFlexibleParams,

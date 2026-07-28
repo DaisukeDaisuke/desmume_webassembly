@@ -243,7 +243,8 @@ export function createContextCommands(context) {
                 saveFlushBlockMs: params.saveFlushBlockMs
             }, {
                 analysisBaselineSlotToken,
-                fileTransactionToken: token
+                fileTransactionToken: token,
+                holdPaused: true
             }));
             state.paused = true;
             state.running = false;

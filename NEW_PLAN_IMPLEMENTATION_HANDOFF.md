@@ -174,7 +174,7 @@
 - Added `src/input-recording-service.js` with central mutation recording, staged metadata commit, optional associated State, frame-offset replay, list, and delete.
 - Split the first-party entry into lightweight `src/app.js` and runtime `src/emulator-runtime.js`.
 - `scripts/build-js.mjs` now targets exactly two minimized artifacts: `public/app.js` and `public/emulator.js`; no shared chunk is intended.
-- Bootstrap WebMCP tools load `emulator.js` implicitly on first WebMCP invocation and proxy that same request to the runtime.
+- Bootstrap WebMCP tools route through the bootstrap API. List/status/recovery/storage calls and ROM-unloaded debugger calls do not load `emulator.js`; ROM load commands use the shared loader.
 - Updated `src/api-descriptions.js` and the main inventory/behavior sections in `webassembly/API_CURRENT.md`.
 
 ## Known incomplete or not-yet-proven work

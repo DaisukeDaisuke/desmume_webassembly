@@ -4,7 +4,8 @@ import { codedError } from "./validation.js";
 export function createFileTransactionService({
     state,
     cancelPendingScriptEvents = async () => {},
-    eventService = null
+    eventService = null,
+    inputTaskManager = null
 }) {
     function begin(reason = "file transaction") {
         if (state.fileTransactionActive) {
@@ -74,12 +75,14 @@ export function createFileTransactionService({
         }
         const token = begin(reason);
         try {
+            await inputTaskManager?.blockAndCancel(`${reason} started`);
             return await task({
                 token,
                 commit: () => commit(token)
             });
         } finally {
             end(token);
+            inputTaskManager?.unblock();
         }
     }
 

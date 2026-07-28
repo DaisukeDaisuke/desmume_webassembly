@@ -32,7 +32,8 @@ const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
     "pause", "status", "listRecentFiles", "listBreakpoints", "listMemoryFreezes",
     "listScripts", "getScript", "listScriptPrint", "getOperation", "cancelOperation",
     "getInputState", "releaseInput", "listStateSlots", "listSaveSlots",
-    "listAnalysisBaselines", "listInputRecordings"
+    "listAnalysisBaselines", "listInputRecordings", "waitForStateLoad",
+    "waitForFileTransaction"
 ]);
 
 const RECORDABLE_INPUT_COMMANDS = new Set([

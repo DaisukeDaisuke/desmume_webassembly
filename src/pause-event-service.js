@@ -28,6 +28,11 @@ export function createPauseEventService() {
         signal
     } = {}) {
         const acceptedKinds = kinds ? new Set(kinds) : null;
+        if (latest
+            && latest.serial > afterSerial
+            && (!acceptedKinds || acceptedKinds.has(latest.pauseKind))) {
+            return Promise.resolve(latest);
+        }
         return new Promise((resolve, reject) => {
             let unsubscribeAbort = () => {};
             const cleanup = () => {

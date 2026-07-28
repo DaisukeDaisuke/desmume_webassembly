@@ -18,6 +18,9 @@ export function createSerialEventService() {
     }
 
     function waitForEvent({ afterSerial = serial, predicate = () => true, signal } = {}) {
+        if (latest && latest.serial > afterSerial && predicate(latest)) {
+            return Promise.resolve(latest);
+        }
         return new Promise((resolve, reject) => {
             let unsubscribeAbort = () => {};
             const cleanup = () => {

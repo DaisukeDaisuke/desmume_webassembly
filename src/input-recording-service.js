@@ -8,6 +8,7 @@ const MAX_SERIALIZED_CHARS = 4 * 1024 * 1024;
 const META_PREFIX = "input-recording:meta:";
 const DATA_PREFIX = "input-recording:data:";
 const STATE_PREFIX = "input-recording:state:";
+let temporaryKeySerial = 0;
 
 export function createInputRecordingService({
     responder,
@@ -118,11 +119,13 @@ export function createInputRecordingService({
         }
         const frames = hasFrames ? positiveInteger(params.frames, "frames", 1000000) : null;
         const durationMs = hasDuration ? positiveInteger(params.durationMs, "durationMs", 600000) : null;
-        if (await idbGet(key(META_PREFIX, id)) && params.replace !== true) {
+        const previousMetadata = await idbGet(key(META_PREFIX, id));
+        if (previousMetadata && params.replace !== true) {
             return responder.fail(ErrorCode.RECORDING_EXISTS, `Input recording already exists: ${id}`);
         }
-        const dataKey = key(DATA_PREFIX, id);
-        const stateKey = key(STATE_PREFIX, id);
+        const temporarySuffix = `${Date.now().toString(36)}-${++temporaryKeySerial}`;
+        const dataKey = key(DATA_PREFIX, `${id}:temporary:${temporarySuffix}`);
+        const stateKey = key(STATE_PREFIX, `${id}:temporary:${temporarySuffix}`);
         const metaKey = key(META_PREFIX, id);
         let committed = false;
         let unsubscribe = () => {};
@@ -207,13 +210,22 @@ export function createInputRecordingService({
             if (associatedState) await idbPut(stateKey, associatedState.bytes);
             await idbPut(metaKey, metadata);
             committed = true;
+            if (previousMetadata) {
+                await Promise.allSettled([
+                    previousMetadata.dataKey && previousMetadata.dataKey !== dataKey
+                        ? idbDelete(previousMetadata.dataKey)
+                        : Promise.resolve(),
+                    previousMetadata.stateKey && previousMetadata.stateKey !== stateKey
+                        ? idbDelete(previousMetadata.stateKey)
+                        : Promise.resolve()
+                ]);
+            }
             return responder.ok({ ...metadata, stateLoaded: false });
         } finally {
             unsubscribe();
             releaseInput();
             if (!committed) {
                 await Promise.allSettled([
-                    idbDelete(metaKey),
                     idbDelete(dataKey),
                     idbDelete(stateKey)
                 ]);
@@ -265,7 +277,8 @@ export function createInputRecordingService({
             await commands.pause(withInternalMetadata({}, { operation: true }));
         }
         const cpuState = getCpuState();
-        const pcVerified = params.verifyStart === false || (
+        const verificationSkipped = params.verifyStart === false;
+        const pcVerified = verificationSkipped ? null : (
             ["arm9", "arm7"].every((cpu) => (
                 ["pc", "cpsr"].every((register) => (
                     (Number(metadata.cpuState?.[cpu]?.[register]) >>> 0)
@@ -273,7 +286,7 @@ export function createInputRecordingService({
                 ))
             ))
         );
-        if (!pcVerified) {
+        if (!verificationSkipped && !pcVerified) {
             return responder.fail(ErrorCode.STATE_INVALID, "recording start PC/CPSR mismatch");
         }
         let offset = 0;
@@ -311,7 +324,11 @@ export function createInputRecordingService({
             }
             if (params.pauseAfter !== false) {
                 await commands.pause(withInternalMetadata({}, { operation: true }));
+            } else {
+                const resumed = await commands.resume(withInternalMetadata({}, { operation: true }));
+                if (resumed?.ok === false) return resumed;
             }
+            const activity = getActivity();
             return responder.ok({
                 id,
                 events: events.length,
@@ -319,7 +336,10 @@ export function createInputRecordingService({
                 stateLoaded,
                 stateSource,
                 pcVerified,
-                frame: getFrame()
+                verificationSkipped,
+                frame: getFrame(),
+                paused: !!activity.paused,
+                running: !!activity.running
             });
         } finally {
             releaseInput();

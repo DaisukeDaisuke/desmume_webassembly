@@ -37,6 +37,7 @@ import { createPauseEventService } from "./pause-event-service.js";
 import { createInputWindow } from "./input-window.js";
 import { createSerialEventService } from "./serial-event-service.js";
 import { createInputRecordingService } from "./input-recording-service.js";
+import { createInputTaskManager } from "./input-task-manager.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { createScreenInvalidNotice } from "./screen-invalid-notice.js";
 import { createFileTransactionService } from "./file-transaction-service.js";
@@ -174,6 +175,7 @@ const pauseEventService = createPauseEventService();
 const stateLoadEventService = createSerialEventService();
 const fileTransactionEventService = createSerialEventService();
 const waitForInputWindow = createInputWindow({ pauseEventService });
+const inputTaskManager = createInputTaskManager();
 const frameComparator = createFrameComparator({ responder: mcpResponder });
 const frameService = createFrameService({
     responder: mcpResponder,
@@ -328,7 +330,8 @@ const {
 const fileTransactionService = createFileTransactionService({
     state,
     cancelPendingScriptEvents: cancelAllPersistentScriptEvents,
-    eventService: fileTransactionEventService
+    eventService: fileTransactionEventService,
+    inputTaskManager
 });
 const romService = createRomService({
     state,
@@ -477,6 +480,8 @@ const commands = createCommands({
     native: nativeBridge,
     onScreenValid: screenInvalidNotice.clear,
     operationManager: () => operationManager,
+    inputTaskManager,
+    getInputParentSignal: () => operationManager.signalFor("recordInput"),
     pauseEventService,
     stateLoadEventService,
     fileTransactionEventService,
