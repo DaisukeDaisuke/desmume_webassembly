@@ -49,7 +49,9 @@ static bool traceSuspended = false;
 static bool tracePrivilegeCheck = true;
 static u64 frameCounter = 0;
 static bool specialBreakpoints[3] = {false, false, false};
+#if !defined(WASM_DISABLE_PTHREAD_RASTERIZER)
 static const int WASM_RASTERIZER_THREADS = 2;
+#endif
 
 static int nativeFaultCode() {
   paused = true;
@@ -463,7 +465,9 @@ GPU3DInterface *core3DList[] = {&gpu3DNull, &gpu3DRasterize, NULL};
 int main() {
   srand(time(NULL));
   NDS_Init();
+#if !defined(WASM_DISABLE_PTHREAD_RASTERIZER)
   CommonSettings.num_cores = WASM_RASTERIZER_THREADS;
+#endif
   SPU_ChangeSoundCore(1, 16384);
   GPU->Change3DRendererByID(RENDERID_SOFTRASTERIZER);
   cheatsExport = new CHEATSEXPORT();

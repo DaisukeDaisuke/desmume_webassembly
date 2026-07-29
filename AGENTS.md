@@ -234,7 +234,7 @@ gh codespace stop -c <name>
 - ファイルの中身を応答に復唱しない。
 - スクリーンショットはcanvasだけで取る。canvasサイズはトークン消費を抑えるため1倍にする。ユーザーが詳細にバグを指定した場合は、ピクセル検査スクリプトを使う。
 - GitHub Pagesへ毎回デプロイしない。HTML変更や軽い確認はローカル/プレビューサーバーで高速に回す。
-- C++/WASM変更の開発ではpthread対応の `webassembly/build.sh` を使う。Emscripten 3.1.6のASSERTIONS終了診断は、pthread有効時にstdioロックを保持してROM読込をデッドロックさせるため使わない。停止調査はChrome DevToolsのパフォーマンストレースを優先し、`webassembly/build_sanitize.sh` はc++メモリ破壊が疑われる緊急時だけ使う。
+- C++/WASM変更の通常開発・性能・マルチスレッド・リリース検証ではpthread対応の `webassembly/build.sh` を使う。Emscripten 3.1.6のASSERTIONS終了診断はpthread有効時にstdioロックを保持するため、ネイティブクラッシュのスタックトレースが必要な場合だけ、pthreadを意図的に無効化した `webassembly/build_deprecated_singlethread_safe_heap.sh` を使ってよい。この非推奨ビルドの成果物では性能・マルチスレッド・リリース動作を検証してはならない。
 - GitHub Actionsでデプロイする場合は、最終段階でまとめて行い、cache-bustする。
 - Actions完了待ちは実デプロイを見たいなら、次のコマンドで待つ: `gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3` で対象runを確認し、`gh run watch <run-id> --repo DaisukeDaisuke/desmume_webassembly --exit-status` で終了まで待つ。
 - Codespaceでのbuildと構文チェックは本番Actionsほど重要ではない。軽い変更は本番環境で確認してよい。ただしビルドはリアルタイムで約5分かかるため、複数の問題をまとめて確認する。

@@ -72,10 +72,10 @@ gh codespace list
 gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build.sh"
 ```
 
-For C++, WASM export, native bridge, breakpoint, or frame-counter changes, also run the diagnostic build used for browser regression:
+For a native crash that specifically requires an ASSERTIONS stack trace, the deprecated diagnostic build can be used. It intentionally disables pthread rasterization and must not be used for performance, multithreading, release, or deployment verification:
 
 ```bash
-gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build.sh"
+gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build_deprecated_singlethread_safe_heap.sh"
 ```
 
 The native build emits `public/desmume.js` as a single Emscripten JavaScript file with the wasm payload embedded. Copy required generated artifacts back with `gh codespace cp -e`. If a task starts the Codespace, stop it after all build and browser verification is complete:
