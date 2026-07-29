@@ -85,6 +85,7 @@
     .brand span, .status-strip span { color: var(--muted); font: 12px var(--mono); }
     .status-strip { display: flex; gap: 12px; min-width: 0; overflow: hidden; }
     .status-strip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #fps-status { min-width: 17ch; font-variant-numeric: tabular-nums; }
     .workspace {
       min-height: 0;
       display: grid;
@@ -343,6 +344,7 @@
       </div>
       <div class="status-strip">
         <span id="frame-status">frame 0</span>
+        <span id="fps-status">実効FPS: 0.0 fps</span>
         <span id="pc-status">arm9 pc --</span>
         <span id="speed-status">speed 1.00x</span>
         <span id="storage-status">state storage idle</span>

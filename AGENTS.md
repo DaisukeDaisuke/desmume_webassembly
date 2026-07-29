@@ -234,7 +234,7 @@ gh codespace stop -c <name>
 - ファイルの中身を応答に復唱しない。
 - スクリーンショットはcanvasだけで取る。canvasサイズはトークン消費を抑えるため1倍にする。ユーザーが詳細にバグを指定した場合は、ピクセル検査スクリプトを使う。
 - GitHub Pagesへ毎回デプロイしない。HTML変更や軽い確認はローカル/プレビューサーバーで高速に回す。
-- C++/WASM変更の開発では `webassembly/build_safe_heap.sh` (クラッシュ時、cpp側スタックトレースありモード) を使う、`webassembly/build_sanitize.sh` はコンソールエラーが増えるだけなので、c++クラッシュなど緊急時以外使わない。
+- C++/WASM変更の開発ではpthread対応の `webassembly/build.sh` を使う。Emscripten 3.1.6のASSERTIONS終了診断は、pthread有効時にstdioロックを保持してROM読込をデッドロックさせるため使わない。停止調査はChrome DevToolsのパフォーマンストレースを優先し、`webassembly/build_sanitize.sh` はc++メモリ破壊が疑われる緊急時だけ使う。
 - GitHub Actionsでデプロイする場合は、最終段階でまとめて行い、cache-bustする。
 - Actions完了待ちは実デプロイを見たいなら、次のコマンドで待つ: `gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 3` で対象runを確認し、`gh run watch <run-id> --repo DaisukeDaisuke/desmume_webassembly --exit-status` で終了まで待つ。
 - Codespaceでのbuildと構文チェックは本番Actionsほど重要ではない。軽い変更は本番環境で確認してよい。ただしビルドはリアルタイムで約5分かかるため、複数の問題をまとめて確認する。
@@ -411,12 +411,12 @@ kill <PID>
 - node_repl.jsはchrome-devtools-mcpではない。
 - chrome devtools mcpはbrowser useのことではない。
 - gh codespace listは単体で実行しないとサンドボックス外で実行できないよ
-- ビルドは`gh codespace ssh -c stunning-waffle-wrjpjx79xqpcvjq "cd /workspaces/desmume_webassembly && bash webassembly/build_safe_heap.sh`ですること。pull方式でコマンド待機しないこと。
+- ビルドは`gh codespace ssh -c stunning-waffle-wrjpjx79xqpcvjq "cd /workspaces/desmume_webassembly && bash webassembly/build.sh`ですること。pull方式でコマンド待機しないこと。
 
 # 重要なこと
 - nodejsはpostinstallスクリプト爆弾が怖いので、依存関係は必ずcodespaceでインストールすること。ローカルのnodejsではしない。
 - Always use --ignore-scripts
-- ビルド、workflowのpullは60秒ごとにしてね。10秒ごとだとリミット消費えぐいから
+- ビルド、workflowのpullは70秒ごとにしてね。10秒ごとだとリミット消費えぐいから。コンパイル待ちはWaiting for agentsを使い、70秒待ってから再確認しろ。エージェントの都合に合わせて最短周期で毎回確認するな。Codespace上では長い処理の出力を `.log`、終了コードを `.exit` に書き、途中は `.exit` の有無だけを確認し、最後にだけ `.log` を読むこと。
 - 絶対にbrowser use使うなmcp__chrome_devtools__*使え。browserツールはポリシーで任意コードできず、この目的には不適。
 - `gh codespace cp -r src remote:/workspaces/desmume_webassembly/ -c turbo-xylophone-697q7wgrwvjfpp4 -e`しろ、ファイル単位で転送するな君の出力トークン課金は入力の5倍なんだぞ
 - `cd /workspaces/desmume_webassembly && nohup bash codespace-review.sh > .new-plan-review-2.log 2>&1 < /dev/null &"`

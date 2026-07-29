@@ -11,6 +11,10 @@ export function createScreenVisibility({ state, ui, frameService, tryGetPc }) {
 
     function updateStatus() {
         ui.frameStatus.textContent = `frame ${state.frame}`;
+        const effectiveFps = state.running && !state.paused
+            ? Math.max(0, Number(state.effectiveFps) || 0)
+            : 0;
+        ui.fpsStatus.textContent = `実効FPS: ${effectiveFps.toFixed(1)} fps`;
         ui.speedStatus.textContent = `speed ${state.speed.toFixed(2)}x`;
         if (state.ready) {
             const pc = tryGetPc();

@@ -2,6 +2,8 @@ import { ErrorCode } from "./error-codes.js";
 import { completeFrames } from "./frame-completion.js";
 
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
+const EMULATED_FRAMES_PER_SECOND = 59.8261;
+const FPS_SAMPLE_INTERVAL_MS = 500;
 
 export function createEmulationLoop({
     state,
@@ -91,19 +93,43 @@ export function createEmulationLoop({
         }
     }
 
+    function sampleEffectiveFps(now) {
+        const sampleTime = Number(state.fpsSampleTime);
+        const sampleFrame = Number(state.fpsSampleFrame);
+        if (!Number.isFinite(sampleTime)
+            || !Number.isFinite(sampleFrame)
+            || now < sampleTime
+            || state.frame < sampleFrame) {
+            state.fpsSampleTime = now;
+            state.fpsSampleFrame = state.frame;
+            state.effectiveFps = 0;
+            return;
+        }
+        const elapsed = now - sampleTime;
+        if (elapsed < FPS_SAMPLE_INTERVAL_MS) return;
+        state.effectiveFps = (state.frame - sampleFrame) * 1000 / elapsed;
+        state.fpsSampleTime = now;
+        state.fpsSampleFrame = state.frame;
+    }
+
     function tick(now) {
         try {
             if (state.ready && state.running && !state.paused && !state.loadingFile) {
-            const elapsed = Math.min(250, now - state.lastTick);
-            state.frameBudget += elapsed * 59.8261 * state.speed / 1000;
-            const normalBatchFrames = Math.min(12, Math.floor(state.frameBudget));
+            const elapsed = Math.max(0, Math.min(250, now - state.lastTick));
+            const fractionalBudget = Math.max(0, state.frameBudget - Math.floor(state.frameBudget));
+            const generatedBudget = fractionalBudget
+                + elapsed * EMULATED_FRAMES_PER_SECOND * state.speed / 1000;
+            const normalBatchFrames = Math.min(
+                Math.max(1, Math.ceil(state.speed)),
+                Math.floor(generatedBudget)
+            );
+            state.frameBudget = generatedBudget - Math.floor(generatedBudget);
             const frames = Math.min(
                 normalBatchFrames,
                 Math.max(0, Math.floor(Number(limitFrameBatch(normalBatchFrames))))
             );
             if (frames > 0) {
                 const frameBefore = state.frame;
-                state.frameBudget -= frames;
                 applyFreezes();
                 let ran = 0;
                 let frameFailed = false;
@@ -138,6 +164,7 @@ export function createEmulationLoop({
                 }
                 const nativeStatus = syncNativeBreakStatus();
                 const completed = completeFrames({ state, frameService, frameBefore, onComplete: onScreenValid });
+                sampleEffectiveFps(now);
                 if (completed < frames || nativeStatus?.lastBreak?.hit) {
                     state.paused = true;
                     state.running = false;

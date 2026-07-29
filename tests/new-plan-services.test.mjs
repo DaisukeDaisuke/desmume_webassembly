@@ -391,7 +391,7 @@ test("recording fixes its frame boundary before task settlement and appends fina
     assert.deepEqual(events.at(-1), ["i", 600, 0, false, 0, 0]);
 });
 
-test("frame recording limits a twelve-frame native batch to the exact five-frame boundary", async () => {
+test("frame recording limits a four-frame native batch to the exact three-frame boundary", async () => {
     const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
     globalThis.requestAnimationFrame = () => 1;
     try {
@@ -414,9 +414,9 @@ test("frame recording limits a twelve-frame native batch to the exact five-frame
             paused: false,
             loadingFile: false,
             lastTick: 1000,
-            frameBudget: 12,
+            frameBudget: 4,
             frame: 100,
-            speed: 1,
+            speed: 4,
             render: false,
             audio: false,
             freezes: [],
@@ -457,19 +457,137 @@ test("frame recording limits a twelve-frame native batch to the exact five-frame
             updateStatus: () => {}
         });
         const recording = service.record(
-            { id: "five-frames", frames: 5 },
+            { id: "three-frames", frames: 3 },
             { signal: new AbortController().signal }
         );
         await new Promise((resolve) => setImmediate(resolve));
-        loop.tick(1000);
+        loop.tick(1017);
         const result = await recording;
         const events = store.get(result.dataKey);
 
-        assert.equal(nativeBatch, 5);
-        assert.equal(result.totalFrames, 5);
-        assert.equal(state.frame, 105);
-        assert.equal(arm9Pc, 0x02001014);
-        assert.deepEqual(events.at(-1), ["i", 5, 0, false, 0, 0]);
+        assert.equal(nativeBatch, 3);
+        assert.equal(result.totalFrames, 3);
+        assert.equal(state.frame, 103);
+        assert.equal(arm9Pc, 0x0200100c);
+        assert.deepEqual(events.at(-1), ["i", 3, 0, false, 0, 0]);
+    } finally {
+        globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+});
+
+test("realtime emulation drops stale work instead of draining it after a speed change", () => {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = () => 1;
+    try {
+        const batches = [];
+        const state = {
+            ready: true,
+            running: true,
+            paused: false,
+            loadingFile: false,
+            lastTick: 1000,
+            frameBudget: 100,
+            frame: 0,
+            speed: 4,
+            render: false,
+            audio: false,
+            freezes: [],
+            touch: { active: false },
+            keys: 0,
+            selectedCpu: "arm9",
+            framesSinceStateLoad: 0,
+            completedFrameSerial: 0,
+            fpsSampleTime: 1000,
+            fpsSampleFrame: 0,
+            effectiveFps: 0
+        };
+        const loop = createEmulationLoop({
+            state,
+            ui: {},
+            frameService: { isValid: () => false, onFrameCompleted: () => {} },
+            native: {
+                runFrames(count) {
+                    batches.push(count);
+                    state.frame += count;
+                    return count;
+                },
+                pause: () => {}
+            },
+            handleNativeFault: () => {},
+            syncNativeBreakStatus: () => ({}),
+            dispatchScriptEvent: () => {},
+            updateStatus: () => {}
+        });
+
+        loop.tick(1250);
+        state.speed = 1;
+        state.frameBudget = 100;
+        loop.tick(1267);
+
+        assert.deepEqual(batches, [4, 1]);
+        assert.ok(state.frameBudget >= 0 && state.frameBudget < 1);
+    } finally {
+        globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+});
+
+test("realtime emulation targets DS 60fps multiples without exceeding each tick batch", () => {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = () => 1;
+    try {
+        const runOneSecond = (speed) => {
+            const batches = [];
+            const state = {
+                ready: true,
+                running: true,
+                paused: false,
+                loadingFile: false,
+                lastTick: 0,
+                frameBudget: 0,
+                frame: 0,
+                speed,
+                render: false,
+                audio: false,
+                freezes: [],
+                touch: { active: false },
+                keys: 0,
+                selectedCpu: "arm9",
+                framesSinceStateLoad: 0,
+                completedFrameSerial: 0,
+                fpsSampleTime: 0,
+                fpsSampleFrame: 0,
+                effectiveFps: 0
+            };
+            const loop = createEmulationLoop({
+                state,
+                ui: {},
+                frameService: { isValid: () => false, onFrameCompleted: () => {} },
+                native: {
+                    runFrames(count) {
+                        batches.push(count);
+                        state.frame += count;
+                        return count;
+                    },
+                    pause: () => {}
+                },
+                handleNativeFault: () => {},
+                syncNativeBreakStatus: () => ({}),
+                dispatchScriptEvent: () => {},
+                updateStatus: () => {}
+            });
+            for (let tick = 1; tick <= 60; tick++) loop.tick(tick * 1000 / 60);
+            return { batches, state };
+        };
+
+        const normal = runOneSecond(1);
+        const double = runOneSecond(2);
+        const quadruple = runOneSecond(4);
+        assert.equal(normal.state.frame, 59);
+        assert.equal(double.state.frame, 119);
+        assert.equal(quadruple.state.frame, 239);
+        assert.ok(normal.batches.every((frames) => frames <= 1));
+        assert.ok(double.batches.every((frames) => frames <= 2));
+        assert.ok(quadruple.batches.every((frames) => frames <= 4));
     } finally {
         globalThis.requestAnimationFrame = originalRequestAnimationFrame;
     }

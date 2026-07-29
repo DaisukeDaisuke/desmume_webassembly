@@ -75,7 +75,7 @@ gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash
 For C++, WASM export, native bridge, breakpoint, or frame-counter changes, also run the diagnostic build used for browser regression:
 
 ```bash
-gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build_safe_heap.sh"
+gh codespace ssh -c <codespace-name> "cd /workspaces/desmume_webassembly && bash webassembly/build.sh"
 ```
 
 The native build emits `public/desmume.js` as a single Emscripten JavaScript file with the wasm payload embedded. Copy required generated artifacts back with `gh codespace cp -e`. If a task starts the Codespace, stop it after all build and browser verification is complete:

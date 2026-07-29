@@ -37,6 +37,15 @@ export function createRuntimeCommands(context) {
         updateStatus
     } = context;
 
+    function resetRealtimePacing() {
+        const now = performance.now();
+        state.lastTick = now;
+        state.frameBudget = 0;
+        state.effectiveFps = 0;
+        state.fpsSampleTime = now;
+        state.fpsSampleFrame = state.frame;
+    }
+
     const commands = {
         async setAutoUpdate(params = {}) {
             const hz = finiteNumber(params.hz ?? params.rate ?? ui.autoUpdateRate.value, "hz", 1, 20);
@@ -56,6 +65,7 @@ export function createRuntimeCommands(context) {
             state.explicitPauseSerial++;
             state.paused = true;
             state.running = false;
+            state.effectiveFps = 0;
             native.pause(true);
             if (!metadata.operation && !metadata.scriptCallback) {
                 pauseEventService?.publish({
@@ -82,6 +92,7 @@ export function createRuntimeCommands(context) {
             state.lastBreakKey = "";
             state.paused = false;
             state.running = true;
+            resetRealtimePacing();
             native.clearBreakStatus();
             native.pause(false);
             onScreenValid();
@@ -170,6 +181,7 @@ export function createRuntimeCommands(context) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "speed must be one of 0.25, 0.5, 1, 1.5, 2, 3, or 4");
             }
             state.speed = speed;
+            resetRealtimePacing();
             ui.speedSelect.value = String(state.speed);
             updateStatus();
             return { speed: state.speed };

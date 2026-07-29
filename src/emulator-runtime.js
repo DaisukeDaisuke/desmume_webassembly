@@ -51,7 +51,7 @@ let initializedRuntimeApi = null;
 export function initializeEmulatorRuntime() {
 if (initializedRuntimeApi) return initializedRuntimeApi;
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
-const DESMUME_SCRIPT_URL = "desmume.js?v=20260619-immediate-memory-break";
+const DESMUME_SCRIPT_URL = "desmume.js?v=20260729-pthread-fps-pacing";
 const state = createAppState();
 state.emulatorBundleLoaded = true;
 state.scale = Number(ui.scaleSelect?.value || state.scale);

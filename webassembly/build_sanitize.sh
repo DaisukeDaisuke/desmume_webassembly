@@ -76,14 +76,14 @@ OBJECTS=()
 compile_cpp() {
   local src="$1"
   local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
-  emcc "${INCLUDES[@]}" -O3 -std=c++17 -fexceptions -DHAVE_LIBZ -include algorithm -include cassert -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
+  emcc "${INCLUDES[@]}" -O3 -std=c++17 -fexceptions -pthread -DHAVE_LIBZ -include algorithm -include cassert -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
   OBJECTS+=("${obj}")
 }
 
 compile_c() {
   local src="$1"
   local obj="${BUILD_DIR}/$(echo "${src#${ROOT_DIR}/}" | tr '/\\:' '___').o"
-  emcc "${INCLUDES[@]}" -O3 -DHAVE_LIBZ -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
+  emcc "${INCLUDES[@]}" -O3 -pthread -DHAVE_LIBZ -sUSE_ZLIB=1 -c "${src}" -o "${obj}"
   OBJECTS+=("${obj}")
 }
 
@@ -96,7 +96,10 @@ for src in "${EXTRA_C[@]}"; do
 done
 
 emcc "${OBJECTS[@]}" \
+  -pthread \
   -sWASM=1 \
+  -sUSE_PTHREADS=1 \
+  -sPTHREAD_POOL_SIZE=4 \
   -sSINGLE_FILE=1 \
   -sALLOW_MEMORY_GROWTH=1 \
   -sINITIAL_MEMORY=268435456 \
