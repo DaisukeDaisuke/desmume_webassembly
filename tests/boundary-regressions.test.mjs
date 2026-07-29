@@ -27,8 +27,18 @@ import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
 import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
-import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "../src/script-rpc-policy.js";
-import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../src/worker-rpc-payload.js";
+import {
+    EVAL_RPC_ALLOWLIST,
+    PERSISTENT_RPC_ALLOWLIST,
+    validateWorkerRpc
+} from "../src/script-rpc-policy.js";
+import {
+    normalizePersistentMcpMetadata,
+    normalizePersistentMcpParams,
+    normalizePersistentMcpResult,
+    normalizeWorkerRpcParams,
+    normalizeWorkerTrigger
+} from "../src/worker-rpc-payload.js";
 import { normalizeBoundedValue } from "../src/bounded-value.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 
@@ -36,6 +46,7 @@ const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
 const workerBundles = new Map();
 const dependencyBundles = new Map();
+let scriptServiceModulePromise = null;
 
 async function bundledWorkerSource(relativeUrl) {
     const entryPoint = fileURLToPath(new URL(relativeUrl, import.meta.url));
@@ -949,6 +960,157 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
     );
 });
 
+test("published persistent MCP commands validate inputs and preserve value envelopes", async () => {
+    const calls = [];
+    const commands = createScriptCommands({
+        state: { scripts: new Map() },
+        ui: {},
+        listPScriptMcps: (scriptId) => ({
+            mcps: [{ scriptId: scriptId ?? 1, name: "listActions", description: "Lists actions." }]
+        }),
+        callPScriptMcp: async (params) => {
+            calls.push(params);
+            return {
+                scriptId: params.scriptId,
+                scriptName: "orchestrator",
+                name: params.name,
+                blocking: params.blocking,
+                value: [{ id: "menu.item", enabled: true }]
+            };
+        }
+    });
+    assert.equal((await commands.listPScriptMcp({ scriptId: 4 })).mcps[0].scriptId, 4);
+    await assert.rejects(
+        commands.callPScriptMcp({ scriptId: 4, name: "listActions", params: {} }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /blocking/.test(error.message)
+    );
+    const result = await commands.callPScriptMcp({
+        scriptId: 4,
+        name: "listActions",
+        params: {},
+        blocking: true
+    });
+    assert.deepEqual(result.value, [{ id: "menu.item", enabled: true }]);
+    assert.equal(calls[0].timeoutMs, 3000);
+    const webResult = responder.toWebMcpContent(responder.ok(result));
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(webResult.structuredContent.value)),
+        [{ id: "menu.item", enabled: true }]
+    );
+    assert.match(webResult.content[0].text, /value=/);
+});
+
+test("persistent MCP normalizers and RPC allowlists keep boundaries separated", () => {
+    const metadata = normalizePersistentMcpMetadata([
+        { name: "listActions", description: " Lists actions. " }
+    ]);
+    const params = normalizePersistentMcpParams({ selection: { row: 2 } });
+    const result = normalizePersistentMcpResult({ ok: false, values: [1, 2] });
+    assert.equal(Object.getPrototypeOf(metadata[0]), null);
+    assert.equal(Object.getPrototypeOf(params), null);
+    assert.equal(Object.getPrototypeOf(params.selection), null);
+    assert.equal(Object.getPrototypeOf(result), null);
+    assert.equal(EVAL_RPC_ALLOWLIST.has("listPScriptMcp"), true);
+    assert.equal(EVAL_RPC_ALLOWLIST.has("callPScriptMcp"), true);
+    assert.equal(PERSISTENT_RPC_ALLOWLIST.has("listPScriptMcp"), false);
+    assert.equal(PERSISTENT_RPC_ALLOWLIST.has("callPScriptMcp"), false);
+});
+
+test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {
+    const { createScriptService } = await bundledScriptServiceModule();
+    const state = { scripts: new Map(), activeScriptId: 0 };
+    const posted = [];
+    const script = {
+        id: 7,
+        name: "orchestrator",
+        running: true,
+        scriptInstanceId: "instance-timeout",
+        pscriptMcps: new Map([
+            ["slow", { name: "slow", description: "Slow handler." }],
+            ["next", { name: "next", description: "Next handler." }]
+        ]),
+        pscriptMcpPublished: true,
+        pendingPScriptMcpCalls: new Map(),
+        expiredPScriptMcpCalls: new Map(),
+        inFlightPScriptMcpCalls: new Map(),
+        nextPScriptMcpCallId: 1,
+        eventQueue: [],
+        eventBusy: false,
+        worker: { postMessage: (message) => posted.push(message) },
+        output: [],
+        code: "",
+        triggers: [],
+        ownedBreakpointIds: new Set()
+    };
+    state.scripts.set(script.id, script);
+    const service = createScriptService({
+        state,
+        ui: {},
+        responder,
+        breakpointOwners: {},
+        ensureRomLoaded: () => {},
+        finishPersistentScriptEvent: async () => true,
+        requestPersistentScriptResume: () => true,
+        settlePersistentScriptCallbacks: async () => {},
+        hex: String,
+        parseAddress: Number,
+        rawOutputText: JSON.stringify,
+        runCommand: async () => ({}),
+        getCommands: () => ({}),
+        onExplicitPause: () => {}
+    });
+    const timedOut = service.callPScriptMcp({
+        scriptId: 7,
+        name: "slow",
+        params: {},
+        blocking: true,
+        timeoutMs: 5
+    });
+    await assert.rejects(timedOut, (error) => error.mcpCode === "TIMEOUT");
+    assert.equal(script.running, true);
+    assert.equal(script.eventBusy, true);
+    assert.equal(script.pscriptMcps.size, 2);
+    assert.equal(script.inFlightPScriptMcpCalls.size, 1);
+
+    service.finishPScriptMcpCall(script, {
+        type: "pscriptMcpResult",
+        scriptInstanceId: "old-instance",
+        callId: 1,
+        ok: true,
+        value: []
+    });
+    assert.equal(script.eventBusy, true);
+    service.finishPScriptMcpCall(script, {
+        type: "pscriptMcpResult",
+        scriptInstanceId: "instance-timeout",
+        callId: 1,
+        ok: true,
+        value: []
+    });
+    assert.equal(script.eventBusy, false);
+    assert.equal(script.inFlightPScriptMcpCalls.size, 0);
+
+    const next = service.callPScriptMcp({
+        scriptId: 7,
+        name: "next",
+        params: {},
+        blocking: false,
+        timeoutMs: 100
+    });
+    service.finishPScriptMcpCall(script, {
+        type: "pscriptMcpResult",
+        scriptInstanceId: "instance-timeout",
+        callId: 2,
+        ok: true,
+        value: ["ready"]
+    });
+    assert.deepEqual((await next).value, ["ready"]);
+    assert.equal(posted.some((message) => message.callId === 2), true);
+    assert.equal(service.listPScriptMcps().mcps.length, 2);
+    script.running = false;
+    assert.deepEqual(service.listPScriptMcps(), { mcps: [] });
+});
+
 test("reserved State storage and analysis baseline failures use stable error codes", async () => {
     const reserved = createStateCommands({
         analysisBaselineSlotToken: Symbol("baseline"),
@@ -1664,6 +1826,7 @@ async function runPersistentScalarSandbox(
         data: {
             type: "start",
             code,
+            scriptInstanceId: "sandbox-instance-1",
             shortcuts: []
         }
     });
@@ -1692,8 +1855,46 @@ async function runPersistentScalarSandbox(
         messages,
         networkCalls,
         storageCalls,
-        dispatch: (data) => listeners.get("message")({ data })
+        dispatch: (data) => listeners.get("message")({ data }),
+        dispatchCloned: (data) => listeners.get("message")({
+            data: vm.runInContext(`(${JSON.stringify(data)})`, context)
+        })
     };
+}
+
+async function bundledScriptServiceModule() {
+    if (!scriptServiceModulePromise) {
+        scriptServiceModulePromise = (async () => {
+            const workerSources = new Map();
+            for (const relativeUrl of [
+                "../src/workers/persistent-script-supervisor.worker.js",
+                "../src/workers/persistent-script.worker.js",
+                "../src/workers/parser.worker.js"
+            ]) {
+                const absolute = fileURLToPath(new URL(relativeUrl, import.meta.url));
+                workerSources.set(absolute, await bundledWorkerSource(relativeUrl));
+            }
+            const result = await esbuild.build({
+                entryPoints: [fileURLToPath(new URL("../src/script-service.js", import.meta.url))],
+                bundle: true,
+                write: false,
+                platform: "node",
+                format: "esm",
+                logLevel: "silent",
+                plugins: [{
+                    name: "test-embedded-workers",
+                    setup(build) {
+                        build.onLoad({ filter: /\.worker\.js$/ }, (args) => ({
+                            contents: `export default ${JSON.stringify(workerSources.get(args.path))};`,
+                            loader: "js"
+                        }));
+                    }
+                }]
+            });
+            return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
+        })();
+    }
+    return scriptServiceModulePromise;
 }
 
 test("persistent sandbox accepts harmless text output", async () => {
@@ -1798,6 +1999,122 @@ test("persistent-script legacy memory reads remain numeric", async () => {
     const printed = messages.find((message) => message.type === "print");
     assert.deepEqual(Array.from(printed.values), [0x02075628, 0x12345678]);
     assert.equal(String(printed.values[0]).includes("[object Object]"), false);
+});
+
+test("persistent sandbox publishes and invokes bounded MCP handlers", async () => {
+    const harness = await runPersistentScalarSandbox(`
+        return [
+            {
+                name: "listActions",
+                description: "  Lists available actions.  ",
+                handler: async (params, context) => [
+                    { id: params.id, enabled: true, blocking: context.blocking }
+                ]
+            },
+            {
+                name: "domainFailure",
+                description: "Returns application data containing ok false.",
+                handler: async () => ({ ok: false, reason: "not-selected" })
+            }
+        ];
+    `, []);
+    const published = harness.messages.find((message) => message.type === "pscriptMcpPublished");
+    assert.deepEqual(JSON.parse(JSON.stringify(published.mcps)), [
+        { name: "listActions", description: "Lists available actions." },
+        { name: "domainFailure", description: "Returns application data containing ok false." }
+    ]);
+
+    await harness.dispatchCloned({
+        type: "pscriptMcpInvoke",
+        scriptInstanceId: "sandbox-instance-1",
+        callId: 1,
+        name: "listActions",
+        params: { id: "menu.item" },
+        blocking: true
+    });
+    await harness.dispatchCloned({
+        type: "pscriptMcpInvoke",
+        scriptInstanceId: "sandbox-instance-1",
+        callId: 2,
+        name: "domainFailure",
+        params: {},
+        blocking: false
+    });
+    for (let attempt = 0; attempt < 50
+        && harness.messages.filter((message) => message.type === "pscriptMcpResult").length < 2;
+        attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    const results = harness.messages.filter((message) => message.type === "pscriptMcpResult");
+    assert.equal(results[0].ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(results[0].value)), [
+        { id: "menu.item", enabled: true, blocking: true }
+    ]);
+    assert.equal(results[1].ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(results[1].value)), {
+        ok: false,
+        reason: "not-selected"
+    });
+});
+
+test("persistent sandbox serializes blocking MCP calls with events in FIFO order", async () => {
+    const harness = await runPersistentScalarSandbox(`
+        const order = [];
+        await emu_registerstart(async () => { order.push("event"); });
+        return [{
+            name: "append",
+            description: "Appends one label and returns the observed order.",
+            handler: async ({ label }, context) => {
+                order.push(label);
+                return { order: [...order], blocking: context.blocking };
+            }
+        }];
+    `, [71]);
+    const registration = harness.messages.find((message) => message.type === "register");
+    await harness.dispatch({
+        type: "event",
+        event: "start",
+        eventId: 81,
+        callbackId: registration.trigger.callbackId,
+        callbackToken: "fifo-event",
+        payload: {}
+    });
+    await harness.dispatchCloned({
+        type: "pscriptMcpInvoke",
+        scriptInstanceId: "sandbox-instance-1",
+        callId: 11,
+        name: "append",
+        params: { label: "first" },
+        blocking: true
+    });
+    await harness.dispatchCloned({
+        type: "pscriptMcpInvoke",
+        scriptInstanceId: "sandbox-instance-1",
+        callId: 12,
+        name: "append",
+        params: { label: "second" },
+        blocking: true
+    });
+    for (let attempt = 0; attempt < 50
+        && harness.messages.filter((message) => message.type === "pscriptMcpResult").length < 2;
+        attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    const results = harness.messages.filter((message) => message.type === "pscriptMcpResult");
+    assert.deepEqual(JSON.parse(JSON.stringify(results[0].value.order)), ["event", "first"]);
+    assert.deepEqual(JSON.parse(JSON.stringify(results[1].value.order)), ["event", "first", "second"]);
+});
+
+test("persistent sandbox rejects duplicate published MCP names", async () => {
+    const harness = await runPersistentScalarSandbox(`
+        return [
+            { name: "same", description: "First.", handler: async () => 1 },
+            { name: "same", description: "Second.", handler: async () => 2 }
+        ];
+    `, []);
+    const failure = harness.messages.find((message) => message.type === "failed");
+    assert.equal(failure.phase, "runtime");
+    assert.match(failure.error.message, /duplicate persistent MCP name/);
 });
 
 test("persistent sandbox exposes no network, messaging, storage, or code-generation capability", async () => {
@@ -2078,7 +2395,8 @@ test("persistent supervisor gates replies for authenticated child messages", asy
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
     const dependency = { source: "dependency", sha256: "dependency-hash" };
     context.onmessage({ data: {
-        type: "start", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
+        type: "start", code: "return 1", scriptInstanceId: "instance-1",
+        parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
     } });
     const parser = workers[0];
     assert.deepEqual(JSON.parse(JSON.stringify(parser.messages[0])), { type: "initialize", dependency });
@@ -2099,6 +2417,38 @@ test("persistent supervisor gates replies for authenticated child messages", asy
     assert.ok(messages.some((message) => message.type === "call" && message.id === "request-1"));
     context.onmessage({ data: { replyId: "request-1", result: { ok: true } } });
     assert.ok(child.messages.some((message) => message.replyId === "request-1"));
+
+    const published = vm.runInContext(`({
+        type: "pscriptMcpPublished",
+        mcps: [{ name: "listActions", description: "Lists actions." }],
+        channelToken: "secret"
+    })`, context);
+    childOnMessage({ data: published });
+    assert.ok(messages.some((message) => message.type === "pscriptMcpPublished"
+        && message.scriptInstanceId === "instance-1"));
+
+    const invocation = vm.runInContext(`({
+        type: "pscriptMcpInvoke",
+        scriptInstanceId: "instance-1",
+        callId: 3,
+        name: "listActions",
+        params: {},
+        blocking: true
+    })`, context);
+    context.onmessage({ data: invocation });
+    assert.ok(child.messages.some((message) => message.type === "pscriptMcpInvoke"
+        && message.callId === 3));
+    const childResult = vm.runInContext(`({
+        type: "pscriptMcpResult",
+        scriptInstanceId: "instance-1",
+        callId: 3,
+        ok: true,
+        value: [{ id: "menu.item" }],
+        channelToken: "secret"
+    })`, context);
+    childOnMessage({ data: childResult });
+    assert.ok(messages.some((message) => message.type === "pscriptMcpResult"
+        && message.callId === 3 && message.value[0].id === "menu.item"));
 });
 
 test("all bundled supervisor and sandbox Worker sources parse as classic scripts", async () => {

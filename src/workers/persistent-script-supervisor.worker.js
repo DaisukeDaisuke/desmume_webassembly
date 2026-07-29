@@ -1,11 +1,20 @@
 "use strict";
 
 import { normalizeBoundedValue } from "../bounded-value.js";
-import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
+import {
+    isPersistentMcpName,
+    normalizePersistentMcpMetadata,
+    normalizePersistentMcpParams,
+    normalizePersistentMcpResult,
+    normalizeWorkerRpcParams,
+    normalizeWorkerTrigger
+} from "../worker-rpc-payload.js";
+import { ResourceLimits } from "../resource-limits.js";
 
 let sandbox = null;
 let sandboxUrl = "";
 let channelToken = "";
+let scriptInstanceId = "";
 let parser = null;
 let parserUrl = "";
 let parserChannelToken = "";
@@ -14,6 +23,8 @@ let childWorkerTerminateCalled = false;
 let childBlobUrlRevokeCalled = false;
 let childHandlersCleared = false;
 const pendingRequestIds = new Set();
+const pendingPersistentMcpCallIds = new Set();
+const completedPersistentMcpCallIds = new Set();
 const MAX_PENDING_REQUESTS = 32;
 const MAX_EVENT_QUEUE = 64;
 const eventQueue = [];
@@ -59,6 +70,8 @@ function disposeSandbox() {
         sandboxUrl = "";
     }
     pendingRequestIds.clear();
+    pendingPersistentMcpCallIds.clear();
+    completedPersistentMcpCallIds.clear();
     eventQueue.length = 0;
     childEventBusy = false;
 }
@@ -142,6 +155,53 @@ function forwardAuthenticatedChildMessage(childMessage) {
         postMessage({ type: "print", values });
         return;
     }
+    if (childMessage.type === "pscriptMcpPublished") {
+        postMessage({
+            type: "pscriptMcpPublished",
+            scriptInstanceId,
+            mcps: normalizePersistentMcpMetadata(childMessage.mcps)
+        });
+        return;
+    }
+    if (childMessage.type === "pscriptMcpResult") {
+        const callId = Number(childMessage.callId);
+        if (!Number.isSafeInteger(callId) || callId < 1
+            || childMessage.scriptInstanceId !== scriptInstanceId) {
+            throw new TypeError("sandbox persistent MCP result identity is invalid");
+        }
+        if (!pendingPersistentMcpCallIds.has(callId)) {
+            if (completedPersistentMcpCallIds.has(callId)) {
+                throw new TypeError("sandbox duplicated a persistent MCP result");
+            }
+            return;
+        }
+        if (typeof childMessage.ok !== "boolean") {
+            throw new TypeError("sandbox persistent MCP result status is invalid");
+        }
+        pendingPersistentMcpCallIds.delete(callId);
+        completedPersistentMcpCallIds.add(callId);
+        while (completedPersistentMcpCallIds.size > ResourceLimits.expiredPersistentMcpCallsPerScript) {
+            completedPersistentMcpCallIds.delete(completedPersistentMcpCallIds.values().next().value);
+        }
+        if (childMessage.ok) {
+            postMessage({
+                type: "pscriptMcpResult",
+                scriptInstanceId,
+                callId,
+                ok: true,
+                value: normalizePersistentMcpResult(childMessage.value)
+            });
+        } else {
+            postMessage({
+                type: "pscriptMcpResult",
+                scriptInstanceId,
+                callId,
+                ok: false,
+                error: normalizePersistentMcpResult(childMessage.error)
+            });
+        }
+        return;
+    }
     if (childMessage.type === "failed") {
         postMessage({
             type: "failed",
@@ -209,12 +269,16 @@ function startSandbox(message) {
                 type: "start",
                 code: message.code,
                 asyncMode: message.asyncMode,
+                scriptInstanceId,
                 shortcuts: message.shortcuts
             });
             return;
         }
         if (childMessage.channelToken !== channelToken
-            || !["call", "register", "eventDone", "eventProcessed", "print", "compiled", "started", "failed"].includes(childMessage.type)) {
+            || ![
+                "call", "register", "eventDone", "eventProcessed", "print", "compiled", "started",
+                "failed", "pscriptMcpPublished", "pscriptMcpResult"
+            ].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"), "child-auth");
             disposeSandbox();
             return;
@@ -303,16 +367,58 @@ onmessage = (event) => {
     }
     if (message.type === "start") {
         if (started || typeof message.code !== "string" || typeof message.sandboxSource !== "string"
-            || typeof message.parserSource !== "string" || typeof message.dependency?.source !== "string") {
+            || typeof message.parserSource !== "string" || typeof message.dependency?.source !== "string"
+            || typeof message.scriptInstanceId !== "string" || !message.scriptInstanceId) {
             fail(new Error("one start message with code, parser source, sandbox source, and fixed dependency is required"));
             return;
         }
         started = true;
+        scriptInstanceId = message.scriptInstanceId;
         startParser(message);
         return;
     }
     if (message.replyId && sandbox && pendingRequestIds.delete(String(message.replyId))) {
         sandbox.postMessage(message);
+        return;
+    }
+    if (message.type === "pscriptMcpInvoke" && sandbox && channelToken) {
+        const callId = Number(message.callId);
+        if (!Number.isSafeInteger(callId) || callId < 1
+            || message.scriptInstanceId !== scriptInstanceId
+            || !isPersistentMcpName(message.name)
+            || typeof message.blocking !== "boolean") {
+            fail(new Error("persistent MCP invocation is malformed"));
+            disposeSandbox();
+            return;
+        }
+        if (pendingPersistentMcpCallIds.has(callId)
+            || completedPersistentMcpCallIds.has(callId)) {
+            fail(new Error("persistent MCP invocation reused a call id"));
+            disposeSandbox();
+            return;
+        }
+        if (pendingPersistentMcpCallIds.size >= ResourceLimits.pendingPersistentMcpCallsPerScript) {
+            fail(new Error("persistent MCP invocation limit exceeded"), "resource");
+            disposeSandbox();
+            return;
+        }
+        let params;
+        try {
+            params = normalizePersistentMcpParams(message.params);
+        } catch (error) {
+            fail(error);
+            disposeSandbox();
+            return;
+        }
+        pendingPersistentMcpCallIds.add(callId);
+        sandbox.postMessage({
+            type: "pscriptMcpInvoke",
+            scriptInstanceId,
+            callId,
+            name: message.name,
+            params,
+            blocking: message.blocking
+        });
         return;
     }
     if (message.type === "event" && sandbox && channelToken) {

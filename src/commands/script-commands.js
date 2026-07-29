@@ -9,6 +9,8 @@ export function createScriptCommands({
     startPersistentScript,
     stopPersistentScript,
     scriptSummary,
+    listPScriptMcps,
+    callPScriptMcp,
     renderScriptConsole,
     runSandboxBoundarySelfTest,
     runIsolatedScript,
@@ -20,6 +22,57 @@ export function createScriptCommands({
 
     async function listScripts() {
         return { scripts: [...state.scripts.values()].map((script) => scriptSummary(script)) };
+    }
+
+    async function listPScriptMcp(params = {}) {
+        if (params.scriptId === undefined) return listPScriptMcps();
+        const scriptId = Number(params.scriptId);
+        if (!Number.isSafeInteger(scriptId) || scriptId < 1) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "scriptId must be a positive safe integer");
+        }
+        return listPScriptMcps(scriptId);
+    }
+
+    async function callPublishedPScriptMcp(params = {}) {
+        if (!Object.hasOwn(params, "scriptId")
+            || !Object.hasOwn(params, "name")
+            || !Object.hasOwn(params, "blocking")) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                "callPScriptMcp requires scriptId, name, and blocking"
+            );
+        }
+        const scriptId = Number(params.scriptId);
+        if (!Number.isSafeInteger(scriptId) || scriptId < 1) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "scriptId must be a positive safe integer");
+        }
+        const name = params.name;
+        if (typeof name !== "string"
+            || name.length > ResourceLimits.persistentMcpNameChars
+            || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(name)) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                "name must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$"
+            );
+        }
+        if (typeof params.blocking !== "boolean") {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "blocking must be true or false");
+        }
+        const handlerParams = params.params ?? {};
+        if (!isPlainObject(handlerParams)) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "params must be a plain object");
+        }
+        const timeoutMs = Number(params.timeoutMs ?? 3000);
+        if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "timeoutMs must be between 1 and 600000");
+        }
+        return callPScriptMcp({
+            scriptId,
+            name,
+            params: handlerParams,
+            blocking: params.blocking,
+            timeoutMs
+        });
     }
 
     async function stopScript(params = {}) {
@@ -160,11 +213,13 @@ export function createScriptCommands({
 
     return Object.freeze({
         batch,
+        callPScriptMcp: callPublishedPScriptMcp,
         clearScriptPrint,
         eval: evaluate,
         getScript,
         injectScript,
         listScriptPrint,
+        listPScriptMcp,
         listScripts,
         restartScript,
         runSandboxBoundarySelfTest: sandboxBoundarySelfTest,

@@ -242,3 +242,15 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - Frame-count input recording now exposes its remaining frame boundary to the emulation loop. The loop limits the final native batch to that remainder, so `recordInput({frames})`, completed-frame events, and the resulting CPU state stop on the same exact frame.
 - Same-name analysis baseline save, delete, and restore operations share one lock. Each operation reads metadata only after acquiring the lock, preventing a delayed delete from removing a newly committed replacement State and metadata.
 - Regression coverage includes a 12-frame normal batch limited to a 5-frame recording and a concurrent same-name baseline delete/save.
+
+## 2026-07-29 Persistent Script MCP Addendum
+
+- A persistent script may return `{ name, description, handler }[]`. The sandbox retains each handler in a private `Map`; only normalized name/description metadata crosses Worker boundaries. `undefined` and `null` publish an empty list for compatibility.
+- `listPScriptMcp({scriptId?})` lists published endpoints from running scripts. `callPScriptMcp({scriptId,name,params,blocking,timeoutMs?})` returns `{scriptId,scriptName,name,blocking,value}`; handler data such as `{ok:false}` remains inside `value`.
+- `blocking:true` does not pause emulation. It puts the handler in the same FIFO as persistent events and other blocking calls. Shared closure/Map/Set/UI state handlers should require it. This is separate from `asyncMode:false` and does not bypass async-mode command restrictions.
+- Caller timeout defaults to 3000 ms and only ends that caller's wait. The handler and Worker continue, blocking FIFO position remains until settlement, and late results are discarded through instance-aware in-flight/tombstone state without clearing publication or script state.
+- `desmume.eval` may call both commands; persistent scripts may call neither, preventing self/mutual queue cycles. When an isolated script calls a published handler, the handler result is `response.value`.
+- Persistent scripts should `print` only on semantic state changes and return human-readable named objects or arrays. The infrastructure logs publication and invocation names without automatically logging params or results.
+- Params, metadata, results, and error payloads reuse the common own-data-property normalizer at every main/supervisor/sandbox boundary. Normalized data objects have null prototypes; functions never leave the sandbox.
+- Codespace verification passed 141/141 tests, `check:js`, dependency bundle checks, license checks, and `build:js`; generated `public` artifacts were synchronized to the host.
+- Browser and Chrome DevTools MCP acceptance were explicitly excluded for this task.

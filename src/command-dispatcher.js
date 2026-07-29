@@ -30,7 +30,7 @@ const CANCELLING_COMMANDS = new Set([
 
 const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
     "pause", "status", "listRecentFiles", "listBreakpoints", "listMemoryFreezes",
-    "listScripts", "getScript", "listScriptPrint", "getOperation", "cancelOperation",
+    "listScripts", "listPScriptMcp", "getScript", "listScriptPrint", "getOperation", "cancelOperation",
     "getInputState", "releaseInput", "listStateSlots", "listSaveSlots",
     "listAnalysisBaselines", "listInputRecordings", "waitForStateLoad",
     "waitForFileTransaction"

@@ -304,7 +304,9 @@ const {
     dispatchScriptEvent,
     startPersistentScript,
     stopPersistentScript,
-    scriptSummary
+    scriptSummary,
+    listPScriptMcps,
+    callPScriptMcp
 } = scriptService;
 let inputRecordingService = null;
 const emulationLoop = createEmulationLoop({
@@ -527,6 +529,8 @@ const commands = createCommands({
     runUntilTrueNextBranch,
     saveKeymap,
     scriptSummary,
+    listPScriptMcps,
+    callPScriptMcp,
     setKey,
     setTouchState,
     sha256Hex,

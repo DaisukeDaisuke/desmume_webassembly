@@ -113,6 +113,24 @@ memory.registerwrite(0x02000020, async (hit) => {
 - `print`、`printf`、`printhex` を使い、address、変化前後、caller、短い識別子だけを出す。
 - `memory.readword/readdword` のAPI境界はBig Endian表現であり、DSメモリの数値として読む場合はbyte orderを意識する。
 - script sourceとeditor nameはlocalStorageに残るがconsole outputは永続化されない。重要行は解析ログへ移す。
+- ゲームUIオーケストレーターはトップレベルから `{name, description, handler}` の配列を返し、`listPScriptMcp`で発見可能にする。共有変数、Map、Set、選択状態へ触れるhandlerは`blocking:true`を必須にする。
+- `blocking:true`はエミュレーターのpauseではなく、永続イベントとhandlerを同じFIFOで直列化する指定である。`asyncMode:false`とは別契約であり、async modeの禁止コマンドを解禁しない。
+- 意味的な状態が変わった時だけ`print`で人間向けに出力し、同じ状態をtickごとに繰り返さない。handlerは人間とAIの双方が読める名前付きobjectまたはarrayを返す。
+
+ワンショット解析からは公開handlerの結果を`response.value`で受け取る:
+```js
+const published = await mcp.call("listPScriptMcp", {});
+const target = published.mcps.find((item) => item.name === "listActions");
+if (!target) throw new Error("listActions is not available");
+const response = await mcp.call("callPScriptMcp", {
+  scriptId: target.scriptId,
+  name: target.name,
+  params: {},
+  blocking: true,
+  timeoutMs: 3000
+});
+return response.value;
+```
 
 DQ9ではまず `scripts/dq9/overlay_jp.js` をblocking modeで起動する。このscriptはoverlay slot 0～5を60 frame周期で確認し、起動時または状態変化時だけ `slot N: id X start 0x...` を出す。関数を追う前に、対象実アドレスが現在どのoverlayに属するかをログへ固定する。
 

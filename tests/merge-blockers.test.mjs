@@ -369,7 +369,8 @@ test("persistent supervisor bounds queued non-tick events and terminates on over
     vm.runInContext(source, context, { filename: "persistent-script-supervisor.worker.js" });
     const dependency = { source: "fixed", sha256: "fixed-hash" };
     context.onmessage({ data: {
-        type: "start", code: "return 1", parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
+        type: "start", code: "return 1", scriptInstanceId: "bounded-instance",
+        parserSource: "parser", sandboxSource: "sandbox", dependency, shortcuts: []
     } });
     const parser = workers[0];
     parser.onmessage({ data: {

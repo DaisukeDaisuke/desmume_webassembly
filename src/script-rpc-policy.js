@@ -22,7 +22,11 @@ const COMMON_COMMANDS = [
     "reloadRecentFile", "listRecentFiles", "binaryFloat", "setCTableSeed", "wait", "waitMs"
 ];
 
-export const EVAL_RPC_ALLOWLIST = new Set(COMMON_COMMANDS);
+export const EVAL_RPC_ALLOWLIST = new Set([
+    ...COMMON_COMMANDS,
+    "listPScriptMcp",
+    "callPScriptMcp"
+]);
 export const PERSISTENT_RPC_ALLOWLIST = new Set(COMMON_COMMANDS);
 
 const RESERVED_FIELDS = new Set([

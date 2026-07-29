@@ -3,8 +3,17 @@
 import { assertLockedGlobals, lockDownCapabilityPrototypes } from "./dependency-bootstrap.js";
 import { normalizeBoundedValue } from "../bounded-value.js";
 import { readOwnDataProperty } from "../structured-value-normalizer.js";
-import { normalizeWorkerRpcParams, normalizeWorkerTrigger } from "../worker-rpc-payload.js";
+import {
+    isPersistentMcpName,
+    normalizePersistentMcpDescription,
+    normalizePersistentMcpMetadata,
+    normalizePersistentMcpParams,
+    normalizePersistentMcpResult,
+    normalizeWorkerRpcParams,
+    normalizeWorkerTrigger
+} from "../worker-rpc-payload.js";
 import { serializeWorkerError } from "../worker-error-summary.js";
+import { ResourceLimits } from "../resource-limits.js";
 
 (() => {
 const nativePostMessage = globalThis.postMessage.bind(globalThis);
@@ -13,11 +22,25 @@ const nativeEval = globalThis.eval;
 const NativeError = globalThis.Error;
 const NativeString = globalThis.String;
 const nativeObjectHasOwn = globalThis.Object.hasOwn.bind(globalThis.Object);
+const nativeObjectGetPrototypeOf = globalThis.Object.getPrototypeOf.bind(globalThis.Object);
+const nativeObjectGetOwnPropertyDescriptors = globalThis.Object.getOwnPropertyDescriptors.bind(globalThis.Object);
+const nativeObjectKeys = globalThis.Object.keys.bind(globalThis.Object);
+const nativeObjectFreeze = globalThis.Object.freeze.bind(globalThis.Object);
+const nativeObjectDefineProperty = globalThis.Object.defineProperty.bind(globalThis.Object);
+const nativeObjectPrototype = nativeObjectGetPrototypeOf({});
 const nativeJsonStringify = globalThis.JSON.stringify.bind(globalThis.JSON);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
-const send = (message) => nativePostMessage({ ...message, channelToken });
+const send = (message) => {
+    nativeObjectDefineProperty(message, "channelToken", {
+        value: channelToken,
+        enumerable: true,
+        configurable: true,
+        writable: true
+    });
+    nativePostMessage(message);
+};
 
 const fetch = undefined;
 const XMLHttpRequest = undefined;
@@ -26,11 +49,13 @@ const EventSource = undefined;
 const importScripts = undefined;
 const Function = undefined;
 const callbacks = new Map();
+const persistentMcps = new Map();
 const replies = new Map();
 let callbackSerial = 1;
-const eventQueue = [];
-const MAX_EVENT_QUEUE = 64;
-let drainingEvents = false;
+const workQueue = [];
+const MAX_WORK_QUEUE = ResourceLimits.persistentEventQueue;
+let drainingWork = false;
+let activeNonBlockingMcpCalls = 0;
 let droppedTicks = 0;
 let asyncMode = false;
 let activeEvent = null;
@@ -275,6 +300,123 @@ function fail(error, phase = "runtime") {
     });
 }
 
+function validatePublishedMcps(value) {
+    if (value === undefined || value === null) return { handlers: new Map(), metadata: [] };
+    if (!Array.isArray(value)) {
+        throw new TypeError("persistent script top-level return must be an MCP definition array, null, or undefined");
+    }
+    if (value.length > ResourceLimits.persistentMcpEndpointsPerScript) {
+        throw new RangeError(
+            `persistent MCP endpoint limit exceeded (${ResourceLimits.persistentMcpEndpointsPerScript})`
+        );
+    }
+    const handlers = new Map();
+    const metadata = new Array(value.length);
+    for (let index = 0; index < value.length; index++) {
+        const definition = readOwnDataProperty(value, `${index}`);
+        if (!definition || typeof definition !== "object") {
+            throw new TypeError(`persistent MCP definition ${index} must be an object`);
+        }
+        const prototype = nativeObjectGetPrototypeOf(definition);
+        if (prototype !== nativeObjectPrototype && prototype !== null) {
+            throw new TypeError(`persistent MCP definition ${index} must be a plain object`);
+        }
+        const descriptors = nativeObjectGetOwnPropertyDescriptors(definition);
+        for (const key of nativeObjectKeys(descriptors)) {
+            const descriptor = readOwnDataProperty(descriptors, key);
+            if (!descriptor || !nativeObjectHasOwn(descriptor, "value")) {
+                throw new TypeError(`persistent MCP definition ${index} contains an accessor`);
+            }
+        }
+        const name = readOwnDataProperty(definition, "name");
+        const description = normalizePersistentMcpDescription(
+            readOwnDataProperty(definition, "description")
+        );
+        const handler = readOwnDataProperty(definition, "handler");
+        if (!isPersistentMcpName(name)) {
+            throw new TypeError("persistent MCP name must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$");
+        }
+        if (typeof handler !== "function") {
+            throw new TypeError(`persistent MCP handler is required: ${name}`);
+        }
+        if (handlers.has(name)) throw new TypeError(`duplicate persistent MCP name: ${name}`);
+        handlers.set(name, handler);
+        metadata[index] = { name, description };
+    }
+    return { handlers, metadata: normalizePersistentMcpMetadata(metadata) };
+}
+
+function publishPersistentMcps(value) {
+    const published = validatePublishedMcps(value);
+    persistentMcps.clear();
+    for (const [name, handler] of published.handlers) persistentMcps.set(name, handler);
+    send({ type: "pscriptMcpPublished", mcps: published.metadata });
+    for (const item of published.metadata) print(`MCP published: ${item.name}`);
+}
+
+async function runPersistentMcp(message) {
+    const callId = Number(message.callId);
+    const scriptInstanceId = String(message.scriptInstanceId || "");
+    const name = message.name;
+    const blocking = message.blocking;
+    let params;
+    if (!Number.isSafeInteger(callId) || callId < 1
+        || !scriptInstanceId
+        || !isPersistentMcpName(name)
+        || typeof blocking !== "boolean") {
+        fail(new TypeError("persistent MCP invocation is malformed"), "protocol");
+        return;
+    }
+    try {
+        params = normalizePersistentMcpParams(message.params);
+    } catch (error) {
+        fail(error, "protocol");
+        return;
+    }
+    const handler = persistentMcps.get(name);
+    if (!handler) {
+        send({
+            type: "pscriptMcpResult",
+            callId,
+            scriptInstanceId,
+            ok: false,
+            error: normalizePersistentMcpResult({
+                code: "SCRIPT_MCP_NOT_FOUND",
+                message: `Persistent script MCP is not published: ${name}`
+            })
+        });
+        return;
+    }
+    print(`MCP call: ${name} · blocking=${blocking}`);
+    try {
+        const rawValue = await handler(params, nativeObjectFreeze({ blocking }));
+        let value;
+        try {
+            value = normalizePersistentMcpResult(rawValue);
+        } catch (error) {
+            fail(error, "protocol");
+            return;
+        }
+        send({ type: "pscriptMcpResult", callId, scriptInstanceId, ok: true, value });
+    } catch (error) {
+        const summary = serializeWorkerError(error, {
+            phase: "persistent-mcp",
+            code: "SCRIPT_RUNTIME_ERROR"
+        });
+        send({
+            type: "pscriptMcpResult",
+            callId,
+            scriptInstanceId,
+            ok: false,
+            error: normalizePersistentMcpResult({
+                code: "SCRIPT_RUNTIME_ERROR",
+                message: summary.message,
+                details: summary.details
+            })
+        });
+    }
+}
+
 lockDownRuntimeCodeGeneration();
 lockDownCapabilityPrototypes();
 assertLockedGlobals();
@@ -309,12 +451,16 @@ async function runEvent(message) {
     }
 }
 
-async function drainEvents() {
-    if (drainingEvents) return;
-    drainingEvents = true;
+async function drainWork() {
+    if (drainingWork) return;
+    drainingWork = true;
     try {
-        while (eventQueue.length) {
-            const message = eventQueue.shift();
+        while (workQueue.length) {
+            const message = workQueue.shift();
+            if (message.type === "pscriptMcpInvoke") {
+                await runPersistentMcp(message);
+                continue;
+            }
             try {
                 await runEvent(message);
             } catch (error) {
@@ -323,7 +469,7 @@ async function drainEvents() {
             }
         }
     } finally {
-        drainingEvents = false;
+        drainingWork = false;
     }
 }
 
@@ -361,7 +507,7 @@ nativeAddEventListener("message", async (event) => {
             const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             send({ type: "started" });
-            await run(
+            const published = await run(
                 mcp,
                 webmcp,
                 memory,
@@ -374,6 +520,7 @@ nativeAddEventListener("message", async (event) => {
                 emu_onstateload,
                 emu_onstatesave
             );
+            publishPersistentMcps(published);
         } catch (error) {
             fail(error, error?.name === "SyntaxError" ? "compile" : "runtime");
         }
@@ -381,20 +528,43 @@ nativeAddEventListener("message", async (event) => {
     }
     if (message.type === "event") {
         if (message.event === "tick" && !message.eventId) {
-            const existingTick = eventQueue.findIndex((queued) => queued.event === "tick" && !queued.eventId);
+            const existingTick = workQueue.findIndex((queued) => (
+                queued.type === "event" && queued.event === "tick" && !queued.eventId
+            ));
             if (existingTick >= 0) {
-                eventQueue[existingTick] = message;
+                workQueue[existingTick] = message;
                 droppedTicks++;
                 if ((droppedTicks & 63) === 1) print(`tick queue coalesced ${droppedTicks} event(s)`);
                 return;
             }
         }
-        if (eventQueue.length >= MAX_EVENT_QUEUE) {
-            fail(new Error(`persistent event queue exceeded ${MAX_EVENT_QUEUE}`), "resource");
+        if (workQueue.length >= MAX_WORK_QUEUE) {
+            fail(new Error(`persistent work queue exceeded ${MAX_WORK_QUEUE}`), "resource");
             return;
         }
-        eventQueue.push(message);
-        void drainEvents().catch((error) => fail(error, "runtime"));
+        workQueue.push(message);
+        void drainWork().catch((error) => fail(error, "runtime"));
+        return;
+    }
+    if (message.type === "pscriptMcpInvoke") {
+        if (message.blocking === true) {
+            if (workQueue.length >= MAX_WORK_QUEUE) {
+                fail(new Error(`persistent work queue exceeded ${MAX_WORK_QUEUE}`), "resource");
+                return;
+            }
+            workQueue.push(message);
+            void drainWork().catch((error) => fail(error, "runtime"));
+            return;
+        }
+        if (message.blocking !== false
+            || activeNonBlockingMcpCalls >= ResourceLimits.pendingPersistentMcpCallsPerScript) {
+            fail(new Error("persistent non-blocking MCP call limit exceeded"), "protocol");
+            return;
+        }
+        activeNonBlockingMcpCalls++;
+        void runPersistentMcp(message).finally(() => {
+            activeNonBlockingMcpCalls--;
+        });
         return;
     }
     fail(new Error(`unknown message type: ${String(message.type)}`), "protocol");
