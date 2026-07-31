@@ -55,7 +55,9 @@ jobs:
         id: wasm-cache
         uses: actions/cache@v6
         with:
-          path: public/desmume.js
+          path: |
+            public/desmume.js
+            public/desmume.worker.js
           key: wasm-output-${{ runner.os }}-${{ steps.desmume-revision.outputs.sha }}-${{ hashFiles('webassembly/build.sh', 'webassembly/runtime-state-contract.h', 'webassembly/support.c', 'webassembly/wasm-port.cpp', 'package.json', 'package-lock.json') }}
 
       - name: Install Emscripten
