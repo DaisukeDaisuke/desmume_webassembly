@@ -770,7 +770,9 @@ test("eval Worker waits for ready, forwards registered RPC commands, and dispose
     await secondWorker.onmessage({
         data: { type: "call", id: "1", command: "runPersistentScript", params: {} }
     });
-    assert.deepEqual(secondCalls, [{ command: "runPersistentScript", params: {} }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(secondCalls)), [
+        { command: "runPersistentScript", params: {} }
+    ]);
     assert.equal(secondPosted.at(-1).replyId, "1");
     await secondWorker.onmessage({ data: { type: "done", result: 1 } });
     assert.equal((await unrestrictedRun).value, 1);
