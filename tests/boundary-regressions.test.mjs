@@ -27,11 +27,7 @@ import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { createScreenInvalidNotice, SCREEN_INVALID_NOTICE } from "../src/screen-invalid-notice.js";
 import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
-import {
-    EVAL_RPC_ALLOWLIST,
-    PERSISTENT_RPC_ALLOWLIST,
-    validateWorkerRpc
-} from "../src/script-rpc-policy.js";
+import { validateWorkerRpc } from "../src/script-rpc-policy.js";
 import {
     normalizePersistentMcpMetadata,
     normalizePersistentMcpParams,
@@ -1000,7 +996,7 @@ test("published persistent MCP commands validate inputs and preserve value envel
     assert.match(webResult.content[0].text, /value=/);
 });
 
-test("persistent MCP normalizers and RPC allowlists keep boundaries separated", () => {
+test("persistent MCP normalizers keep structured boundaries separated", () => {
     const metadata = normalizePersistentMcpMetadata([
         { name: "listActions", description: " Lists actions. " }
     ]);
@@ -1010,10 +1006,6 @@ test("persistent MCP normalizers and RPC allowlists keep boundaries separated", 
     assert.equal(Object.getPrototypeOf(params), null);
     assert.equal(Object.getPrototypeOf(params.selection), null);
     assert.equal(Object.getPrototypeOf(result), null);
-    assert.equal(EVAL_RPC_ALLOWLIST.has("listPScriptMcp"), true);
-    assert.equal(EVAL_RPC_ALLOWLIST.has("callPScriptMcp"), true);
-    assert.equal(PERSISTENT_RPC_ALLOWLIST.has("listPScriptMcp"), false);
-    assert.equal(PERSISTENT_RPC_ALLOWLIST.has("callPScriptMcp"), false);
 });
 
 test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {
@@ -1642,21 +1634,26 @@ test("Worker RPC policy preserves normal debugger calls and bounded byte injecti
     const seen = new Set();
     assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
         id: "rpc-1", command: "status", params: { concise: true }
-    }, EVAL_RPC_ALLOWLIST, seen))), { command: "status", params: { concise: true } });
-    assert.throws(
-        () => validateWorkerRpc({
-            id: "rpc-denied", command: "restoreAnalysisBaseline", params: {}
-        }, EVAL_RPC_ALLOWLIST, seen),
-        (error) => error.mcpCode === "COMMAND_NOT_ALLOWED"
-            && error.mcpDetails.command === "restoreAnalysisBaseline"
-    );
-    assert.equal(seen.has("rpc-denied"), false);
+    }, seen))), { command: "status", params: { concise: true } });
+    assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
+        id: "rpc-speed", command: "setSpeed", params: { speed: 4 }
+    }, seen))), { command: "setSpeed", params: { speed: 4 } });
+    assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
+        id: "rpc-persistent", command: "runPersistentScript", params: { name: "child", code: "return [];" }
+    }, seen))), {
+        command: "runPersistentScript",
+        params: { name: "child", code: "return [];" }
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(validateWorkerRpc({
+        id: "rpc-baseline", command: "restoreAnalysisBaseline", params: { name: "before-menu" }
+    }, seen))), {
+        command: "restoreAnalysisBaseline",
+        params: { name: "before-menu" }
+    });
 });
 
-test("persistent service keeps command denial recoverable and owns direct script breakpoints", async () => {
+test("persistent service owns direct script breakpoints", async () => {
     const source = await readFile(new URL("../src/script-service.js", import.meta.url), "utf8");
-    assert.match(source, /error\?\.mcpCode === ErrorCode\.COMMAND_NOT_ALLOWED/);
-    assert.match(source, /error: workerRpcError\(error, ErrorCode\.COMMAND_NOT_ALLOWED\)/);
     assert.match(source, /ownedBreakpointIds: new Set\(\)/);
     assert.match(source, /script\.ownedBreakpointIds\.add/);
     assert.match(source, /for \(const ownerId of \[\.\.\.script\.ownedBreakpointIds\]\)/);
@@ -1907,22 +1904,22 @@ test("persistent sandbox accepts harmless text output", async () => {
 test("persistent sandbox preserves application RPC errors without a protocol failure", async () => {
     const { messages } = await runPersistentScalarSandbox(`
         try {
-            await mcp.call("restoreAnalysisBaseline", {});
+            await mcp.call("missingCommand", {});
         } catch (error) {
             print(error.code, error.message);
         }
     `, [{
         error: {
-            code: "COMMAND_NOT_ALLOWED",
-            message: "Worker command is not allowed: restoreAnalysisBaseline",
-            details: { command: "restoreAnalysisBaseline" }
+            code: "UNKNOWN_COMMAND",
+            message: "Unknown command: missingCommand",
+            details: { command: "missingCommand" }
         }
     }]);
     const printed = messages
         .filter((message) => message.type === "print")
         .flatMap((message) => Array.from(message.values, String));
-    assert.ok(printed.includes("COMMAND_NOT_ALLOWED"));
-    assert.ok(printed.some((value) => value.includes("restoreAnalysisBaseline")));
+    assert.ok(printed.includes("UNKNOWN_COMMAND"));
+    assert.ok(printed.some((value) => value.includes("missingCommand")));
     assert.equal(messages.some((message) => message.type === "failed"), false);
 });
 

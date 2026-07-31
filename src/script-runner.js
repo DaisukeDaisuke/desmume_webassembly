@@ -1,6 +1,6 @@
 import { ErrorCode } from "./error-codes.js";
 import { createEmbeddedWorker } from "./worker-host.js";
-import { EVAL_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
+import { validateWorkerRpc } from "./script-rpc-policy.js";
 import { ResourceLimits } from "./resource-limits.js";
 import acornDependency from "./dependencies/acorn.dependency-source.js";
 import { normalizeBoundedValue } from "./bounded-value.js";
@@ -102,7 +102,7 @@ export function createScriptRunner({
                             }));
                             return;
                         }
-                        const request = validateWorkerRpc(message, EVAL_RPC_ALLOWLIST, seenRequestIds);
+                        const request = validateWorkerRpc(message, seenRequestIds);
                         try {
                             const result = await callCommand(request.command, request.params);
                             if (!finished) worker.postMessage({ replyId: message.id, result });

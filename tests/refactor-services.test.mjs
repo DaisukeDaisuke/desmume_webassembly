@@ -725,7 +725,7 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
   assert.match(buildSource, /persistent-script-supervisor\.worker\.js/);
 });
 
-test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once", async () => {
+test("eval Worker waits for ready, forwards registered RPC commands, and disposes once", async () => {
     const posted = [];
     let disposed = 0;
     const worker = {
@@ -748,19 +748,32 @@ test("eval Worker waits for ready, enforces its RPC allowlist, and disposes once
     assert.equal((await running).value, 7);
     assert.equal(disposed, 1);
 
-    const secondWorker = { postMessage: () => {}, onmessage: null, onerror: null, onmessageerror: null };
-    const denied = createScriptRunner({
+    const secondPosted = [];
+    const secondCalls = [];
+    const secondWorker = {
+        postMessage: (message) => secondPosted.push(message),
+        onmessage: null,
+        onerror: null,
+        onmessageerror: null
+    };
+    const unrestricted = createScriptRunner({
         source: "worker source",
         responder,
-        callCommand: async () => responder.ok(),
+        callCommand: async (command, params) => {
+            secondCalls.push({ command, params });
+            return responder.ok();
+        },
         createWorker: () => ({ worker: secondWorker, dispose: () => {} })
     });
-    const deniedRun = denied.run("return 1", 1000);
+    const unrestrictedRun = unrestricted.run("return 1", 1000);
     await secondWorker.onmessage({ data: { type: "ready", hardened: true, layer: "supervisor" } });
     await secondWorker.onmessage({
         data: { type: "call", id: "1", command: "runPersistentScript", params: {} }
     });
-    assert.equal((await deniedRun).error.code, "COMMAND_NOT_ALLOWED");
+    assert.deepEqual(secondCalls, [{ command: "runPersistentScript", params: {} }]);
+    assert.equal(secondPosted.at(-1).replyId, "1");
+    await secondWorker.onmessage({ data: { type: "done", result: 1 } });
+    assert.equal((await unrestrictedRun).value, 1);
 });
 
 test("pending script callbacks validate identity and clean up after script stop", async () => {

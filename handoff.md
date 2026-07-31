@@ -254,3 +254,27 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 - Params, metadata, results, and error payloads reuse the common own-data-property normalizer at every main/supervisor/sandbox boundary. Normalized data objects have null prototypes; functions never leave the sandbox.
 - Codespace verification passed 141/141 tests, `check:js`, dependency bundle checks, license checks, and `build:js`; generated `public` artifacts were synchronized to the host.
 - Browser and Chrome DevTools MCP acceptance were explicitly excluded for this task.
+
+## 2026-07-31 Worker RPC command-policy addendum
+
+- The fixed eval/persistent Worker RPC command allowlists were removed. They had
+  drifted from the registered MCP command set: for example, the persistent
+  sandbox exposed `emu.setSpeed`, but the host rejected the resulting
+  `mcp.call("setSpeed", ...)` before normal command dispatch.
+- Authenticated Worker RPC now validates message shape, bounded command payloads,
+  reserved internal fields, and request-ID reuse, then sends the command through
+  the same registered dispatcher used by other MCP callers. Unknown commands and
+  command-specific invalid, busy, file, ROM, and resource conditions remain
+  normal typed application errors.
+- This supersedes the earlier note that persistent scripts may not call
+  `listPScriptMcp` or `callPScriptMcp`. Published-handler calls retain their
+  existing timeout and queue limits; callers must avoid recursive self/mutual
+  call graphs.
+- The sandbox still has no direct DOM, storage, network, raw-message, sub-Worker,
+  or runtime code-generation capability. Commands such as `loadRomUrl` and
+  `loadStateUrl` can perform only their explicit host-side operation after normal
+  command validation.
+- Regression definitions now cover forwarding script-management, speed, and
+  analysis-baseline commands without a duplicated command allowlist. Per user
+  instruction, verification is delegated to GitHub Actions rather than run
+  locally for this change.

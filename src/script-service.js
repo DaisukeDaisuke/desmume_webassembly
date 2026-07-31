@@ -4,7 +4,7 @@ import persistentScriptSupervisorSource from "./workers/persistent-script-superv
 import persistentScriptSandboxSource from "./workers/persistent-script.worker.js";
 import parserWorkerSource from "./workers/parser.worker.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
-import { PERSISTENT_RPC_ALLOWLIST, validateWorkerRpc } from "./script-rpc-policy.js";
+import { validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
 import { ResourceLimits } from "./resource-limits.js";
 import {
@@ -659,20 +659,7 @@ export function createScriptService({
                             mcpCode: ErrorCode.BUSY
                         });
                     }
-                    let request;
-                    try {
-                        request = validateWorkerRpc(msg, PERSISTENT_RPC_ALLOWLIST, seenRequestIds);
-                    } catch (error) {
-                        if (error?.mcpCode === ErrorCode.COMMAND_NOT_ALLOWED
-                            && typeof msg.id === "string" && msg.id) {
-                            worker.postMessage({
-                                replyId: msg.id,
-                                error: workerRpcError(error, ErrorCode.COMMAND_NOT_ALLOWED)
-                            });
-                            return;
-                        }
-                        throw error;
-                    }
+                    const request = validateWorkerRpc(msg, seenRequestIds);
                     try {
                         const result = await queuePersistentScriptOperation(
                             script,
