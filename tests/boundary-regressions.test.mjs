@@ -1014,6 +1014,7 @@ test("persistent MCP timeout ends caller wait without stopping FIFO state", asyn
     const posted = [];
     const script = {
         id: 7,
+        started: true,
         name: "orchestrator",
         running: true,
         scriptInstanceId: "instance-timeout",
