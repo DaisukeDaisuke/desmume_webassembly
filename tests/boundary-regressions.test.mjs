@@ -1067,7 +1067,6 @@ test("persistent MCP timeout ends caller wait without stopping FIFO state", asyn
         id: 7,
         name: "orchestrator",
         running: true,
-        started: true,
         scriptInstanceId: "instance-timeout",
         pscriptMcps: new Map([
             ["slow", { name: "slow", description: "Slow handler." }],
