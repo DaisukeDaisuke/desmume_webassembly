@@ -177,7 +177,12 @@ const printhex = (label, value) => print(
 
 function callbackErrorMessage(error) {
     const code = readOwnDataProperty(error, "code");
-    const summary = serializeWorkerError(error, { phase: "callback", code, source: currentSource });
+    const summary = serializeWorkerError(error, {
+        phase: "callback",
+        code,
+        source: currentSource,
+        sourceName: "desmume-persistent-user.js"
+    });
     const details = readOwnDataProperty(error, "details");
     let detailText = "";
     try {
@@ -317,7 +322,11 @@ function fail(error, phase = "runtime") {
     send({
         type: "failed",
         phase,
-        error: serializeWorkerError(error, { phase, source: currentSource })
+        error: serializeWorkerError(error, {
+            phase,
+            source: currentSource,
+            sourceName: "desmume-persistent-user.js"
+        })
     });
 }
 
@@ -423,7 +432,8 @@ async function runPersistentMcp(message) {
         const summary = serializeWorkerError(error, {
             phase: "persistent-mcp",
             code: "SCRIPT_RUNTIME_ERROR",
-            source: currentSource
+            source: currentSource,
+            sourceName: "desmume-persistent-user.js"
         });
         send({
             type: "pscriptMcpResult",
@@ -497,7 +507,8 @@ async function runBaselineHook(message) {
         const summary = serializeWorkerError(error, {
             phase: `baseline-${operation}`,
             code: "SCRIPT_RUNTIME_ERROR",
-            source: currentSource
+            source: currentSource,
+            sourceName: "desmume-persistent-user.js"
         });
         send({
             type: "baselineHookResult",
