@@ -37,6 +37,7 @@ import {
 } from "../src/worker-rpc-payload.js";
 import { normalizeBoundedValue } from "../src/bounded-value.js";
 import { createBinaryTools } from "../src/binary-tools.js";
+import { serializeWorkerError } from "../src/worker-error-summary.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -2478,4 +2479,41 @@ test("DQ9 overlay logger validates register IDs before table address arithmetic"
     assert.match(source, /const MAX_OVERLAY_ID = 0x3f/);
     assert.match(source, /checkedOverlayId\(await reg\("r0"\), 0x020a36b8\)/);
     assert.match(source, /checkedOverlayId\(await reg\("r0"\), 0x020a392c\)/);
+});
+
+test("eval sourceURL stack maps to the exact user source line", () => {
+    const source = [
+        'const first = "first-line";',
+        'const second = "second-line";',
+        'throw new Error("exact-line-marker");'
+    ].join("\n");
+
+    // Errorインスタンスではなく、stackをown data propertyとして持つ
+    // Workerからシリアライズ前に届くエラー相当のレコードを使用する。
+    const error = {
+        name: "Error",
+        message: "exact-line-marker",
+        stack: [
+            "Error: exact-line-marker",
+            "    at desmume-eval-user.js:5:7"
+        ].join("\n")
+    };
+
+    const serialized = serializeWorkerError(error, {
+        phase: "runtime",
+        source
+    });
+
+    // Workerラッパーがユーザーコードの前に2行追加する。
+    // 生成コード5行目はユーザーコード3行目に対応する。
+    assert.equal(
+        serialized.details.line,
+        3,
+        "eval stack must subtract exactly two wrapper lines"
+    );
+    assert.equal(serialized.details.column, 7);
+    assert.equal(
+        serialized.details.sourceExcerpt,
+        'throw new Error("exact-line-marker");'
+    );
 });
