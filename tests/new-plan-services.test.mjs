@@ -826,13 +826,23 @@ test("analysis baseline State load remains paused through PC and CPSR verificati
         running: true,
         paused: false,
         traceEnabled: false,
-        skipIrq: false
+        skipIrq: false,
+        persistentScripts: [{ name: "watch", codeSha256: "a".repeat(64), value: { counter: 7 } }]
     };
     let loadMetadata = null;
     const calls = [];
     const commands = createContextCommands({
         ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
         analysisBaselineSlotToken: Symbol("baseline"),
+        validateAnalysisBaselineScriptState: async (entries) => {
+            assert.equal(entries, baseline.persistentScripts);
+            calls.push("validatePersistentScripts");
+        },
+        restoreAnalysisBaselineScriptState: async (name, entries) => {
+            assert.equal(name, "default");
+            assert.equal(entries, baseline.persistentScripts);
+            calls.push("restorePersistentScripts");
+        },
         call: async (name, params) => {
             calls.push(name);
             if (name === "loadState") loadMetadata = getInternalMetadata(params);
@@ -861,6 +871,8 @@ test("analysis baseline State load remains paused through PC and CPSR verificati
     const result = await commands.restoreAnalysisBaseline();
     assert.equal(result.ok, true);
     assert.equal(loadMetadata.holdPaused, true);
+    assert.ok(calls.indexOf("validatePersistentScripts") < calls.indexOf("loadState"));
+    assert.ok(calls.indexOf("loadState") < calls.indexOf("restorePersistentScripts"));
     assert.equal(calls.at(-1), "resume");
 });
 
@@ -869,8 +881,14 @@ test("analysis baseline replacement switches metadata before deleting the old St
     const store = new Map([["analysis:old", new Uint8Array([1])]]);
     let metadata = oldBaseline;
     let failMetadata = true;
+    const saveOrder = [];
+    const persistentScripts = [{ name: "watch", codeSha256: "b".repeat(64), value: null }];
     const commands = createContextCommands({
         ANALYSIS_BASELINE_SLOT_PREFIX: "analysis:",
+        captureAnalysisBaselineScriptState: async () => {
+            saveOrder.push("script");
+            return persistentScripts;
+        },
         currentRomIdentity: async () => ({
             romName: "game.nds",
             romSize: 16,
@@ -883,7 +901,10 @@ test("analysis baseline replacement switches metadata before deleting the old St
             : { pc: 3, cpsr: 4 },
         idbDelete: async (key) => { store.delete(key); },
         idbPut: async (key, value) => { store.set(key, value); },
-        native: { saveStateBytes: () => new Uint8Array([9, 9]) },
+        native: { saveStateBytes: () => {
+            saveOrder.push("state");
+            return new Uint8Array([9, 9]);
+        } },
         readAnalysisBaseline: () => metadata,
         sha256Hex: async () => "new-hash",
         state: { romGeneration: 1 },
@@ -908,6 +929,8 @@ test("analysis baseline replacement switches metadata before deleting the old St
     const result = await commands.saveAnalysisBaseline({ replace: true });
     assert.equal(result.ok, true);
     assert.notEqual(metadata.slot, "analysis:old");
+    assert.equal(metadata.persistentScripts, persistentScripts);
+    assert.deepEqual(saveOrder.slice(-2), ["script", "state"]);
     assert.equal(store.has(metadata.slot), true);
     assert.equal(store.has("analysis:old"), false);
 });

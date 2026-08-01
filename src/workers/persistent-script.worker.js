@@ -5,6 +5,7 @@ import { normalizeBoundedValue } from "../bounded-value.js";
 import { readOwnDataProperty } from "../structured-value-normalizer.js";
 import {
     isPersistentMcpName,
+    normalizePersistentBaselineData,
     normalizePersistentMcpDescription,
     normalizePersistentMcpMetadata,
     normalizePersistentMcpParams,
@@ -28,6 +29,7 @@ const nativeObjectKeys = globalThis.Object.keys.bind(globalThis.Object);
 const nativeObjectFreeze = globalThis.Object.freeze.bind(globalThis.Object);
 const nativeObjectDefineProperty = globalThis.Object.defineProperty.bind(globalThis.Object);
 const nativeObjectPrototype = nativeObjectGetPrototypeOf({});
+const nativeAsyncFunctionPrototype = nativeObjectGetPrototypeOf(async () => {});
 const nativeJsonStringify = globalThis.JSON.stringify.bind(globalThis.JSON);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
@@ -50,6 +52,8 @@ const importScripts = undefined;
 const Function = undefined;
 const callbacks = new Map();
 const persistentMcps = new Map();
+let baselineSaveHook = null;
+let baselineRestoreHook = null;
 const replies = new Map();
 let callbackSerial = 1;
 const workQueue = [];
@@ -60,6 +64,7 @@ let droppedTicks = 0;
 let asyncMode = false;
 let activeEvent = null;
 let initialized = false;
+let currentSource = "";
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
@@ -172,7 +177,7 @@ const printhex = (label, value) => print(
 
 function callbackErrorMessage(error) {
     const code = readOwnDataProperty(error, "code");
-    const summary = serializeWorkerError(error, { phase: "callback", code });
+    const summary = serializeWorkerError(error, { phase: "callback", code, source: currentSource });
     const details = readOwnDataProperty(error, "details");
     let detailText = "";
     try {
@@ -271,6 +276,21 @@ const emu_registerstart = (callback, options) => register("start", 0, callback, 
 const emu_ontick = (callback, options) => register("tick", 0, callback, options);
 const emu_onstateload = (callback, options) => register("stateLoad", 0, callback, options);
 const emu_onstatesave = (callback, options) => register("stateSave", 0, callback, options);
+const emu_registerbaseline = (saveCallback, restoreCallback) => {
+    if (typeof saveCallback !== "function" || typeof restoreCallback !== "function"
+        || nativeObjectGetPrototypeOf(saveCallback) !== nativeAsyncFunctionPrototype
+        || nativeObjectGetPrototypeOf(restoreCallback) !== nativeAsyncFunctionPrototype) {
+        print("baseline hook not registered: save and restore must both be async functions");
+        return false;
+    }
+    if (baselineSaveHook || baselineRestoreHook) {
+        throw new TypeError("emu_registerbaseline may be called only once per persistent script");
+    }
+    baselineSaveHook = saveCallback;
+    baselineRestoreHook = restoreCallback;
+    send({ type: "baselineHookRegistered" });
+    return true;
+};
 const emu = Object.fromEntries([
     "pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
     "trueNextBranch", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput",
@@ -279,6 +299,7 @@ const emu = Object.fromEntries([
 ].map((command) => [command, (params = {}) => mcp.call(command, params)]));
 emu.onStateLoad = emu_onstateload;
 emu.onStateSave = emu_onstatesave;
+emu.registerBaseline = emu_registerbaseline;
 
 function installShortcuts(definitions) {
     for (const [name, command, parameterNames, defaults = {}] of definitions || []) {
@@ -296,7 +317,7 @@ function fail(error, phase = "runtime") {
     send({
         type: "failed",
         phase,
-        error: serializeWorkerError(error, { phase })
+        error: serializeWorkerError(error, { phase, source: currentSource })
     });
 }
 
@@ -401,7 +422,8 @@ async function runPersistentMcp(message) {
     } catch (error) {
         const summary = serializeWorkerError(error, {
             phase: "persistent-mcp",
-            code: "SCRIPT_RUNTIME_ERROR"
+            code: "SCRIPT_RUNTIME_ERROR",
+            source: currentSource
         });
         send({
             type: "pscriptMcpResult",
@@ -409,6 +431,81 @@ async function runPersistentMcp(message) {
             scriptInstanceId,
             ok: false,
             error: normalizePersistentMcpResult({
+                code: "SCRIPT_RUNTIME_ERROR",
+                message: summary.message,
+                details: summary.details
+            })
+        });
+    }
+}
+
+async function runBaselineHook(message) {
+    const callId = Number(message.callId);
+    const scriptInstanceId = String(message.scriptInstanceId || "");
+    const operation = message.operation;
+    if (!Number.isSafeInteger(callId) || callId < 1
+        || !scriptInstanceId
+        || (operation !== "save" && operation !== "restore")) {
+        fail(new TypeError("persistent baseline invocation is malformed"), "protocol");
+        return;
+    }
+    const hook = operation === "save" ? baselineSaveHook : baselineRestoreHook;
+    if (!hook) {
+        send({
+            type: "baselineHookResult",
+            callId,
+            scriptInstanceId,
+            operation,
+            ok: false,
+            error: normalizePersistentBaselineData({
+                code: "STATE_INVALID",
+                message: `Persistent baseline ${operation} hook is not registered`
+            })
+        });
+        return;
+    }
+    try {
+        const context = nativeObjectFreeze({
+            name: NativeString(message.name || "default"),
+            operation,
+            blocking: true
+        });
+        if (operation === "save") {
+            const rawValue = await hook(context);
+            const value = normalizePersistentBaselineData(rawValue === undefined ? null : rawValue);
+            send({
+                type: "baselineHookResult",
+                callId,
+                scriptInstanceId,
+                operation,
+                ok: true,
+                value
+            });
+            return;
+        }
+        const value = normalizePersistentBaselineData(message.value);
+        await hook(value, context);
+        send({
+            type: "baselineHookResult",
+            callId,
+            scriptInstanceId,
+            operation,
+            ok: true,
+            value: null
+        });
+    } catch (error) {
+        const summary = serializeWorkerError(error, {
+            phase: `baseline-${operation}`,
+            code: "SCRIPT_RUNTIME_ERROR",
+            source: currentSource
+        });
+        send({
+            type: "baselineHookResult",
+            callId,
+            scriptInstanceId,
+            operation,
+            ok: false,
+            error: normalizePersistentBaselineData({
                 code: "SCRIPT_RUNTIME_ERROR",
                 message: summary.message,
                 details: summary.details
@@ -461,6 +558,10 @@ async function drainWork() {
                 await runPersistentMcp(message);
                 continue;
             }
+            if (message.type === "baselineHookInvoke") {
+                await runBaselineHook(message);
+                continue;
+            }
             try {
                 await runEvent(message);
             } catch (error) {
@@ -502,9 +603,10 @@ nativeAddEventListener("message", async (event) => {
     }
     if (message.type === "start") {
         asyncMode = !!message.asyncMode;
+        currentSource = NativeString(message.code || "");
         installShortcuts(message.shortcuts);
         try {
-            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
+            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave, emu_registerbaseline) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             send({ type: "started" });
             const published = await run(
@@ -518,7 +620,8 @@ nativeAddEventListener("message", async (event) => {
                 emu_registerstart,
                 emu_ontick,
                 emu_onstateload,
-                emu_onstatesave
+                emu_onstatesave,
+                emu_registerbaseline
             );
             publishPersistentMcps(published);
         } catch (error) {
@@ -565,6 +668,15 @@ nativeAddEventListener("message", async (event) => {
         void runPersistentMcp(message).finally(() => {
             activeNonBlockingMcpCalls--;
         });
+        return;
+    }
+    if (message.type === "baselineHookInvoke") {
+        if (workQueue.length >= MAX_WORK_QUEUE) {
+            fail(new Error(`persistent work queue exceeded ${MAX_WORK_QUEUE}`), "resource");
+            return;
+        }
+        workQueue.push(message);
+        void drainWork().catch((error) => fail(error, "runtime"));
         return;
     }
     fail(new Error(`unknown message type: ${String(message.type)}`), "protocol");

@@ -129,6 +129,24 @@ export function normalizePersistentMcpResult(value) {
     }).value;
 }
 
+export function normalizePersistentBaselineData(value) {
+    return normalizeWorkerProtocolValue(value, {
+        maxBytes: ResourceLimits.persistentBaselineDataBytes,
+        maxArray: 4096,
+        maxNodes: 10000,
+        maxProperties: 1024
+    }).value;
+}
+
+export function normalizePersistentBaselineEntries(value) {
+    return normalizeWorkerProtocolValue(value, {
+        maxBytes: ResourceLimits.persistentBaselineTotalBytes,
+        maxArray: 4096,
+        maxNodes: 80000,
+        maxProperties: 1024
+    }).value;
+}
+
 export function normalizePersistentMcpMetadata(value) {
     const normalized = normalizeWorkerProtocolValue(value, {
         maxBytes: 128 * 1024,

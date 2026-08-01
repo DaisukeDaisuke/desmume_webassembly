@@ -306,7 +306,10 @@ const {
     stopPersistentScript,
     scriptSummary,
     listPScriptMcps,
-    callPScriptMcp
+    callPScriptMcp,
+    captureAnalysisBaselineScriptState,
+    validateAnalysisBaselineScriptState,
+    restoreAnalysisBaselineScriptState
 } = scriptService;
 let inputRecordingService = null;
 const emulationLoop = createEmulationLoop({
@@ -450,6 +453,7 @@ const commands = createCommands({
     breakpointOwners,
     bytesFromFlexibleParams,
     bytesFromParams,
+    captureAnalysisBaselineScriptState,
     cancelAndWait: (reason) => operationManager.cancelAndWait(reason),
     cancelOperation: (reason) => (
         reason === "pause" && operationManager.current()?.name === "waitForPause"
@@ -520,6 +524,7 @@ const commands = createCommands({
     renderRegisters,
     renderScriptConsole,
     restoreAfterFileLoad,
+    restoreAnalysisBaselineScriptState,
     runCommand,
     runDebuggerInstruction,
     runIsolatedScript: (code, timeoutMs) => scriptRunner.run(code, timeoutMs),
@@ -551,6 +556,7 @@ const commands = createCommands({
     u32FromBytes,
     ui,
     updateStatus,
+    validateAnalysisBaselineScriptState,
     waitChecked,
     waitForInputWindow,
     writeAnalysisBaseline,

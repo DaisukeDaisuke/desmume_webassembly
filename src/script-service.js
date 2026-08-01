@@ -8,6 +8,8 @@ import { validateWorkerRpc } from "./script-rpc-policy.js";
 import { assertSafeScriptSource } from "./script-source-policy.js";
 import { ResourceLimits } from "./resource-limits.js";
 import {
+    normalizePersistentBaselineData,
+    normalizePersistentBaselineEntries,
     normalizePersistentMcpMetadata,
     normalizePersistentMcpParams,
     normalizePersistentMcpResult
@@ -68,20 +70,41 @@ export function createScriptService({
     }
 
     function scriptFailureDetails(message, source) {
-        const error = message.error || {};
-        const stack = String(error.stack || "");
+        const error = message.error && typeof message.error === "object" ? message.error : {};
+        const workerDetails = readOwnDataProperty(error, "details");
+        const structuredDetails = workerDetails && typeof workerDetails === "object"
+            ? workerDetails
+            : {};
+        const stack = String(
+            readOwnDataProperty(structuredDetails, "stack")
+            || readOwnDataProperty(error, "stack")
+            || ""
+        );
         const location = stack.match(/desmume-persistent-user\.js:(\d+):(\d+)/);
-        const line = location ? Math.max(1, Number(location[1]) - 1) : undefined;
-        const column = location ? Number(location[2]) : undefined;
+        const structuredLine = Number(readOwnDataProperty(structuredDetails, "line"));
+        const structuredColumn = Number(readOwnDataProperty(structuredDetails, "column"));
+        const line = Number.isSafeInteger(structuredLine) && structuredLine > 0
+            ? structuredLine
+            : location ? Math.max(1, Number(location[1]) - 2) : undefined;
+        const column = Number.isSafeInteger(structuredColumn) && structuredColumn > 0
+            ? structuredColumn
+            : location ? Number(location[2]) : undefined;
         const sourceExcerpt = line
             ? String(source).split(/\r?\n/)[line - 1]?.slice(0, 240)
             : undefined;
         return {
             phase: String(message.phase || "runtime"),
-            errorName: String(error.name || "Error"),
+            errorName: String(
+                readOwnDataProperty(structuredDetails, "errorName")
+                || readOwnDataProperty(error, "name")
+                || "Error"
+            ),
             ...(line ? { line } : {}),
             ...(column ? { column } : {}),
-            sourceName: "desmume-persistent-user.js",
+            sourceName: String(
+                readOwnDataProperty(structuredDetails, "sourceName")
+                || "desmume-persistent-user.js"
+            ),
             ...(sourceExcerpt ? { sourceExcerpt } : {}),
             ...(stack ? { stack: stack.split("\n").slice(0, 3).join("\n").slice(0, 600) } : {})
         };
@@ -96,7 +119,7 @@ export function createScriptService({
                 : ErrorCode.SCRIPT_RUNTIME_ERROR;
         return responder.fail(
             code,
-            String(message.error?.message || message.error || "Persistent script failed"),
+            String(readOwnDataProperty(message.error, "message") || "Persistent script failed"),
             scriptFailureDetails(message, source)
         );
     }
@@ -202,6 +225,23 @@ export function createScriptService({
         script.pscriptMcpPublished = false;
     }
 
+    function rejectPendingBaselineHookCalls(
+        script,
+        code = ErrorCode.SCRIPT_RUNTIME_ERROR,
+        message = "Persistent script stopped before its baseline hook completed"
+    ) {
+        for (const pending of script.pendingBaselineHookCalls.values()) {
+            clearTimeout(pending.timer);
+            pending.reject(codedError(code, message, {
+                scriptId: script.id,
+                operation: pending.operation
+            }));
+        }
+        script.pendingBaselineHookCalls.clear();
+        script.inFlightBaselineHookCalls.clear();
+        script.baselineHookRegistered = false;
+    }
+
     function pruneExpiredPScriptMcpTombstones(script) {
         const now = Date.now();
         for (const [callId, expiresAt] of script.expiredPScriptMcpCalls) {
@@ -220,6 +260,184 @@ export function createScriptService({
             if (!script.inFlightPScriptMcpCalls.has(callId)) return callId;
         }
         throw codedError(ErrorCode.BUSY, "No persistent script MCP call ID is available");
+    }
+
+    function nextBaselineHookCallId(script) {
+        for (let attempts = 0; attempts < Number.MAX_SAFE_INTEGER; attempts++) {
+            const callId = script.nextBaselineHookCallId;
+            script.nextBaselineHookCallId = callId >= Number.MAX_SAFE_INTEGER ? 1 : callId + 1;
+            if (!script.inFlightBaselineHookCalls.has(callId)) return callId;
+        }
+        throw codedError(ErrorCode.BUSY, "No persistent baseline hook call ID is available");
+    }
+
+    async function scriptCodeSha256(script) {
+        if (script.codeSha256) return script.codeSha256;
+        if (!globalThis.crypto?.subtle) {
+            throw codedError(ErrorCode.INTERNAL_ERROR, "SHA-256 is unavailable for persistent script identity");
+        }
+        const digest = await globalThis.crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(script.code)
+        );
+        script.codeSha256 = [...new Uint8Array(digest)]
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("");
+        return script.codeSha256;
+    }
+
+    function invokeBaselineHook(script, operation, name, value = null) {
+        if (!isCurrentScript(script) || !script.baselineHookRegistered) {
+            throw codedError(ErrorCode.STATE_INVALID, "Persistent baseline hook is unavailable", {
+                scriptId: script.id,
+                scriptName: script.name,
+                operation
+            });
+        }
+        if (script.eventQueue.length >= ResourceLimits.persistentEventQueue) {
+            throw codedError(ErrorCode.BUSY, "Persistent script work queue is full", {
+                scriptId: script.id,
+                maximum: ResourceLimits.persistentEventQueue
+            });
+        }
+        const callId = nextBaselineHookCallId(script);
+        const message = {
+            type: "baselineHookInvoke",
+            scriptInstanceId: script.scriptInstanceId,
+            callId,
+            operation,
+            name,
+            value: operation === "restore" ? normalizePersistentBaselineData(value) : null
+        };
+        const promise = new Promise((resolve, reject) => {
+            const pending = { resolve, reject, operation, timer: 0 };
+            pending.timer = setTimeout(() => {
+                if (script.pendingBaselineHookCalls.get(callId) !== pending) return;
+                script.pendingBaselineHookCalls.delete(callId);
+                script.inFlightBaselineHookCalls.delete(callId);
+                reject(codedError(
+                    ErrorCode.TIMEOUT,
+                    `Persistent baseline ${operation} callback did not complete within ${ResourceLimits.persistentBaselineHookTimeoutMs}ms`,
+                    {
+                        scriptId: script.id,
+                        scriptName: script.name,
+                        operation,
+                        timeoutMs: ResourceLimits.persistentBaselineHookTimeoutMs
+                    }
+                ));
+                void failPersistentScript(script, new Error(`baseline ${operation} callback timed out`));
+            }, ResourceLimits.persistentBaselineHookTimeoutMs);
+            script.pendingBaselineHookCalls.set(callId, pending);
+        });
+        script.inFlightBaselineHookCalls.set(callId, { operation });
+        script.eventQueue.push(message);
+        pumpScriptEvents(script);
+        return promise;
+    }
+
+    function finishBaselineHookCall(script, message) {
+        if (message.scriptInstanceId !== script.scriptInstanceId) return;
+        const callId = Number(message.callId);
+        const operation = message.operation;
+        if (!Number.isSafeInteger(callId) || callId < 1
+            || (operation !== "save" && operation !== "restore")
+            || typeof message.ok !== "boolean") {
+            throw codedError(
+                ErrorCode.WORKER_PROTOCOL_ERROR,
+                "Persistent script sent a malformed baseline hook result"
+            );
+        }
+        const active = script.inFlightBaselineHookCalls.get(callId);
+        if (!active || active.operation !== operation) {
+            throw codedError(
+                ErrorCode.WORKER_PROTOCOL_ERROR,
+                "Persistent script sent an unknown baseline hook result"
+            );
+        }
+        const payload = normalizePersistentBaselineData(message.ok ? message.value : message.error);
+        script.inFlightBaselineHookCalls.delete(callId);
+        script.eventBusy = false;
+        pumpScriptEvents(script);
+        const pending = script.pendingBaselineHookCalls.get(callId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        script.pendingBaselineHookCalls.delete(callId);
+        if (message.ok) {
+            pending.resolve(payload);
+            return;
+        }
+        const code = readOwnDataProperty(payload, "code");
+        const errorMessage = readOwnDataProperty(payload, "message");
+        const details = readOwnDataProperty(payload, "details");
+        pending.reject(codedError(
+            typeof code === "string" ? code : ErrorCode.SCRIPT_RUNTIME_ERROR,
+            typeof errorMessage === "string" ? errorMessage : `Persistent baseline ${operation} hook failed`,
+            {
+                scriptId: script.id,
+                scriptName: script.name,
+                operation,
+                ...(details === undefined ? {} : { worker: details })
+            }
+        ));
+    }
+
+    async function captureAnalysisBaselineScriptState(name) {
+        const entries = [];
+        for (const script of state.scripts.values()) {
+            if (!isCurrentScript(script) || !script.baselineHookRegistered) continue;
+            const value = await invokeBaselineHook(script, "save", name);
+            entries.push(normalizePersistentBaselineData({
+                name: script.name,
+                codeSha256: await scriptCodeSha256(script),
+                value
+            }));
+        }
+        return normalizePersistentBaselineEntries(entries);
+    }
+
+    async function prepareAnalysisBaselineScriptState(savedEntries) {
+        if (savedEntries === undefined || savedEntries === null) return [];
+        const entries = normalizePersistentBaselineEntries(savedEntries);
+        if (!Array.isArray(entries) || entries.length > ResourceLimits.persistentScripts) {
+            throw codedError(ErrorCode.STATE_INVALID, "Analysis baseline persistent script data is invalid");
+        }
+        const plans = [];
+        const names = new Set();
+        for (const entry of entries) {
+            const scriptName = readOwnDataProperty(entry, "name");
+            const codeSha256 = readOwnDataProperty(entry, "codeSha256");
+            const value = readOwnDataProperty(entry, "value");
+            if (typeof scriptName !== "string" || !scriptName
+                || typeof codeSha256 !== "string" || !/^[0-9a-f]{64}$/.test(codeSha256)
+                || names.has(scriptName)) {
+                throw codedError(ErrorCode.STATE_INVALID, "Analysis baseline persistent script identity is invalid");
+            }
+            names.add(scriptName);
+            const script = [...state.scripts.values()].find((candidate) => (
+                isCurrentScript(candidate) && candidate.name === scriptName
+            ));
+            if (!script || !script.baselineHookRegistered
+                || await scriptCodeSha256(script) !== codeSha256) {
+                throw codedError(
+                    ErrorCode.STATE_INVALID,
+                    `Analysis baseline persistent script mismatch: ${scriptName}`,
+                    { scriptName, codeSha256 }
+                );
+            }
+            plans.push({ script, value });
+        }
+        return plans;
+    }
+
+    async function validateAnalysisBaselineScriptState(savedEntries) {
+        await prepareAnalysisBaselineScriptState(savedEntries);
+    }
+
+    async function restoreAnalysisBaselineScriptState(name, savedEntries) {
+        const plans = await prepareAnalysisBaselineScriptState(savedEntries);
+        for (const plan of plans) {
+            await invokeBaselineHook(plan.script, "restore", name, plan.value);
+        }
     }
 
     function listPScriptMcps(scriptId) {
@@ -492,6 +710,13 @@ export function createScriptService({
             if (script.asyncMode && ASYNC_SCRIPT_BLOCKED_COMMANDS.has(command)) {
                 throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
             }
+            if ((command === "saveAnalysisBaseline" || command === "restoreAnalysisBaseline")
+                && script.baselineHookRegistered) {
+                throw codedError(
+                    ErrorCode.BUSY,
+                    `${command} cannot be initiated by a persistent script whose own blocking baseline hook must run`
+                );
+            }
             if (command === "register") return registerScriptTrigger(script, params);
             if (command === "setBreakpoint" || command === "setSpecialBreakpoint") {
                 const result = await commands[command](withInternalMetadata(params, {
@@ -587,6 +812,11 @@ export function createScriptService({
             inFlightPScriptMcpCalls: new Map(),
             nextPScriptMcpCallId: 1,
             pscriptMcpPublished: false,
+            baselineHookRegistered: false,
+            pendingBaselineHookCalls: new Map(),
+            inFlightBaselineHookCalls: new Map(),
+            nextBaselineHookCallId: 1,
+            codeSha256: "",
             createdAt: Date.now()
         };
         let workerHost;
@@ -701,6 +931,19 @@ export function createScriptService({
                         throw new Error("Persistent script returned an MCP result before startup");
                     }
                     finishPScriptMcpCall(script, msg);
+                } else if (msg.type === "baselineHookRegistered") {
+                    if (!ready || !compiled || !script.running
+                        || msg.scriptInstanceId !== script.scriptInstanceId
+                        || script.baselineHookRegistered) {
+                        throw new Error("Persistent script sent an invalid baseline hook registration");
+                    }
+                    script.baselineHookRegistered = true;
+                    renderScripts();
+                } else if (msg.type === "baselineHookResult") {
+                    if (!ready || !script.running) {
+                        throw new Error("Persistent script returned a baseline hook result before startup");
+                    }
+                    finishBaselineHookCall(script, msg);
                 } else if (msg.type === "eventDone" && Number.isFinite(Number(msg.eventId))) {
                     const accepted = await finishPersistentScriptEvent(msg.eventId, {
                         scriptId: script.id,
@@ -765,6 +1008,7 @@ export function createScriptService({
         script.running = false;
         script.stoppedAt = Date.now();
         rejectPendingPScriptMcpCalls(script);
+        rejectPendingBaselineHookCalls(script);
         script.eventQueue.length = 0;
         script.eventBusy = false;
         await settlePersistentScriptCallbacks(script.id);
@@ -806,6 +1050,7 @@ export function createScriptService({
             })),
             mcpCount: script.pscriptMcps.size,
             mcpPublished: script.pscriptMcpPublished,
+            baselineHookRegistered: script.baselineHookRegistered,
             duplicate
         };
     }
@@ -821,6 +1066,10 @@ export function createScriptService({
         scriptSummary,
         listPScriptMcps,
         callPScriptMcp,
-        finishPScriptMcpCall
+        finishPScriptMcpCall,
+        captureAnalysisBaselineScriptState,
+        validateAnalysisBaselineScriptState,
+        restoreAnalysisBaselineScriptState,
+        finishBaselineHookCall
     };
 }

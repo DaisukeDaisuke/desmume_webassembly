@@ -117,11 +117,14 @@ export function serializeWorkerError(error, {
         const stack = truncateUtf8(stackLines(ownPrimitiveString(error, "stack")), stackBytes);
         const details = { phase: truncateUtf8(primitiveToString(phase) || "runtime", 128), errorName: name };
         if (stack) details.stack = stack;
-        const match = /desmume-eval-user\.js:(\d+):(\d+)/.exec(stack);
+        const match = /desmume-(eval|persistent)-user\.js:(\d+):(\d+)/.exec(stack);
         if (match) {
-            const line = nativeMathMax(1, NativeNumber(match[1]) - 1);
+            const line = nativeMathMax(1, NativeNumber(match[2]) - 2);
             details.line = line;
-            details.column = NativeNumber(match[2]);
+            details.column = NativeNumber(match[3]);
+            details.sourceName = match[1] === "persistent"
+                ? "desmume-persistent-user.js"
+                : "desmume-eval-user.js";
             const sourceLines = callIntrinsic(nativeStringSplit, primitiveToString(source), ["\n"]);
             details.sourceExcerpt = truncateUtf8(sourceLines[line - 1] || "", sourceExcerptBytes);
         }

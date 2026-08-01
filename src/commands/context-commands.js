@@ -1,5 +1,6 @@
 import { withInternalMetadata } from "../internal-command-metadata.js";
 import { ErrorCode } from "../error-codes.js";
+import { readOwnDataProperty } from "../structured-value-normalizer.js";
 import { codedError, nonNegativeNumber } from "../validation.js";
 
 let analysisBaselineTemporarySerial = 0;
@@ -9,6 +10,7 @@ export function createContextCommands(context) {
         ANALYSIS_BASELINE_SLOT_PREFIX,
         analysisBaselineSlotToken,
         call,
+        captureAnalysisBaselineScriptState = async () => [],
         currentRomIdentity,
         emulatorActivity,
         ensureRomLoaded,
@@ -29,6 +31,8 @@ export function createContextCommands(context) {
         state,
         syncNativeBreakStatus,
         ui,
+        validateAnalysisBaselineScriptState = async () => {},
+        restoreAnalysisBaselineScriptState = async () => {},
         writeAnalysisBaseline
     } = context;
     const analysisBaselineLocks = new Map();
@@ -192,6 +196,7 @@ export function createContextCommands(context) {
             const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}-${++analysisBaselineTemporarySerial}`;
             const generation = state.romGeneration;
             const activity = emulatorActivity();
+            const persistentScripts = await captureAnalysisBaselineScriptState(name);
             const stateBytes = native.saveStateBytes();
             const cpuState = {
                 arm9: {
@@ -215,6 +220,7 @@ export function createContextCommands(context) {
                 stateSize: stateBytes.length,
                 stateSha256,
                 cpuState,
+                persistentScripts,
                 ...activity,
                 skipIrq: !!ui.tracePrivilegeToggle.checked,
                 traceEnabled: !!ui.traceToggle.checked,
@@ -277,6 +283,8 @@ export function createContextCommands(context) {
                     "analysis baseline state integrity check failed"
                 );
             }
+            const persistentScripts = readOwnDataProperty(baseline, "persistentScripts");
+            await validateAnalysisBaselineScriptState(persistentScripts);
             await call("loadState", withInternalMetadata({
                 slot: baseline.slot,
                 saveFlushBlockMs: params.saveFlushBlockMs
@@ -318,6 +326,7 @@ export function createContextCommands(context) {
                     }
                 }
             }
+            await restoreAnalysisBaselineScriptState(name, persistentScripts);
             if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
                 await call("setStackTraceMode", { enabled: baseline.traceEnabled });
             }
