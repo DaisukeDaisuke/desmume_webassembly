@@ -33,6 +33,8 @@ const nativeAsyncFunctionPrototype = nativeObjectGetPrototypeOf(async () => {});
 const nativeJsonStringify = globalThis.JSON.stringify.bind(globalThis.JSON);
 const nativeSetTimeout = globalThis.setTimeout?.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval?.bind(globalThis);
+const nativeClearTimeout = globalThis.clearTimeout?.bind(globalThis);
+const nativeClearInterval = globalThis.clearInterval?.bind(globalThis);
 const channelToken = globalThis.crypto.randomUUID();
 const send = (message) => {
     nativeObjectDefineProperty(message, "channelToken", {
@@ -66,6 +68,11 @@ let asyncMode = false;
 let activeEvent = null;
 let initialized = false;
 let currentSource = "";
+let activeBaselineIdentity = null;
+let barrierActive = false;
+let pendingBarrier = null;
+const timerCallbacks = new Map();
+let timerSerial = 1;
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
@@ -91,7 +98,16 @@ function installSafeTimer(name, nativeTimer) {
             if (typeof callback !== "function") {
                 throw new TypeError(`${name} requires a function callback`);
             }
-            return nativeTimer(callback, delay, ...args);
+            const id = timerSerial++;
+            const timer = nativeTimer(() => {
+                const entry = timerCallbacks.get(id);
+                if (!entry || entry.pending) return;
+                entry.pending = true;
+                workQueue.push({ type: "timer", id, callback, args });
+                void drainWork().catch((error) => fail(error, "runtime"));
+            }, delay);
+            timerCallbacks.set(id, { timer, interval: name === "setInterval", pending: false });
+            return id;
         },
         writable: false,
         configurable: false
@@ -100,6 +116,8 @@ function installSafeTimer(name, nativeTimer) {
 
 installSafeTimer("setTimeout", nativeSetTimeout);
 installSafeTimer("setInterval", nativeSetInterval);
+installSafeClearTimer("clearTimeout", nativeClearTimeout);
+installSafeClearTimer("clearInterval", nativeClearInterval);
 
 function lockDownRuntimeCodeGeneration() {
     const prototypes = new Set();
@@ -141,21 +159,26 @@ function lockDownRuntimeCodeGeneration() {
 function ask(type, data = {}) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
-        replies.set(id, { resolve, reject });
+        replies.set(id, {
+            resolve,
+            reject,
+            callSiteStack: typeof data.callSiteStack === "string" ? data.callSiteStack : ""
+        });
         send({ type, id, ...data });
     });
 }
 
 const mcp = {
-    call: (command, params = {}) => {
+    call: (command, params = {}, userCallSiteStack = "") => {
         const normalizedParams = normalizeWorkerRpcParams(command, params);
         return ask("call", {
             command,
             params: normalizedParams,
-            callSiteStack: String(new NativeError().stack || "").slice(0, 8192),
+            callSiteStack: NativeString(userCallSiteStack || new NativeError().stack || "").slice(0, 8192),
             eventId: activeEvent?.eventId || 0,
             callbackId: activeEvent?.callbackId,
             callbackToken: activeEvent?.callbackToken
+            ,internalMetadata: activeBaselineIdentity
         });
     }
 };
@@ -186,6 +209,20 @@ function callbackErrorSummary(error) {
         sourceName: "desmume-persistent-user.js"
     });
     return summary;
+}
+
+function installSafeClearTimer(name, nativeClear) {
+    if (!nativeClear) return;
+    Object.defineProperty(globalThis, name, {
+        value: (id) => {
+            const entry = timerCallbacks.get(id);
+            if (!entry) return;
+            nativeClear(entry.timer);
+            timerCallbacks.delete(id);
+        },
+        writable: false,
+        configurable: false
+    });
 }
 
 function callbackErrorMessage(error) {
@@ -500,6 +537,7 @@ async function runBaselineHook(message) {
         operation
     });
     try {
+        activeBaselineIdentity = message.internalMetadata || null;
         const context = nativeObjectFreeze({
             name: NativeString(message.name || "default"),
             operation,
@@ -547,6 +585,8 @@ async function runBaselineHook(message) {
                 details: summary.details
             })
         });
+    } finally {
+        activeBaselineIdentity = null;
     }
 }
 
@@ -596,6 +636,7 @@ async function drainWork() {
     drainingWork = true;
     try {
         while (workQueue.length) {
+            if (pendingBarrier || (barrierActive && workQueue[0]?.type !== "baselineHookInvoke")) return;
             const message = workQueue.shift();
             if (message.type === "pscriptMcpInvoke") {
                 await runPersistentMcp(message);
@@ -603,6 +644,15 @@ async function drainWork() {
             }
             if (message.type === "baselineHookInvoke") {
                 await runBaselineHook(message);
+                continue;
+            }
+            if (message.type === "timer") {
+                const entry = timerCallbacks.get(message.id);
+                if (!entry) continue;
+                try { await message.callback(...message.args); }
+                catch (error) { send({ type: "callbackError", error: callbackErrorSummary(error) }); }
+                if (entry.interval) entry.pending = false;
+                else timerCallbacks.delete(message.id);
                 continue;
             }
             try {
@@ -621,7 +671,22 @@ async function drainWork() {
         }
     } finally {
         drainingWork = false;
+        activatePendingBarrier();
     }
+}
+
+function activatePendingBarrier() {
+    if (!pendingBarrier || drainingWork || activeNonBlockingMcpCalls) return;
+    barrierActive = pendingBarrier.active;
+    const acknowledgement = pendingBarrier;
+    pendingBarrier = null;
+    send({
+        type: "baselineBarrierAck",
+        active: acknowledgement.active,
+        operationId: acknowledgement.operationId,
+        operation: acknowledgement.operation
+    });
+    if (!barrierActive) void drainWork().catch((error) => fail(error, "runtime"));
 }
 
 nativeAddEventListener("message", async (event) => {
@@ -645,15 +710,18 @@ nativeAddEventListener("message", async (event) => {
                 const code = readOwnDataProperty(payload, "code");
                 const details = readOwnDataProperty(payload, "details");
                 if (typeof code === "string") error.code = code;
+                const replyCallSiteStack = readOwnDataProperty(details, "callSiteStack");
+                const callSiteStack = typeof replyCallSiteStack === "string" && replyCallSiteStack
+                    ? replyCallSiteStack
+                    : pending.callSiteStack;
+                if (callSiteStack) {
+                    nativeObjectDefineProperty(error, "stack", {
+                        value: callSiteStack,
+                        configurable: true,
+                        writable: true
+                    });
+                }
                 if (details !== undefined) {
-                    const callSiteStack = readOwnDataProperty(details, "callSiteStack");
-                    if (typeof callSiteStack === "string" && callSiteStack) {
-                        nativeObjectDefineProperty(error, "stack", {
-                            value: callSiteStack,
-                            configurable: true,
-                            writable: true
-                        });
-                    }
                     error.details = details;
                 }
             }
@@ -666,11 +734,10 @@ nativeAddEventListener("message", async (event) => {
         currentSource = NativeString(message.code || "");
         installShortcuts(message.shortcuts);
         try {
-            const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave, emu_registerbaseline) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
+            const run = nativeEval(`(async (__mcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave, emu_registerbaseline) => {\n"use strict"; const mcp = Object.freeze({ call: (command, params = {}) => __mcp.call(command, params, String(new Error().stack || "")) }); const webmcp = mcp;\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
             const published = await run(
                 mcp,
-                webmcp,
                 memory,
                 print,
                 printf,
@@ -709,6 +776,19 @@ nativeAddEventListener("message", async (event) => {
         void drainWork().catch((error) => fail(error, "runtime"));
         return;
     }
+    if (message.type === "baselineBarrier") {
+        if (!Number.isSafeInteger(Number(message.operationId))) {
+            fail(new Error("persistent baseline barrier request is malformed"), "protocol");
+            return;
+        }
+        pendingBarrier = {
+            active: message.active === true,
+            operationId: Number(message.operationId),
+            operation: message.operation
+        };
+        activatePendingBarrier();
+        return;
+    }
     if (message.type === "pscriptMcpInvoke") {
         if (message.blocking === true) {
             if (workQueue.length >= MAX_WORK_QUEUE) {
@@ -727,6 +807,7 @@ nativeAddEventListener("message", async (event) => {
         activeNonBlockingMcpCalls++;
         void runPersistentMcp(message).finally(() => {
             activeNonBlockingMcpCalls--;
+            activatePendingBarrier();
         });
         return;
     }
@@ -735,7 +816,8 @@ nativeAddEventListener("message", async (event) => {
             fail(new Error(`persistent work queue exceeded ${MAX_WORK_QUEUE}`), "resource");
             return;
         }
-        workQueue.push(message);
+        if (barrierActive) workQueue.unshift(message);
+        else workQueue.push(message);
         void drainWork().catch((error) => fail(error, "runtime"));
         return;
     }

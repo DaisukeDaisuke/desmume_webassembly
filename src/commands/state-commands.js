@@ -80,6 +80,7 @@ export function createStateCommands(context) {
                 if (!metadata.operation) await cancelAndWait("state-load");
                 await commit();
                 const runState = pauseForFileLoad();
+                let nativeStateApplied = false;
                 try {
                     if (params.slot && !isAnalysisBaselineSlot(params.slot) && !metadata.recordingReplay) {
                         rememberSlot(params.slot);
@@ -90,6 +91,7 @@ export function createStateCommands(context) {
                         `State load failed (${ret})`,
                         { nativeCode: ret }
                     );
+                    nativeStateApplied = true;
                     loaded = true;
                     native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
@@ -101,6 +103,16 @@ export function createStateCommands(context) {
                         dispatchScriptEvent("stateLoad", { slot: params.slot || null });
                     }
                     return { ok: true, paused: runState.paused, reset: false };
+                } catch (error) {
+                    if (nativeStateApplied) {
+                        stopAfterFailedStateLoad();
+                        throw codedError(
+                            ErrorCode.STATE_PARTIALLY_RESTORED,
+                            `State load partially completed: ${String(error?.message || error)}`,
+                            { nativeStateApplied: true, paused: true, causeCode: error?.mcpCode || null }
+                        );
+                    }
+                    throw error;
                 } finally {
                     if (loaded) restoreAfterFileLoad(metadata.holdPaused
                         ? { ...runState, running: false, paused: true }

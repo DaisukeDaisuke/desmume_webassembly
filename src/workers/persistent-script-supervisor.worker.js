@@ -23,6 +23,7 @@ let started = false;
 let childWorkerTerminateCalled = false;
 let childBlobUrlRevokeCalled = false;
 let childHandlersCleared = false;
+let activeBaselineHookIdentity = null;
 const pendingRequestIds = new Set();
 const pendingPersistentMcpCallIds = new Set();
 const completedPersistentMcpCallIds = new Set();
@@ -137,7 +138,8 @@ function forwardAuthenticatedChildMessage(childMessage) {
                 ? childMessage.callSiteStack.slice(0, 8192) : "",
             eventId: Number(childMessage.eventId) || 0,
             callbackId: childMessage.callbackId,
-            callbackToken: typeof childMessage.callbackToken === "string" ? childMessage.callbackToken : ""
+            callbackToken: typeof childMessage.callbackToken === "string" ? childMessage.callbackToken : "",
+            ...(activeBaselineHookIdentity ? { internalMetadata: activeBaselineHookIdentity } : {})
         });
         return;
     }
@@ -215,6 +217,7 @@ function forwardAuthenticatedChildMessage(childMessage) {
             throw new TypeError("sandbox persistent baseline result status is invalid");
         }
         pendingBaselineHookCallIds.delete(callId);
+        activeBaselineHookIdentity = null;
         completedBaselineHookCallIds.add(callId);
         while (completedBaselineHookCallIds.size > ResourceLimits.expiredPersistentMcpCallsPerScript) {
             completedBaselineHookCallIds.delete(completedBaselineHookCallIds.values().next().value);
@@ -228,6 +231,18 @@ function forwardAuthenticatedChildMessage(childMessage) {
             ...(childMessage.ok
                 ? { value: normalizePersistentBaselineData(childMessage.value) }
                 : { error: normalizePersistentBaselineData(childMessage.error) })
+        });
+        return;
+    }
+    if (childMessage.type === "baselineBarrierAck") {
+        if (!Number.isSafeInteger(Number(childMessage.operationId))) {
+            throw new TypeError("sandbox baseline barrier acknowledgement is invalid");
+        }
+        postMessage({
+            type: "baselineBarrierAck",
+            active: childMessage.active === true,
+            operationId: Number(childMessage.operationId),
+            operation: childMessage.operation
         });
         return;
     }
@@ -347,7 +362,7 @@ function startSandbox(message) {
                 "call", "register", "eventDone", "eventProcessed", "print", "compiled", "started",
                 "failed", "pscriptMcpPublished", "pscriptMcpResult", "baselineHookRegistered", "baselineHookStarted",
                 "callbackError",
-                "baselineHookResult"
+                "baselineHookResult", "baselineBarrierAck"
             ].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"), "child-auth");
             disposeSandbox();
@@ -487,7 +502,8 @@ onmessage = (event) => {
             callId,
             name: message.name,
             params,
-            blocking: message.blocking
+            blocking: message.blocking,
+            internalMetadata: message.internalMetadata
         });
         return;
     }
@@ -522,14 +538,20 @@ onmessage = (event) => {
             return;
         }
         pendingBaselineHookCallIds.add(callId);
+        activeBaselineHookIdentity = message.internalMetadata || null;
         sandbox.postMessage({
             type: "baselineHookInvoke",
             scriptInstanceId,
             callId,
             operation,
             name: message.name.slice(0, 256),
-            value
+            value,
+            internalMetadata: message.internalMetadata
         });
+        return;
+    }
+    if (message.type === "baselineBarrier" && sandbox && channelToken) {
+        sandbox.postMessage({ type: "baselineBarrier", active: message.active === true, operationId: message.operationId, operation: message.operation });
         return;
     }
     if (message.type === "event" && sandbox && channelToken) {
