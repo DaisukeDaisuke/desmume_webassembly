@@ -587,7 +587,7 @@ export function createScriptService({
                 { scriptId, name, published: false }
             );
         }
-        if (script.inFlightBaselineHookCalls.size) {
+        if (script.inFlightBaselineHookCalls?.size) {
             throw codedError(ErrorCode.BUSY, "Persistent script baseline hook is in progress", {
                 scriptId,
                 name
