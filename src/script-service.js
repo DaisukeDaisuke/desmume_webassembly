@@ -197,7 +197,6 @@ export function createScriptService({
 
     function pumpScriptEvents(script) {
         if (!script.running || !script.started || script.eventBusy || !script.eventQueue.length) return;
-        if (state.analysisBaselineOperation && script.eventQueue[0]?.type !== "baselineHookInvoke") return;
         script.eventBusy = true;
         try {
             script.worker.postMessage(script.eventQueue.shift());
@@ -230,79 +229,6 @@ export function createScriptService({
         script.pscriptMcpPublished = false;
     }
 
-    function requestBaselineBarrierAck(script, operation, active) {
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                if (script.pendingBaselineBarrierAcks.get(operation.operationId)?.active !== active) return;
-                script.pendingBaselineBarrierAcks.delete(operation.operationId);
-                reject(codedError(ErrorCode.BUSY, "Persistent script baseline barrier acknowledgement timed out", {
-                    scriptId: script.id,
-                    operationId: operation.operationId,
-                    active,
-                    timeoutMs: ResourceLimits.persistentBaselineHookQueueTimeoutMs
-                }));
-            }, ResourceLimits.persistentBaselineHookQueueTimeoutMs);
-            script.pendingBaselineBarrierAcks.set(operation.operationId, { active, resolve, reject, timer });
-            try {
-                script.worker?.postMessage({
-                    type: "baselineBarrier",
-                    active,
-                    operationId: operation.operationId,
-                    operation: operation.operation
-                });
-            } catch (error) {
-                clearTimeout(timer);
-                script.pendingBaselineBarrierAcks.delete(operation.operationId);
-                reject(error);
-            }
-        });
-    }
-
-    function finishBaselineBarrierAck(script, message) {
-        const operationId = Number(message.operationId);
-        const pending = script.pendingBaselineBarrierAcks.get(operationId);
-        if (!pending || pending.active !== (message.active === true)) return;
-        clearTimeout(pending.timer);
-        script.pendingBaselineBarrierAcks.delete(operationId);
-        pending.resolve();
-    }
-
-    async function acquireBaselineBarriers(operation) {
-        const participants = baselineParticipants();
-        for (const script of participants) {
-            if (script.baselineBarrier || !script.worker || !script.running || !script.started) {
-                throw codedError(ErrorCode.BUSY, "Persistent script baseline barrier is unavailable", { scriptId: script.id });
-            }
-        }
-        operation.baselineBarrierScripts = participants;
-        try {
-            await Promise.all(participants.map(async (script) => {
-                script.baselineBarrier = {
-                    operationId: operation.operationId,
-                    operation: operation.operation,
-                    active: false
-                };
-                await requestBaselineBarrierAck(script, operation, true);
-                if (script.baselineBarrier?.operationId === operation.operationId) script.baselineBarrier.active = true;
-            }));
-            operation.barriersAcquired = true;
-        } catch (error) {
-            await releaseBaselineBarriers(operation);
-            throw error;
-        }
-    }
-
-    async function releaseBaselineBarriers(operation) {
-        const scripts = (operation?.baselineBarrierScripts || []).filter((script) => (
-            script.baselineBarrier?.operationId === operation.operationId
-        ));
-        await Promise.all(scripts.map(async (script) => {
-            await requestBaselineBarrierAck(script, operation, false);
-            if (script.baselineBarrier?.operationId === operation.operationId) script.baselineBarrier = null;
-            pumpScriptEvents(script);
-        }));
-    }
-
     function rejectPendingBaselineHookCalls(
         script,
         code = ErrorCode.SCRIPT_RUNTIME_ERROR,
@@ -318,11 +244,6 @@ export function createScriptService({
         script.pendingBaselineHookCalls.clear();
         script.inFlightBaselineHookCalls.clear();
         script.baselineHookRegistered = false;
-        for (const pending of script.pendingBaselineBarrierAcks.values()) {
-            clearTimeout(pending.timer);
-            pending.reject(codedError(code, message, { scriptId: script.id }));
-        }
-        script.pendingBaselineBarrierAcks.clear();
     }
 
     function pruneExpiredPScriptMcpTombstones(script) {
@@ -398,15 +319,6 @@ export function createScriptService({
             name,
             value: operation === "restore" ? normalizePersistentBaselineData(value) : null
         };
-        const baselineOperation = state.analysisBaselineOperation;
-        message.internalMetadata = {
-            operationId: baselineOperation?.operationId,
-            scriptId: script.id,
-            scriptInstanceId: script.scriptInstanceId,
-            baselineHookCallId: callId,
-            save: operation
-        };
-        if (baselineOperation) baselineOperation.activeHookIdentity = message.internalMetadata;
         const promise = new Promise((resolve, reject) => {
             const pending = { resolve, reject, operation, timer: 0, queueTimer: 0, started: false };
             pending.queueTimer = setTimeout(() => {
@@ -428,7 +340,7 @@ export function createScriptService({
             script.pendingBaselineHookCalls.set(callId, pending);
         });
         script.inFlightBaselineHookCalls.set(callId, { operation });
-        script.eventQueue.unshift(message);
+        script.eventQueue.push(message);
         pumpScriptEvents(script);
         return promise;
     }
@@ -482,6 +394,7 @@ export function createScriptService({
         const payload = normalizePersistentBaselineData(message.ok ? message.value : message.error);
         script.inFlightBaselineHookCalls.delete(callId);
         script.eventBusy = false;
+        pumpScriptEvents(script);
         const pending = script.pendingBaselineHookCalls.get(callId);
         if (!pending) return;
         clearTimeout(pending.timer);
@@ -673,9 +586,6 @@ export function createScriptService({
                 "Persistent script MCP publication is not complete",
                 { scriptId, name, published: false }
             );
-        }
-        if (state.analysisBaselineOperation) {
-            throw codedError(ErrorCode.BUSY, "Persistent script baseline operation is in progress", {scriptId, name});
         }
         if (script.inFlightBaselineHookCalls?.size) {
             throw codedError(ErrorCode.BUSY, "Persistent script baseline hook is in progress", {
@@ -942,9 +852,7 @@ export function createScriptService({
                     scriptId: script.id,
                     scriptEventId: eventId
                 }))
-                : await runCommand(command, eventIdentity.internalMetadata
-                    ? withInternalMetadata(params, eventIdentity.internalMetadata)
-                    : params);
+                : await runCommand(command, params);
             if (command === "pause" && eventId && result?.ok !== false) {
                 onExplicitPause({ scriptId: script.id, eventId: Number(eventId) });
             }
@@ -1022,11 +930,9 @@ export function createScriptService({
             baselinePriority: 0,
             pendingBaselineHookCalls: new Map(),
             inFlightBaselineHookCalls: new Map(),
-            pendingBaselineBarrierAcks: new Map(),
             nextBaselineHookCallId: 1,
             codeSha256: "",
-            createdAt: Date.now(),
-            lastError: null
+            createdAt: Date.now()
         };
         let workerHost;
         try {
@@ -1170,11 +1076,6 @@ export function createScriptService({
                         throw new Error("Persistent script returned a baseline hook result before startup");
                     }
                     finishBaselineHookCall(script, msg);
-                } else if (msg.type === "baselineBarrierAck") {
-                    if (!ready || !script.running) {
-                        throw new Error("Persistent script acknowledged a baseline barrier before startup");
-                    }
-                    finishBaselineBarrierAck(script, msg);
                 } else if (msg.type === "callbackError") {
                     if (!ready || !script.running) {
                         throw new Error("Persistent script returned a callback error before startup");
@@ -1294,14 +1195,6 @@ export function createScriptService({
             mcpPublished: script.pscriptMcpPublished,
             baselineHookRegistered: script.baselineHookRegistered,
             baselinePriority: Number(script.baselinePriority || 0),
-            lastError: script.lastError ? {
-                phase: script.lastError.phase || null,
-                errorName: script.lastError.errorName || null,
-                line: script.lastError.line ?? null,
-                column: script.lastError.column ?? null,
-                sourceName: script.lastError.sourceName || null,
-                sourceExcerpt: script.lastError.sourceExcerpt || null
-            } : null,
             duplicate
         };
     }
@@ -1321,8 +1214,6 @@ export function createScriptService({
         captureAnalysisBaselineScriptState,
         validateAnalysisBaselineScriptState,
         restoreAnalysisBaselineScriptState,
-        acquireBaselineBarriers,
-        releaseBaselineBarriers,
         finishBaselineHookCall
     };
 }

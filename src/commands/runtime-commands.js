@@ -7,35 +7,6 @@ const ALLOWED_SPEEDS = new Set([0.25, 0.5, 1, 1.5, 2, 3, 4]);
 const ALLOWED_SCALES = new Set([1, 1.5, 2, 2.5, 3, 3.5, 4]);
 const ALLOWED_ROTATIONS = new Set([0, 90, 180, 270]);
 
-export function validateRuntimeCommandParams(name, params = {}) {
-    if (name === "setSpeed") {
-        const speed = Number(params.speed ?? params.value ?? 1);
-        if (!ALLOWED_SPEEDS.has(speed)) {
-            throw codedError(ErrorCode.INVALID_ARGUMENT, "speed must be one of 0.25, 0.5, 1, 1.5, 2, 3, or 4");
-        }
-        return { speed };
-    }
-    if (name === "setAudio") {
-        return { volume: finiteNumber(params.volume ?? 0, "volume", 0, 1) };
-    }
-    if (name === "setRenderEnabled") return { enabled: !!params.enabled };
-    if (name === "setScale") {
-        const scale = Number(params.scale ?? params.value ?? 2);
-        if (!ALLOWED_SCALES.has(scale)) {
-            throw codedError(ErrorCode.INVALID_ARGUMENT, "scale must be one of 1, 1.5, 2, 2.5, 3, 3.5, or 4");
-        }
-        return { scale };
-    }
-    if (name === "setRotation") {
-        const rotation = Number(params.rotation ?? params.value ?? 0);
-        if (!ALLOWED_ROTATIONS.has(rotation)) {
-            throw codedError(ErrorCode.INVALID_ARGUMENT, "rotation must be 0, 90, 180, or 270");
-        }
-        return { rotation };
-    }
-    return {};
-}
-
 export function createRuntimeCommands(context) {
     const {
         applyFreezes,
@@ -205,7 +176,10 @@ export function createRuntimeCommands(context) {
         },
 
         async setSpeed(params = {}) {
-            const { speed } = validateRuntimeCommandParams("setSpeed", params);
+            const speed = Number(params.speed ?? params.value ?? 1);
+            if (!ALLOWED_SPEEDS.has(speed)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "speed must be one of 0.25, 0.5, 1, 1.5, 2, 3, or 4");
+            }
             state.speed = speed;
             resetRealtimePacing();
             ui.speedSelect.value = String(state.speed);
@@ -279,16 +253,13 @@ export function createRuntimeCommands(context) {
         },
 
         async setRenderEnabled(params) {
-            state.render = validateRuntimeCommandParams("setRenderEnabled", params).enabled;
+            state.render = !!params.enabled;
             ui.renderToggle.checked = state.render;
             return { render: state.render };
         },
 
         async setAudio(params) {
-            const { volume } = validateRuntimeCommandParams("setAudio", {
-                ...params,
-                volume: params.volume ?? ui.volumeRange.value
-            });
+            const volume = finiteNumber(params.volume ?? ui.volumeRange.value, "volume", 0, 1);
             state.audio = !!params.enabled;
             ui.audioToggle.checked = state.audio;
             ui.volumeRange.value = volume;
@@ -299,7 +270,10 @@ export function createRuntimeCommands(context) {
         },
 
         async setScale(params = {}) {
-            const { scale } = validateRuntimeCommandParams("setScale", params);
+            const scale = Number(params.scale ?? params.value ?? 2);
+            if (!ALLOWED_SCALES.has(scale)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "scale must be one of 1, 1.5, 2, 2.5, 3, 3.5, or 4");
+            }
             state.scale = scale;
             ui.scaleSelect.value = String(state.scale);
             applyScaleRotation();
@@ -307,7 +281,10 @@ export function createRuntimeCommands(context) {
         },
 
         async setRotation(params = {}) {
-            const { rotation } = validateRuntimeCommandParams("setRotation", params);
+            const rotation = Number(params.rotation ?? params.value ?? 0);
+            if (!ALLOWED_ROTATIONS.has(rotation)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, "rotation must be 0, 90, 180, or 270");
+            }
             state.rotation = rotation;
             ui.rotationSelect.value = String(state.rotation);
             applyScaleRotation();

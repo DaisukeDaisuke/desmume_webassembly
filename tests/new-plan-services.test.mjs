@@ -19,7 +19,7 @@ import { createRuntimeLoader } from "../src/runtime-loader.js";
 import { createBootstrapWebMcpTools } from "../src/bootstrap-webmcp.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { createCommandDispatcher } from "../src/command-dispatcher.js";
-import { getInternalMetadata, withInternalMetadata } from "../src/internal-command-metadata.js";
+import { getInternalMetadata } from "../src/internal-command-metadata.js";
 import { bindScreenTouch } from "../src/ui/ui-controller.js";
 import { createEmulationLoop } from "../src/emulation-loop.js";
 
@@ -885,14 +885,7 @@ test("baseline restore policy effects are FIFO and apply last-wins only after su
             name: "policy",
             operation: "restore",
             phase: "restore-hooks",
-            deferredEffects: [],
-            activeHookIdentity: {
-                operationId: 1,
-                scriptId: 7,
-                scriptInstanceId: "policy-instance",
-                baselineHookCallId: 3,
-                save: "restore"
-            }
+            deferredEffects: []
         }
     };
     const responder = {
@@ -914,16 +907,12 @@ test("baseline restore policy effects are FIFO and apply last-wins only after su
         updateStatus: () => {},
         log: () => {}
     });
-    const hookParams = (params) => withInternalMetadata(
-        params,
-        state.analysisBaselineOperation.activeHookIdentity
-    );
-    assert.deepEqual(await dispatcher.run("setSpeed", hookParams({ speed: 2 })), {
+    assert.deepEqual(await dispatcher.run("setSpeed", { speed: 2 }), {
         ok: true,
         deferred: true,
         command: "setSpeed"
     });
-    assert.deepEqual(await dispatcher.run("setSpeed", hookParams({ speed: 4 })), {
+    assert.deepEqual(await dispatcher.run("setSpeed", { speed: 4 }), {
         ok: true,
         deferred: true,
         command: "setSpeed"
@@ -1001,7 +990,7 @@ test("analysis baseline replacement switches metadata before deleting the old St
     assert.notEqual(metadata.slot, "analysis:old");
     assert.equal(metadata.metadataVersion, 1);
     assert.equal(metadata.persistentScriptsStorageVersion, 1);
-    assert.equal(metadata.persistentScripts, undefined);
+    assert.equal(metadata.persistentScripts, persistentScripts);
     assert.deepEqual(saveOrder.slice(-2), ["script", "state"]);
     assert.equal(store.has(metadata.slot), true);
     assert.equal(store.has("analysis:old"), false);

@@ -12,8 +12,6 @@ export function createContextCommands(context) {
         analysisBaselineSlotToken,
         call,
         captureAnalysisBaselineScriptState = async () => [],
-        acquireBaselineBarriers = async () => {},
-        releaseBaselineBarriers = () => {},
         currentRomIdentity,
         dispatchScriptEvent = () => {
         },
@@ -107,26 +105,15 @@ export function createContextCommands(context) {
     async function withBaselineOperation(kind, name, task) {
         const operation = beginBaselineOperation(kind, name);
         try {
-            await acquireBaselineBarriers(operation);
             return await task(operation);
-        } catch (error) {
-            if (operation.barriersAcquired) {
-                try { native.pause?.(true); } catch {}
-                state.paused = true;
-                state.running = false;
-            }
-            throw error;
         } finally {
-            await releaseBaselineBarriers(operation);
             if (state.analysisBaselineOperation === operation) state.analysisBaselineOperation = null;
         }
     }
 
     async function loadPersistentBaselineState(baseline) {
-        if (Number(readOwnDataProperty(baseline, "persistentScriptsStorageVersion") || 0) === 0) {
-            const inline = readOwnDataProperty(baseline, "persistentScripts");
-            if (inline !== undefined) return inline;
-        }
+        const inline = readOwnDataProperty(baseline, "persistentScripts");
+        if (inline !== undefined) return inline;
         const slot = readOwnDataProperty(baseline, "persistentScriptsSlot");
         if (!slot) return [];
         const bytes = await idbGet(String(slot));
@@ -304,6 +291,7 @@ export function createContextCommands(context) {
                     const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}-${++analysisBaselineTemporarySerial}`;
                     const scriptSlot = `${slot}:scripts`;
                     const generation = state.romGeneration;
+                    const activity = emulatorActivity();
                     return fileTransactionService.run("Analysis baseline save", async ({commit}) => {
                         await commit?.();
                         const runState = pauseForFileLoad();
@@ -348,12 +336,16 @@ export function createContextCommands(context) {
                                 stateSize: stateBytes.length,
                                 stateSha256,
                                 cpuState,
-                                running: !!runState?.running,
-                                paused: !!runState?.paused,
+                                ...activity,
                                 skipIrq: !!ui.tracePrivilegeToggle.checked,
                                 traceEnabled: !!ui.traceToggle.checked,
                                 savedAt: new Date().toISOString()
                             };
+                            Object.defineProperty(baseline, "persistentScripts", {
+                                value: persistentScripts,
+                                enumerable: false,
+                                configurable: true
+                    });
                     setBaselinePhase(operation, "commit");
                     try {
                         await idbPut(slot, stateBytes);
@@ -402,7 +394,7 @@ export function createContextCommands(context) {
         async restoreAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline restore requires a loaded ROM");
             const name = baselineName(params);
-            const result = await withBaselineOperation("restore", name, async (operation) => {
+            return withBaselineOperation("restore", name, async (operation) => {
                 return withAnalysisBaselineLock(name, async () => {
                     return fileTransactionService.run("Analysis baseline restore", async ({token, commit}) => {
                         const baseline = readAnalysisBaseline(name);
@@ -449,35 +441,33 @@ export function createContextCommands(context) {
                                 }
                             }
                         }
-                        let nativeStateApplied = false;
+                        await call("loadState", withInternalMetadata({
+                            slot: baseline.slot,
+                            saveFlushBlockMs: params.saveFlushBlockMs
+                        }, {
+                            analysisBaselineSlotToken,
+                            fileTransactionToken: token,
+                            holdPaused: true,
+                            operation: "analysisBaseline",
+                            deferStateLoadEvent: true
+                        }));
+                        setBaselinePhase(operation, "native-loaded");
+                        state.paused = true;
+                        state.running = false;
+                        native.pause(true);
+                        const restoredCpuState = {
+                            arm9: {
+                                pc: Number(getRegisters("arm9").pc) >>> 0,
+                                cpsr: Number(getRegisters("arm9").cpsr) >>> 0
+                            },
+                            arm7: {
+                                pc: Number(getRegisters("arm7").pc) >>> 0,
+                                cpsr: Number(getRegisters("arm7").cpsr) >>> 0
+                            }
+                        };
+                        const pcVerified = !!baseline.cpuState;
                         const restoredScripts = [];
                         try {
-                            await call("loadState", withInternalMetadata({
-                                slot: baseline.slot,
-                                saveFlushBlockMs: params.saveFlushBlockMs
-                            }, {
-                                analysisBaselineSlotToken,
-                                fileTransactionToken: token,
-                                holdPaused: true,
-                                operation: "analysisBaseline",
-                                deferStateLoadEvent: true
-                            }));
-                            nativeStateApplied = true;
-                            setBaselinePhase(operation, "native-loaded");
-                            state.paused = true;
-                            state.running = false;
-                            native.pause(true);
-                            const restoredCpuState = {
-                                arm9: {
-                                    pc: Number(getRegisters("arm9").pc) >>> 0,
-                                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
-                                },
-                                arm7: {
-                                    pc: Number(getRegisters("arm7").pc) >>> 0,
-                                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
-                                }
-                            };
-                            const pcVerified = !!baseline.cpuState;
                             if (pcVerified) {
                                 for (const cpu of ["arm9", "arm7"]) {
                                     for (const register of ["pc", "cpsr"]) {
@@ -498,30 +488,28 @@ export function createContextCommands(context) {
                                 await call("setStackTraceMode", {enabled: baseline.traceEnabled});
                             }
                             await call("setStackTracePrivilegeCheck", {enabled: baseline.skipIrq});
+                            dispatchScriptEvent("stateLoad", {slot: baseline.slot, analysisBaseline: true});
                             if (baseline.running && !baseline.paused) await call("resume");
                             else await call("pause");
                             setBaselinePhase(operation, "complete");
                             return {
                                 ok: true,
                                 name,
-                                slot: baseline.slot,
                                 restored: true,
                                 pcVerified,
                                 cpuState: restoredCpuState,
                                 ...await snapshotContext(params)
                             };
-                        } catch (error) {
-                            if (!nativeStateApplied && !error?.mcpDetails?.nativeStateApplied) throw error;
-                            nativeStateApplied = true;
-                            operation.deferredEffects.length = 0;
-                            try { native.pause?.(true); } catch {}
+                    } catch (error) {
+                        operation.deferredEffects.length = 0;
+                        native.pause?.(true);
                             state.paused = true;
                             state.running = false;
                             throw codedError(
                                 ErrorCode.STATE_PARTIALLY_RESTORED,
                                 `Analysis baseline restore partially completed: ${String(error?.message || error)}`,
                                 {
-                                    nativeStateApplied,
+                                    nativeStateApplied: true,
                                     restoredScripts,
                                     remainingScripts: (restorePlan || persistentScripts).map((entry) => (
                                         readOwnDataProperty(entry, "name") || entry.script?.name || ""
@@ -535,8 +523,6 @@ export function createContextCommands(context) {
                     });
                 });
             });
-            dispatchScriptEvent("stateLoad", {slot: result?.slot || null, analysisBaseline: true});
-            return result;
         }
     };
 }

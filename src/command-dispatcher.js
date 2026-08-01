@@ -1,7 +1,5 @@
 import { ErrorCode } from "./error-codes.js";
-import { getInternalMetadata } from "./internal-command-metadata.js";
 import { isPlainObject } from "./validation.js";
-import { validateRuntimeCommandParams } from "./commands/runtime-commands.js";
 
 const UI_REFRESH_COMMANDS = new Set([
     "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
@@ -43,12 +41,13 @@ const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
 ]);
 
 const BASELINE_HOOK_READ_ONLY_COMMANDS = new Set([
-    "status", "snapshotContext", "getRegisters", "dumpMemory", "disassemble", "disassembleBytes", "stackTrace", "callStack",
-    "listOtherCoroutines", "getOtherCoroutines", "memoryGetRegister",
+    "status", "snapshotContext", "getRegisters", "dumpMemory", "searchMemory", "resetMemorySearch",
+    "disassemble", "disassembleBytes", "stackTrace", "callStack", "copyCallStackMarkdown",
+    "copyCallStackCsv", "listOtherCoroutines", "getOtherCoroutines", "memoryGetRegister",
     "memoryReadByte", "memoryReadWord", "memoryReadDword", "listRecentFiles", "listBreakpoints",
     "listMemoryFreezes", "listScripts", "listPScriptMcp", "getScript", "listScriptPrint",
     "getOperation", "getInputState", "listStateSlots", "listSaveSlots", "listAnalysisBaselines",
-    "listInputRecordings"
+    "listInputRecordings", "waitForStateLoad", "waitForFileTransaction"
 ]);
 
 const BASELINE_DEFERRED_EFFECT_COMMANDS = new Set([
@@ -120,15 +119,6 @@ export function createCommandDispatcher({
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
         }
         const baselineOperation = state.analysisBaselineOperation;
-        const metadata = getInternalMetadata(params);
-        const expectedHook = baselineOperation?.activeHookIdentity;
-        const isCurrentBaselineHook = ["save-hooks", "restore-hooks"].includes(baselineOperation?.phase)
-            && metadata.operationId === expectedHook?.operationId
-            && metadata.scriptId === expectedHook?.scriptId
-            && metadata.scriptInstanceId === expectedHook?.scriptInstanceId
-            && metadata.baselineHookCallId === expectedHook?.baselineHookCallId
-            && metadata.save === expectedHook?.save;
-        const isCurrentRestoreHook = isCurrentBaselineHook && metadata.save === "restore";
         if (baselineOperation && (name === "saveAnalysisBaseline" || name === "restoreAnalysisBaseline")) {
             return responder.fail(ErrorCode.BUSY, "Analysis baseline operation is already in progress", {
                 operationId: baselineOperation.operationId,
@@ -137,21 +127,16 @@ export function createCommandDispatcher({
                 operation: baselineOperation.operation
             });
         }
-        if (baselineOperation && ["save-hooks", "restore-hooks"].includes(baselineOperation.phase)
-            && !isCurrentBaselineHook) {
-            return responder.fail(ErrorCode.BUSY, "Analysis baseline hook is exclusively active");
-        }
-        if (isCurrentBaselineHook && !BASELINE_HOOK_READ_ONLY_COMMANDS.has(name)
-            && !(BASELINE_DEFERRED_EFFECT_COMMANDS.has(name) && isCurrentRestoreHook)) {
+        if (baselineOperation
+            && ["save-hooks", "restore-hooks"].includes(baselineOperation.phase)
+            && !BASELINE_HOOK_READ_ONLY_COMMANDS.has(name)
+            && !(BASELINE_DEFERRED_EFFECT_COMMANDS.has(name)
+                && baselineOperation.phase === "restore-hooks")) {
             return responder.fail(ErrorCode.COMMAND_NOT_ALLOWED, `${name} is unavailable during baseline hook`);
         }
         if (state.fileTransactionActive && !FILE_TRANSACTION_ALLOWED_COMMANDS.has(name)) {
-            if (BASELINE_DEFERRED_EFFECT_COMMANDS.has(name) && isCurrentRestoreHook) {
-                try {
-                    validateRuntimeCommandParams(name, params);
-                } catch (error) {
-                    return responder.fail(error?.mcpCode || ErrorCode.INVALID_ARGUMENT, error?.message || "invalid deferred baseline effect");
-                }
+            if (BASELINE_DEFERRED_EFFECT_COMMANDS.has(name)
+                && baselineOperation?.phase === "restore-hooks") {
                 if (!Array.isArray(baselineOperation.deferredEffects)) {
                     baselineOperation.deferredEffects = [];
                 }

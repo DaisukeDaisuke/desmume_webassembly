@@ -150,6 +150,7 @@ nativeAddEventListener("message", async (event) => {
     }
     try {
         assertSandboxSource(message.code);
+        assertSandboxSource(message.code);
         send({ type: "parsed" });
     } catch (error) {
         const location = error?.loc && typeof error.loc === "object" ? error.loc : {};
