@@ -150,7 +150,6 @@ nativeAddEventListener("message", async (event) => {
     }
     try {
         assertSandboxSource(message.code);
-        assertSandboxSource(message.code);
         send({ type: "parsed" });
     } catch (error) {
         send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase: "compile" }) });

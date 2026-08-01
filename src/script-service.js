@@ -71,7 +71,7 @@ export function createScriptService({
         const error = message.error || {};
         const stack = String(error.stack || "");
         const location = stack.match(/desmume-persistent-user\.js:(\d+):(\d+)/);
-        const line = location ? Math.max(1, Number(location[1]) - 1) : undefined;
+        const line = location ? Math.max(1, Number(location[1]) - 2) : undefined;
         const column = location ? Number(location[2]) : undefined;
         const sourceExcerpt = line
             ? String(source).split(/\r?\n/)[line - 1]?.slice(0, 240)
@@ -149,7 +149,7 @@ export function createScriptService({
     
     function dispatchScriptEvent(type, payload = {}) {
         for (const script of state.scripts.values()) {
-            if (!script.running) continue;
+            if (!script.running || !script.started) continue;
             const message = { type: "event", event: type, payload };
             if (type === "tick") {
                 const index = script.eventQueue.findIndex((queued) => queued.event === "tick");
@@ -169,7 +169,7 @@ export function createScriptService({
     }
 
     function pumpScriptEvents(script) {
-        if (!script.running || script.eventBusy || !script.eventQueue.length) return;
+        if (!script.running || !script.started || script.eventBusy || !script.eventQueue.length) return;
         script.eventBusy = true;
         try {
             script.worker.postMessage(script.eventQueue.shift());
@@ -574,6 +574,7 @@ export function createScriptService({
             worker: null,
             workerHost: null,
             running: true,
+            started: false,
             output: [],
             triggers: [],
             ownedBreakpointIds: new Set(),
@@ -724,6 +725,7 @@ export function createScriptService({
                     if (!ready || !compiled) {
                         throw new Error("Persistent script started before compile acknowledgement");
                     }
+                    script.started = true;
                     settleStartup(scriptSummary(script, false));
                 } else if (msg.type === "failed") {
                     const result = scriptFailureResult(msg, code);
@@ -797,6 +799,7 @@ export function createScriptService({
             id: script.id,
             name: script.name,
             running: script.running,
+            started: script.started,
             asyncMode: script.asyncMode,
             triggers: script.triggers.map(({ id, type, address, cpu }) => ({
                 id,

@@ -119,7 +119,7 @@ export function serializeWorkerError(error, {
         if (stack) details.stack = stack;
         const match = /desmume-eval-user\.js:(\d+):(\d+)/.exec(stack);
         if (match) {
-            const line = nativeMathMax(1, NativeNumber(match[1]) - 1);
+            const line = nativeMathMax(1, NativeNumber(match[1]) - 2);
             details.line = line;
             details.column = NativeNumber(match[2]);
             const sourceLines = callIntrinsic(nativeStringSplit, primitiveToString(source), ["\n"]);
