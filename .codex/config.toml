@@ -1,3 +1,13 @@
+developer_instructions = """
+サブエージェントを起動するときは、必ず親スレッドの履歴を継承しないこと。
+
+Multi-Agent V2では、spawn_agentに fork_turns = "none" を必ず指定する。
+旧spawn_agentインターフェースでは、fork_context = false を必ず指定する。
+
+サブエージェントへ必要な情報は、親の履歴に依存せず理解できる自己完結したmessageとして渡す。
+親スレッドの全履歴を渡してはならない。
+"""
+
 [agents]
 enabled = true
 default_subagent_model = "gpt-5.6-luna"
