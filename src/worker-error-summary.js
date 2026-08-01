@@ -19,6 +19,14 @@ const nativeStringSplit = nativeReflectApply(nativeGetOwnPropertyDescriptor, nul
 const nativeArrayPrototype = nativeReflectApply(nativeGetPrototypeOf, null, [[]]);
 const nativeStringJoin = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeArrayPrototype, "join"]).value;
 const nativeArraySlice = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [nativeArrayPrototype, "slice"]).value;
+const nativeErrorStackGetter = (() => {
+    for (const target of [new NativeError(), NativeError.prototype]) {
+        const descriptor = nativeReflectApply(nativeGetOwnPropertyDescriptor, null, [target, "stack"]);
+        const getter = readOwnDataProperty(descriptor, "get");
+        if (typeof getter === "function") return getter;
+    }
+    return null;
+})();
 const nativeMathFloor = globalThis.Math.floor;
 const nativeMathMax = globalThis.Math.max;
 const trustedTextEncoder = new NativeTextEncoder();
@@ -101,6 +109,16 @@ function stackLines(stack) {
     return callIntrinsic(nativeStringJoin, callIntrinsic(nativeArraySlice, lines, [0, 12]), ["\n"]);
 }
 
+function trustedErrorStack(error) {
+    const ownStack = ownPrimitiveString(error, "stack");
+    if (ownStack || !nativeErrorStackGetter || !nativeErrorName(error)) return ownStack;
+    try {
+        return primitiveToString(callIntrinsic(nativeErrorStackGetter, error, []));
+    } catch {
+        return "";
+    }
+}
+
 export function serializeWorkerError(error, {
     phase = "runtime",
     code = "",
@@ -115,7 +133,7 @@ export function serializeWorkerError(error, {
         const primitive = primitiveToString(error);
         const name = truncateUtf8(ownPrimitiveString(error, "name") || nativeErrorName(error) || "Error", nameBytes);
         const message = truncateUtf8(ownPrimitiveString(error, "message") || primitive || "Script execution failed", messageBytes);
-        const stack = truncateUtf8(stackLines(ownPrimitiveString(error, "stack")), stackBytes);
+        const stack = truncateUtf8(stackLines(trustedErrorStack(error)), stackBytes);
         const details = { phase: truncateUtf8(primitiveToString(phase) || "runtime", 128), errorName: name };
         if (stack) details.stack = stack;
         const match = /desmume-(eval|persistent)-user\.js:(\d+)(?::(\d+))?/.exec(stack);

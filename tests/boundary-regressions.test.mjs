@@ -1999,7 +1999,7 @@ test("persistent top-level runtime errors report the user source location", asyn
 throw new Error("line marker");`, []);
     const failure = harness.messages.find((message) => message.type === "failed");
     assert.equal(failure.phase, "runtime");
-    assert.equal(failure.error.details.line, 2, JSON.stringify(failure));
+    assert.equal(failure.error.details.line, 2);
     assert.ok(Number.isSafeInteger(failure.error.details.column));
     assert.equal(failure.error.details.sourceName, "desmume-persistent-user.js");
     assert.match(failure.error.details.sourceExcerpt, /line marker/);
