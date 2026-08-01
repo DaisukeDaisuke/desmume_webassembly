@@ -29,7 +29,6 @@ import { createScriptCommands } from "../src/commands/script-commands.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
 import { validateWorkerRpc } from "../src/script-rpc-policy.js";
 import {
-    normalizePersistentBaselineData,
     normalizePersistentMcpMetadata,
     normalizePersistentMcpParams,
     normalizePersistentMcpResult,
@@ -1009,18 +1008,6 @@ test("persistent MCP normalizers keep structured boundaries separated", () => {
     assert.equal(Object.getPrototypeOf(result), null);
 });
 
-test("persistent baseline JSON cannot pollute prototypes", () => {
-    const input = JSON.parse('{"__proto__":{"polluted":true},"constructor":{"prototype":{"owned":true}},"nested":{"prototype":"data"}}');
-    const normalized = normalizePersistentBaselineData(input);
-    assert.equal(Object.getPrototypeOf(normalized), null);
-    assert.equal(Object.getPrototypeOf(normalized.__proto__), null);
-    assert.equal(Object.getPrototypeOf(normalized.constructor), null);
-    assert.equal(normalized.__proto__.polluted, true);
-    assert.equal(normalized.constructor.prototype.owned, true);
-    assert.equal({}.polluted, undefined);
-    assert.equal({}.owned, undefined);
-});
-
 test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {
     const { createScriptService } = await bundledScriptServiceModule();
     const state = { scripts: new Map(), activeScriptId: 0 };
@@ -1912,97 +1899,6 @@ test("persistent sandbox accepts harmless text output", async () => {
     assert.ok(messages.some((message) => message.type === "started"));
     assert.ok(messages.some((message) => message.type === "print" && message.values[0] === "plain text"));
     assert.equal(messages.some((message) => message.type === "failed"), false);
-});
-
-test("persistent baseline callbacks save and restore prototype-safe JSON", async () => {
-    const harness = await runPersistentScalarSandbox(`
-        emu_registerbaseline(
-            async () => JSON.parse('{"__proto__":{"polluted":true},"counter":7}'),
-            async (value, context) => print("restored", value.__proto__.polluted, value.counter, context.blocking)
-        );
-    `, []);
-    assert.ok(harness.messages.some((message) => message.type === "baselineHookRegistered"));
-    await harness.dispatch({
-        type: "baselineHookInvoke",
-        scriptInstanceId: "sandbox-instance-1",
-        callId: 1,
-        operation: "save",
-        name: "before-menu"
-    });
-    for (let attempt = 0; attempt < 50
-        && !harness.messages.some((message) => message.type === "baselineHookResult" && message.callId === 1);
-        attempt++) {
-        await new Promise((resolve) => setImmediate(resolve));
-    }
-    const saved = harness.messages.find((message) => message.type === "baselineHookResult" && message.callId === 1);
-    assert.equal(saved.ok, true);
-    assert.deepEqual(
-        JSON.parse(JSON.stringify(saved.value)),
-        JSON.parse('{"__proto__":{"polluted":true},"counter":7}')
-    );
-    assert.equal({}.polluted, undefined);
-
-    await harness.dispatchCloned({
-        type: "baselineHookInvoke",
-        scriptInstanceId: "sandbox-instance-1",
-        callId: 2,
-        operation: "restore",
-        name: "before-menu",
-        value: saved.value
-    });
-    for (let attempt = 0; attempt < 50
-        && !harness.messages.some((message) => message.type === "baselineHookResult" && message.callId === 2);
-        attempt++) {
-        await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.equal(harness.messages.find((message) => (
-        message.type === "baselineHookResult" && message.callId === 2
-    ))?.ok, true);
-    assert.ok(harness.messages.some((message) => (
-        message.type === "print"
-        && JSON.stringify(Array.from(message.values)) === JSON.stringify(["restored", true, 7, true])
-    )));
-    assert.equal({}.polluted, undefined);
-});
-
-test("persistent baseline registration tolerates missing callbacks and undefined state", async () => {
-    const missing = await runPersistentScalarSandbox(`
-        print("registered", emu_registerbaseline(undefined, null));
-    `, []);
-    assert.equal(missing.messages.some((message) => message.type === "failed"), false);
-    assert.ok(missing.messages.some((message) => (
-        message.type === "print" && Array.from(message.values).includes(false)
-    )));
-
-    const empty = await runPersistentScalarSandbox(`
-        emu_registerbaseline(async () => undefined, async () => null);
-    `, []);
-    await empty.dispatch({
-        type: "baselineHookInvoke",
-        scriptInstanceId: "sandbox-instance-1",
-        callId: 1,
-        operation: "save",
-        name: "empty"
-    });
-    for (let attempt = 0; attempt < 50
-        && !empty.messages.some((message) => message.type === "baselineHookResult");
-        attempt++) {
-        await new Promise((resolve) => setImmediate(resolve));
-    }
-    const result = empty.messages.find((message) => message.type === "baselineHookResult");
-    assert.equal(result.ok, true);
-    assert.equal(result.value, null);
-});
-
-test("persistent top-level runtime errors report the user source location", async () => {
-    const harness = await runPersistentScalarSandbox(`const before = true;
-throw new Error("line marker");`, []);
-    const failure = harness.messages.find((message) => message.type === "failed");
-    assert.equal(failure.phase, "runtime");
-    assert.equal(failure.error.details.line, 2);
-    assert.ok(Number.isSafeInteger(failure.error.details.column));
-    assert.equal(failure.error.details.sourceName, "desmume-persistent-user.js");
-    assert.match(failure.error.details.sourceExcerpt, /line marker/);
 });
 
 test("persistent sandbox preserves application RPC errors without a protocol failure", async () => {

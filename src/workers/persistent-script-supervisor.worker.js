@@ -3,7 +3,6 @@
 import { normalizeBoundedValue } from "../bounded-value.js";
 import {
     isPersistentMcpName,
-    normalizePersistentBaselineData,
     normalizePersistentMcpMetadata,
     normalizePersistentMcpParams,
     normalizePersistentMcpResult,
@@ -26,8 +25,6 @@ let childHandlersCleared = false;
 const pendingRequestIds = new Set();
 const pendingPersistentMcpCallIds = new Set();
 const completedPersistentMcpCallIds = new Set();
-const pendingBaselineHookCallIds = new Set();
-const completedBaselineHookCallIds = new Set();
 const MAX_PENDING_REQUESTS = 32;
 const MAX_EVENT_QUEUE = 64;
 const eventQueue = [];
@@ -75,8 +72,6 @@ function disposeSandbox() {
     pendingRequestIds.clear();
     pendingPersistentMcpCallIds.clear();
     completedPersistentMcpCallIds.clear();
-    pendingBaselineHookCallIds.clear();
-    completedBaselineHookCallIds.clear();
     eventQueue.length = 0;
     childEventBusy = false;
 }
@@ -165,44 +160,6 @@ function forwardAuthenticatedChildMessage(childMessage) {
             type: "pscriptMcpPublished",
             scriptInstanceId,
             mcps: normalizePersistentMcpMetadata(childMessage.mcps)
-        });
-        return;
-    }
-    if (childMessage.type === "baselineHookRegistered") {
-        postMessage({ type: "baselineHookRegistered", scriptInstanceId });
-        return;
-    }
-    if (childMessage.type === "baselineHookResult") {
-        const callId = Number(childMessage.callId);
-        const operation = childMessage.operation;
-        if (!Number.isSafeInteger(callId) || callId < 1
-            || childMessage.scriptInstanceId !== scriptInstanceId
-            || (operation !== "save" && operation !== "restore")) {
-            throw new TypeError("sandbox persistent baseline result identity is invalid");
-        }
-        if (!pendingBaselineHookCallIds.has(callId)) {
-            if (completedBaselineHookCallIds.has(callId)) {
-                throw new TypeError("sandbox duplicated a persistent baseline result");
-            }
-            return;
-        }
-        if (typeof childMessage.ok !== "boolean") {
-            throw new TypeError("sandbox persistent baseline result status is invalid");
-        }
-        pendingBaselineHookCallIds.delete(callId);
-        completedBaselineHookCallIds.add(callId);
-        while (completedBaselineHookCallIds.size > ResourceLimits.expiredPersistentMcpCallsPerScript) {
-            completedBaselineHookCallIds.delete(completedBaselineHookCallIds.values().next().value);
-        }
-        postMessage({
-            type: "baselineHookResult",
-            scriptInstanceId,
-            callId,
-            operation,
-            ok: childMessage.ok,
-            ...(childMessage.ok
-                ? { value: normalizePersistentBaselineData(childMessage.value) }
-                : { error: normalizePersistentBaselineData(childMessage.error) })
         });
         return;
     }
@@ -320,8 +277,7 @@ function startSandbox(message) {
         if (childMessage.channelToken !== channelToken
             || ![
                 "call", "register", "eventDone", "eventProcessed", "print", "compiled", "started",
-                "failed", "pscriptMcpPublished", "pscriptMcpResult", "baselineHookRegistered",
-                "baselineHookResult"
+                "failed", "pscriptMcpPublished", "pscriptMcpResult"
             ].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"), "child-auth");
             disposeSandbox();
@@ -462,47 +418,6 @@ onmessage = (event) => {
             name: message.name,
             params,
             blocking: message.blocking
-        });
-        return;
-    }
-    if (message.type === "baselineHookInvoke" && sandbox && channelToken) {
-        const callId = Number(message.callId);
-        const operation = message.operation;
-        if (!Number.isSafeInteger(callId) || callId < 1
-            || message.scriptInstanceId !== scriptInstanceId
-            || (operation !== "save" && operation !== "restore")
-            || typeof message.name !== "string") {
-            fail(new Error("persistent baseline invocation is malformed"));
-            disposeSandbox();
-            return;
-        }
-        if (pendingBaselineHookCallIds.has(callId)
-            || completedBaselineHookCallIds.has(callId)) {
-            fail(new Error("persistent baseline invocation reused a call id"));
-            disposeSandbox();
-            return;
-        }
-        if (pendingBaselineHookCallIds.size >= ResourceLimits.pendingPersistentMcpCallsPerScript) {
-            fail(new Error("persistent baseline invocation limit exceeded"), "resource");
-            disposeSandbox();
-            return;
-        }
-        let value = null;
-        try {
-            if (operation === "restore") value = normalizePersistentBaselineData(message.value);
-        } catch (error) {
-            fail(error);
-            disposeSandbox();
-            return;
-        }
-        pendingBaselineHookCallIds.add(callId);
-        sandbox.postMessage({
-            type: "baselineHookInvoke",
-            scriptInstanceId,
-            callId,
-            operation,
-            name: message.name.slice(0, 256),
-            value
         });
         return;
     }

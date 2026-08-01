@@ -278,11 +278,3 @@ Purpose: fix only the reported State transaction/callback races, State save comp
   analysis-baseline commands without a duplicated command allowlist. Per user
   instruction, verification is delegated to GitHub Actions rather than run
   locally for this change.
-
-## 2026-08-01 Persistent Baseline Script State Addendum
-
-- `emu_registerbaseline(saveAsync, restoreAsync)` / `emu.registerBaseline(...)` registers one built-in blocking callback pair per persistent script. Missing or null callbacks do not stop the script; `undefined` save results are stored as JSON `null`.
-- Analysis baselines store registered callback JSON with the script name and exact-source SHA-256. Restore validates every saved script identity and hook before native State load, then awaits restoration while paused and before applying the recorded run state.
-- Each callback has a fixed 1500 ms deadline. Timeout fails the baseline operation and stops/discards the Worker so a late callback cannot commit.
-- Callback JSON is normalized at sandbox, supervisor, and main boundaries into null-prototype data objects. Reserved keys including `__proto__`, `constructor`, and `prototype` remain data and cannot mutate prototypes.
-- Persistent and eval runtime errors report the user-source `line`, `column`, `sourceName`, and `sourceExcerpt`; persistent main-thread handling reads the structured `error.details` format emitted by the Worker.
