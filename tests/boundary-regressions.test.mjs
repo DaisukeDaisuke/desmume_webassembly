@@ -1942,7 +1942,7 @@ test("persistent baseline callbacks save and restore prototype-safe JSON", async
     );
     assert.equal({}.polluted, undefined);
 
-    await harness.dispatch({
+    await harness.dispatchCloned({
         type: "baselineHookInvoke",
         scriptInstanceId: "sandbox-instance-1",
         callId: 2,

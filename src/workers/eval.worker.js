@@ -157,14 +157,7 @@ nativeAddEventListener("message", async (event) => {
         send({ type: "done", result: normalizeBoundedValue(result === undefined ? null : result).value });
     } catch (error) {
         const phase = error?.name === "SyntaxError" ? "compile" : "runtime";
-        send({
-            type: "error",
-            error: serializeWorkerError(error, {
-                source: message.code,
-                sourceName: "desmume-eval-user.js",
-                phase
-            })
-        });
+        send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase }) });
     }
 });
 })();

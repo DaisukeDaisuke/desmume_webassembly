@@ -105,7 +105,6 @@ export function serializeWorkerError(error, {
     phase = "runtime",
     code = "",
     source = "",
-    sourceName = "",
     nameBytes = 256,
     messageBytes = 2048,
     stackBytes = 8192,
@@ -118,24 +117,14 @@ export function serializeWorkerError(error, {
         const stack = truncateUtf8(stackLines(ownPrimitiveString(error, "stack")), stackBytes);
         const details = { phase: truncateUtf8(primitiveToString(phase) || "runtime", 128), errorName: name };
         if (stack) details.stack = stack;
-        const match = /desmume-(eval|persistent)-user\.js:(\d+)(?::(\d+))?/.exec(stack);
-        const anonymousMatch = match
-            ? null
-            : /(?:<anonymous>|evalmachine\.<anonymous>):(\d+)(?::(\d+))?/.exec(stack);
+        const match = /desmume-(eval|persistent)-user\.js:(\d+):(\d+)/.exec(stack);
         if (match) {
             const line = nativeMathMax(1, NativeNumber(match[2]) - 2);
             details.line = line;
-            details.column = NativeNumber(match[3] || 1);
+            details.column = NativeNumber(match[3]);
             details.sourceName = match[1] === "persistent"
                 ? "desmume-persistent-user.js"
                 : "desmume-eval-user.js";
-            const sourceLines = callIntrinsic(nativeStringSplit, primitiveToString(source), ["\n"]);
-            details.sourceExcerpt = truncateUtf8(sourceLines[line - 1] || "", sourceExcerptBytes);
-        } else if (anonymousMatch && sourceName) {
-            const line = nativeMathMax(1, NativeNumber(anonymousMatch[1]) - 2);
-            details.line = line;
-            details.column = NativeNumber(anonymousMatch[2] || 1);
-            details.sourceName = truncateUtf8(primitiveToString(sourceName), 256);
             const sourceLines = callIntrinsic(nativeStringSplit, primitiveToString(source), ["\n"]);
             details.sourceExcerpt = truncateUtf8(sourceLines[line - 1] || "", sourceExcerptBytes);
         }
