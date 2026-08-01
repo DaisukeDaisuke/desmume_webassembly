@@ -18,6 +18,7 @@ import { createInputCommands } from "../src/commands/input-commands.js";
 import { createRuntimeLoader } from "../src/runtime-loader.js";
 import { createBootstrapWebMcpTools } from "../src/bootstrap-webmcp.js";
 import { createContextCommands } from "../src/commands/context-commands.js";
+import { createCommandDispatcher } from "../src/command-dispatcher.js";
 import { getInternalMetadata } from "../src/internal-command-metadata.js";
 import { bindScreenTouch } from "../src/ui/ui-controller.js";
 import { createEmulationLoop } from "../src/emulation-loop.js";
@@ -876,6 +877,64 @@ test("analysis baseline State load remains paused through PC and CPSR verificati
     assert.equal(calls.at(-1), "resume");
 });
 
+test("baseline restore policy effects are FIFO and apply last-wins only after success", async () => {
+    const state = {
+        fileTransactionActive: true,
+        analysisBaselineOperation: {
+            operationId: 1,
+            name: "policy",
+            operation: "restore",
+            phase: "restore-hooks",
+            deferredEffects: []
+        }
+    };
+    const responder = {
+        fail(code, message, details) {
+            const error = new Error(message);
+            error.mcpCode = code;
+            error.mcpDetails = details;
+            return { ok: false, error: { code, message, details } };
+        }
+    };
+    const dispatcher = createCommandDispatcher({
+        state,
+        registry: { execute: async () => ({ ok: true }) },
+        responder,
+        operationManager: { current: () => null },
+        hasLoadedRom: () => true,
+        emulatorActivity: () => ({ paused: true, running: false }),
+        refreshDebuggerViews: async () => {},
+        updateStatus: () => {},
+        log: () => {}
+    });
+    assert.deepEqual(await dispatcher.run("setSpeed", { speed: 2 }), {
+        ok: true,
+        deferred: true,
+        command: "setSpeed"
+    });
+    assert.deepEqual(await dispatcher.run("setSpeed", { speed: 4 }), {
+        ok: true,
+        deferred: true,
+        command: "setSpeed"
+    });
+    assert.deepEqual(state.analysisBaselineOperation.deferredEffects.map(({ command, params }) => ({
+        command,
+        speed: params.speed
+    })), [
+        { command: "setSpeed", speed: 2 },
+        { command: "setSpeed", speed: 4 }
+    ]);
+    const applied = [];
+    state.analysisBaselineOperation.phase = "restore-effects";
+    for (const effect of state.analysisBaselineOperation.deferredEffects) {
+        applied.push(effect.params.speed);
+    }
+    assert.deepEqual(applied, [2, 4]);
+    assert.equal(applied.at(-1), 4);
+    state.analysisBaselineOperation.deferredEffects.length = 0;
+    assert.deepEqual(state.analysisBaselineOperation.deferredEffects, []);
+});
+
 test("analysis baseline replacement switches metadata before deleting the old State", async () => {
     const oldBaseline = { slot: "analysis:old", name: "default" };
     const store = new Map([["analysis:old", new Uint8Array([1])]]);
@@ -929,13 +988,15 @@ test("analysis baseline replacement switches metadata before deleting the old St
     const result = await commands.saveAnalysisBaseline({ replace: true });
     assert.equal(result.ok, true);
     assert.notEqual(metadata.slot, "analysis:old");
+    assert.equal(metadata.metadataVersion, 1);
+    assert.equal(metadata.persistentScriptsStorageVersion, 1);
     assert.equal(metadata.persistentScripts, persistentScripts);
     assert.deepEqual(saveOrder.slice(-2), ["script", "state"]);
     assert.equal(store.has(metadata.slot), true);
     assert.equal(store.has("analysis:old"), false);
 });
 
-test("parallel same-name baseline saves serialize and failed cleanup preserves the committed State", async () => {
+test("parallel baseline saves reject immediately and preserve the first committed State", async () => {
     const store = new Map();
     const attemptedSlots = [];
     let metadata = null;
@@ -990,10 +1051,10 @@ test("parallel same-name baseline saves serialize and failed cleanup preserves t
     const results = await Promise.allSettled([first, second]);
     assert.equal(results[0].status, "fulfilled");
     assert.equal(results[1].status, "rejected");
-    assert.match(results[1].reason.message, /metadata write failed/);
+    assert.equal(results[1].reason.mcpCode, "BUSY");
     assert.equal(new Set(attemptedSlots).size, 2);
     assert.equal(store.has(metadata.slot), true);
-    assert.deepEqual([...store.keys()], [metadata.slot]);
+    assert.deepEqual([...store.keys()], [metadata.slot, metadata.persistentScriptsSlot]);
 });
 
 test("same-name baseline delete and save serialize without removing the new metadata or State", async () => {
@@ -1059,7 +1120,7 @@ test("same-name baseline delete and save serialize without removing the new meta
         assert.equal(saveResult.ok, true);
         assert.equal(metadata.slot, saveResult.slot);
         assert.equal(store.has(metadata.slot), true);
-        assert.deepEqual([...store.keys()], [metadata.slot]);
+        assert.deepEqual([...store.keys()], [metadata.slot, metadata.persistentScriptsSlot]);
     } finally {
         if (oldLocalStorage === undefined) delete globalThis.localStorage;
         else globalThis.localStorage = oldLocalStorage;

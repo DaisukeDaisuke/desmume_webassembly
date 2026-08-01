@@ -20,6 +20,8 @@ export const ResourceLimits = Object.freeze({
     persistentBaselineDataBytes: 256 * 1024,
     persistentBaselineTotalBytes: 2 * 1024 * 1024,
     persistentBaselineHookTimeoutMs: 1500,
+    persistentBaselineHookQueueTimeoutMs: 10000,
+    analysisBaselineNameChars: 256,
     memorySearchCandidates: 1000000,
     scriptOutputBytes: 256 * 1024,
     scriptSourceOutputChars: 64 * 1024,

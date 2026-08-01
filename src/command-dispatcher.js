@@ -19,7 +19,8 @@ const ACTIVITY_COMMANDS = new Set([
     "runUntilReturn", "returnToPop", "runUntilNextCall", "nextFunctionEnter", "nextCall",
     "nextFunctionCall", "stepFrames", "setInput", "runInputHold", "runInputTap", "runTouchHold",
     "setRegister", "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze",
-    "setCTableSeed", "memorySetRegister", "memoryWriteByte", "memoryWriteWord", "memoryWriteDword"
+    "setCTableSeed", "memorySetRegister", "memoryWriteByte", "memoryWriteWord", "memoryWriteDword",
+    "saveAnalysisBaseline", "restoreAnalysisBaseline"
 ]);
 
 const CANCELLING_COMMANDS = new Set([
@@ -33,7 +34,24 @@ const FILE_TRANSACTION_ALLOWED_COMMANDS = new Set([
     "listScripts", "listPScriptMcp", "getScript", "listScriptPrint", "getOperation", "cancelOperation",
     "getInputState", "releaseInput", "listStateSlots", "listSaveSlots",
     "listAnalysisBaselines", "listInputRecordings", "waitForStateLoad",
-    "waitForFileTransaction"
+    "waitForFileTransaction", "snapshotContext", "getRegisters", "dumpMemory", "searchMemory",
+    "resetMemorySearch", "disassemble", "disassembleBytes", "stackTrace", "callStack",
+    "copyCallStackMarkdown", "copyCallStackCsv", "listOtherCoroutines", "getOtherCoroutines",
+    "memoryGetRegister", "memoryReadByte", "memoryReadWord", "memoryReadDword"
+]);
+
+const BASELINE_HOOK_READ_ONLY_COMMANDS = new Set([
+    "status", "snapshotContext", "getRegisters", "dumpMemory", "searchMemory", "resetMemorySearch",
+    "disassemble", "disassembleBytes", "stackTrace", "callStack", "copyCallStackMarkdown",
+    "copyCallStackCsv", "listOtherCoroutines", "getOtherCoroutines", "memoryGetRegister",
+    "memoryReadByte", "memoryReadWord", "memoryReadDword", "listRecentFiles", "listBreakpoints",
+    "listMemoryFreezes", "listScripts", "listPScriptMcp", "getScript", "listScriptPrint",
+    "getOperation", "getInputState", "listStateSlots", "listSaveSlots", "listAnalysisBaselines",
+    "listInputRecordings", "waitForStateLoad", "waitForFileTransaction"
+]);
+
+const BASELINE_DEFERRED_EFFECT_COMMANDS = new Set([
+    "setSpeed", "setRenderEnabled", "setAudio", "setScale", "setRotation"
 ]);
 
 const RECORDABLE_INPUT_COMMANDS = new Set([
@@ -100,7 +118,34 @@ export function createCommandDispatcher({
         ) {
             return responder.fail(ErrorCode.BUSY, `Active operation is ${active.name}`);
         }
+        const baselineOperation = state.analysisBaselineOperation;
+        if (baselineOperation && (name === "saveAnalysisBaseline" || name === "restoreAnalysisBaseline")) {
+            return responder.fail(ErrorCode.BUSY, "Analysis baseline operation is already in progress", {
+                operationId: baselineOperation.operationId,
+                name: baselineOperation.name,
+                phase: baselineOperation.phase,
+                operation: baselineOperation.operation
+            });
+        }
+        if (baselineOperation
+            && ["save-hooks", "restore-hooks"].includes(baselineOperation.phase)
+            && !BASELINE_HOOK_READ_ONLY_COMMANDS.has(name)
+            && !(BASELINE_DEFERRED_EFFECT_COMMANDS.has(name)
+                && baselineOperation.phase === "restore-hooks")) {
+            return responder.fail(ErrorCode.COMMAND_NOT_ALLOWED, `${name} is unavailable during baseline hook`);
+        }
         if (state.fileTransactionActive && !FILE_TRANSACTION_ALLOWED_COMMANDS.has(name)) {
+            if (BASELINE_DEFERRED_EFFECT_COMMANDS.has(name)
+                && baselineOperation?.phase === "restore-hooks") {
+                if (!Array.isArray(baselineOperation.deferredEffects)) {
+                    baselineOperation.deferredEffects = [];
+                }
+                if (baselineOperation.deferredEffects.length >= 16) {
+                    return responder.fail(ErrorCode.RESOURCE_LIMIT, "Too many deferred baseline effects");
+                }
+                baselineOperation.deferredEffects.push({ command: name, params: { ...params } });
+                return { ok: true, deferred: true, command: name };
+            }
             return responder.fail(
                 ErrorCode.BUSY,
                 `Active file transaction is ${state.fileTransactionReason || "in progress"}`

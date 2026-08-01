@@ -97,7 +97,9 @@ export function createStateCommands(context) {
                     drawLoadedStateFrame({
                         showResumeNotice: !(runState.running && !runState.paused)
                     });
-                    dispatchScriptEvent("stateLoad", { slot: params.slot || null });
+                    if (metadata.deferStateLoadEvent !== true) {
+                        dispatchScriptEvent("stateLoad", { slot: params.slot || null });
+                    }
                     return { ok: true, paused: runState.paused, reset: false };
                 } finally {
                     if (loaded) restoreAfterFileLoad(metadata.holdPaused

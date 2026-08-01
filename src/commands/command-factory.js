@@ -138,6 +138,7 @@ export function createCommands(context) {
             captureAnalysisBaselineScriptState,
             currentRomIdentity,
             emulatorActivity,
+            dispatchScriptEvent,
             ensureRomLoaded,
             fileTransactionService,
             getRegisters,
@@ -156,6 +157,8 @@ export function createCommands(context) {
             ui,
             validateAnalysisBaselineScriptState,
             restoreAnalysisBaselineScriptState,
+            pauseForFileLoad,
+            restoreAfterFileLoad,
             writeAnalysisBaseline
         }),
         ...createRomCommands({

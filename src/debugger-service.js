@@ -167,7 +167,16 @@ export function createDebuggerService({
         if (cached) return cached;
         try {
             const saved = JSON.parse(localStorage.getItem(analysisBaselineKey(key)) || "null");
-            if (saved && typeof saved === "object") state.analysisBaselines.set(key, saved);
+            if (saved && typeof saved === "object") {
+                // Version 0 stored callback JSON inline. Keep reading it while
+                // marking the record so the new IndexedDB manifest format can
+                // coexist with existing localStorage baselines.
+                if (!Object.hasOwn(saved, "metadataVersion")) saved.metadataVersion = 1;
+                if (!Object.hasOwn(saved, "persistentScriptsStorageVersion")) {
+                    saved.persistentScriptsStorageVersion = Object.hasOwn(saved, "persistentScripts") ? 0 : 1;
+                }
+                state.analysisBaselines.set(key, saved);
+            }
             return saved;
         } catch (_) {
             return null;

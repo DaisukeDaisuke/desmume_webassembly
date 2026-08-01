@@ -133,6 +133,8 @@ function forwardAuthenticatedChildMessage(childMessage) {
             id: childMessage.id,
             command: childMessage.command,
             params: normalizeWorkerRpcParams(childMessage.command, childMessage.params || {}),
+            callSiteStack: typeof childMessage.callSiteStack === "string"
+                ? childMessage.callSiteStack.slice(0, 8192) : "",
             eventId: Number(childMessage.eventId) || 0,
             callbackId: childMessage.callbackId,
             callbackToken: typeof childMessage.callbackToken === "string" ? childMessage.callbackToken : ""
@@ -169,7 +171,30 @@ function forwardAuthenticatedChildMessage(childMessage) {
         return;
     }
     if (childMessage.type === "baselineHookRegistered") {
-        postMessage({ type: "baselineHookRegistered", scriptInstanceId });
+        const priority = Number(childMessage.priority);
+        if (!Number.isSafeInteger(priority) || priority < -1000000 || priority > 1000000) {
+            throw new TypeError("persistent baseline priority is invalid");
+        }
+        postMessage({ type: "baselineHookRegistered", scriptInstanceId, priority });
+        return;
+    }
+    if (childMessage.type === "baselineHookStarted") {
+        postMessage({
+            type: "baselineHookStarted",
+            scriptInstanceId,
+            callId: Number(childMessage.callId),
+            operation: childMessage.operation
+        });
+        return;
+    }
+    if (childMessage.type === "callbackError") {
+        postMessage({
+            type: "callbackError",
+            scriptInstanceId,
+            eventId: Number(childMessage.eventId) || 0,
+            callbackId: Number(childMessage.callbackId) || 0,
+            error: smallValue(childMessage.error)
+        });
         return;
     }
     if (childMessage.type === "baselineHookResult") {
@@ -320,7 +345,8 @@ function startSandbox(message) {
         if (childMessage.channelToken !== channelToken
             || ![
                 "call", "register", "eventDone", "eventProcessed", "print", "compiled", "started",
-                "failed", "pscriptMcpPublished", "pscriptMcpResult", "baselineHookRegistered",
+                "failed", "pscriptMcpPublished", "pscriptMcpResult", "baselineHookRegistered", "baselineHookStarted",
+                "callbackError",
                 "baselineHookResult"
             ].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"), "child-auth");

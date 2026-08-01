@@ -54,6 +54,7 @@ const callbacks = new Map();
 const persistentMcps = new Map();
 let baselineSaveHook = null;
 let baselineRestoreHook = null;
+let baselinePriority = 0;
 const replies = new Map();
 let callbackSerial = 1;
 const workQueue = [];
@@ -151,6 +152,7 @@ const mcp = {
         return ask("call", {
             command,
             params: normalizedParams,
+            callSiteStack: String(new NativeError().stack || "").slice(0, 8192),
             eventId: activeEvent?.eventId || 0,
             callbackId: activeEvent?.callbackId,
             callbackToken: activeEvent?.callbackToken
@@ -175,7 +177,7 @@ const printhex = (label, value) => print(
     label + ": " + (value == null ? "nil" : "0x" + (Number(value) >>> 0).toString(16).padStart(8, "0"))
 );
 
-function callbackErrorMessage(error) {
+function callbackErrorSummary(error) {
     const code = readOwnDataProperty(error, "code");
     const summary = serializeWorkerError(error, {
         phase: "callback",
@@ -183,6 +185,11 @@ function callbackErrorMessage(error) {
         source: currentSource,
         sourceName: "desmume-persistent-user.js"
     });
+    return summary;
+}
+
+function callbackErrorMessage(error) {
+    const summary = callbackErrorSummary(error);
     const details = readOwnDataProperty(error, "details");
     let detailText = "";
     try {
@@ -194,7 +201,13 @@ function callbackErrorMessage(error) {
             }).value);
         }
     } catch {}
-    return `${summary.details.code ? `[${summary.details.code}] ` : ""}${summary.message}${detailText ? ` details=${detailText}` : ""}`;
+    const location = summary.details.line
+        ? ` at ${summary.details.sourceName || "user source"}:${summary.details.line}:${summary.details.column || 1}`
+        : "";
+    const excerpt = summary.details.sourceExcerpt
+        ? ` sourceExcerpt=${nativeJsonStringify(summary.details.sourceExcerpt)}`
+        : "";
+    return `${summary.details.code ? `[${summary.details.code}] ` : ""}${summary.message}${location}${excerpt}${detailText ? ` details=${detailText}` : ""}`;
 }
 
 function unwrapLegacyScalar(result, command) {
@@ -281,11 +294,16 @@ const emu_registerstart = (callback, options) => register("start", 0, callback, 
 const emu_ontick = (callback, options) => register("tick", 0, callback, options);
 const emu_onstateload = (callback, options) => register("stateLoad", 0, callback, options);
 const emu_onstatesave = (callback, options) => register("stateSave", 0, callback, options);
-const emu_registerbaseline = (saveCallback, restoreCallback) => {
+const emu_registerbaseline = (saveCallback, restoreCallback, priority = 0) => {
     if (typeof saveCallback !== "function" || typeof restoreCallback !== "function"
         || nativeObjectGetPrototypeOf(saveCallback) !== nativeAsyncFunctionPrototype
         || nativeObjectGetPrototypeOf(restoreCallback) !== nativeAsyncFunctionPrototype) {
         print("baseline hook not registered: save and restore must both be async functions");
+        return false;
+    }
+    const normalizedPriority = Number(priority);
+    if (!Number.isSafeInteger(normalizedPriority) || normalizedPriority < -1000000 || normalizedPriority > 1000000) {
+        print("baseline hook not registered: priority must be an integer between -1000000 and 1000000");
         return false;
     }
     if (baselineSaveHook || baselineRestoreHook) {
@@ -293,7 +311,8 @@ const emu_registerbaseline = (saveCallback, restoreCallback) => {
     }
     baselineSaveHook = saveCallback;
     baselineRestoreHook = restoreCallback;
-    send({ type: "baselineHookRegistered" });
+    baselinePriority = normalizedPriority;
+    send({ type: "baselineHookRegistered", priority: baselinePriority });
     return true;
 };
 const emu = Object.fromEntries([
@@ -474,6 +493,12 @@ async function runBaselineHook(message) {
         });
         return;
     }
+    send({
+        type: "baselineHookStarted",
+        callId,
+        scriptInstanceId,
+        operation
+    });
     try {
         const context = nativeObjectFreeze({
             name: NativeString(message.name || "default"),
@@ -544,6 +569,13 @@ async function runEvent(message) {
                 await entry.callback(message.payload);
             } catch (error) {
                 if (asyncMode) throw error;
+                const summary = callbackErrorSummary(error);
+                send({
+                    type: "callbackError",
+                    eventId: Number(message.eventId) || 0,
+                    callbackId: Number(message.callbackId) || 0,
+                    error: summary
+                });
                 print(`callback error: ${callbackErrorMessage(error)}`);
             }
         }
@@ -577,6 +609,13 @@ async function drainWork() {
                 await runEvent(message);
             } catch (error) {
                 if (asyncMode) throw error;
+                const summary = callbackErrorSummary(error);
+                send({
+                    type: "callbackError",
+                    eventId: Number(message.eventId) || 0,
+                    callbackId: Number(message.callbackId) || 0,
+                    error: summary
+                });
                 print(`callback error: ${callbackErrorMessage(error)}`);
             }
         }
@@ -606,7 +645,17 @@ nativeAddEventListener("message", async (event) => {
                 const code = readOwnDataProperty(payload, "code");
                 const details = readOwnDataProperty(payload, "details");
                 if (typeof code === "string") error.code = code;
-                if (details !== undefined) error.details = details;
+                if (details !== undefined) {
+                    const callSiteStack = readOwnDataProperty(details, "callSiteStack");
+                    if (typeof callSiteStack === "string" && callSiteStack) {
+                        nativeObjectDefineProperty(error, "stack", {
+                            value: callSiteStack,
+                            configurable: true,
+                            writable: true
+                        });
+                    }
+                    error.details = details;
+                }
             }
             pending.reject(error);
         } else pending.resolve(message.result);
@@ -619,7 +668,6 @@ nativeAddEventListener("message", async (event) => {
         try {
             const run = nativeEval(`(async (mcp, webmcp, memory, print, printf, printhex, emu, emu_registerstart, emu_ontick, emu_onstateload, emu_onstatesave, emu_registerbaseline) => {\n"use strict";\n${message.code}\n})\n//# sourceURL=desmume-persistent-user.js`);
             send({ type: "compiled" });
-            send({ type: "started" });
             const published = await run(
                 mcp,
                 webmcp,
@@ -635,6 +683,7 @@ nativeAddEventListener("message", async (event) => {
                 emu_registerbaseline
             );
             publishPersistentMcps(published);
+            send({ type: "started" });
         } catch (error) {
             fail(error, error?.name === "SyntaxError" ? "compile" : "runtime");
         }
