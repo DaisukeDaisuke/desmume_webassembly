@@ -1957,11 +1957,10 @@ test("persistent baseline callbacks save and restore prototype-safe JSON", async
     const harness = await runPersistentScalarSandbox(`
         emu_registerbaseline(
             async () => JSON.parse('{"__proto__":{"polluted":true},"counter":7}'),
-            async (value, context) => print("restored", value.__proto__.polluted, value.counter, context.blocking),
-            7
+            async (value, context) => print("restored", value.__proto__.polluted, value.counter, context.blocking)
         );
     `, []);
-    assert.equal(harness.messages.find((message) => message.type === "baselineHookRegistered")?.priority, 7);
+    assert.ok(harness.messages.some((message) => message.type === "baselineHookRegistered"));
     await harness.dispatch({
         type: "baselineHookInvoke",
         scriptInstanceId: "sandbox-instance-1",
@@ -2003,82 +2002,6 @@ test("persistent baseline callbacks save and restore prototype-safe JSON", async
         && JSON.stringify(Array.from(message.values)) === JSON.stringify(["restored", true, 7, true])
     )));
     assert.equal({}.polluted, undefined);
-});
-
-test("persistent baseline callbacks run in deterministic priority order", async () => {
-    const { createScriptService } = await bundledScriptServiceModule();
-    const state = { scripts: new Map(), activeScriptId: 0 };
-    const posted = [];
-    let service;
-    const makeScript = (id, name, priority, codeSha256) => ({
-        id,
-        name,
-        running: true,
-        started: true,
-        scriptInstanceId: `${name}-instance`,
-        baselineHookRegistered: true,
-        baselinePriority: priority,
-        pscriptMcpPublished: true,
-        pscriptMcps: new Map(),
-        pendingPScriptMcpCalls: new Map(),
-        inFlightPScriptMcpCalls: new Map(),
-        expiredPScriptMcpCalls: new Map(),
-        nextPScriptMcpCallId: 1,
-        pendingBaselineHookCalls: new Map(),
-        inFlightBaselineHookCalls: new Map(),
-        nextBaselineHookCallId: 1,
-        eventQueue: [],
-        eventBusy: false,
-        worker: {
-            postMessage: (message) => {
-                posted.push({name, operation: message.operation});
-                queueMicrotask(() => service.finishBaselineHookCall(
-                    state.scripts.get(id),
-                    {
-                        scriptInstanceId: `${name}-instance`,
-                        callId: message.callId,
-                        operation: message.operation,
-                        ok: true,
-                        value: {priority}
-                    }
-                ));
-            }
-        },
-        code: `${name} source`,
-        codeSha256,
-        output: [],
-        triggers: [],
-        ownedBreakpointIds: new Set()
-    });
-    const low = makeScript(1, "low", -10, "a".repeat(64));
-    const high = makeScript(2, "high", 10, "b".repeat(64));
-    state.scripts.set(low.id, low);
-    state.scripts.set(high.id, high);
-    service = createScriptService({
-        state,
-        ui: {},
-        responder,
-        breakpointOwners: {},
-        ensureRomLoaded: () => {},
-        finishPersistentScriptEvent: async () => true,
-        requestPersistentScriptResume: () => true,
-        settlePersistentScriptCallbacks: async () => {},
-        hex: String,
-        parseAddress: Number,
-        rawOutputText: JSON.stringify,
-        runCommand: async () => ({}),
-        getCommands: () => ({}),
-        onExplicitPause: () => {}
-    });
-    const entries = await service.captureAnalysisBaselineScriptState("priority-test");
-    assert.deepEqual(posted, [
-        {name: "low", operation: "save"},
-        {name: "high", operation: "save"}
-    ]);
-    assert.deepEqual(entries.map(({name, priority}) => ({name, priority})), [
-        {name: "low", priority: -10},
-        {name: "high", priority: 10}
-    ]);
 });
 
 test("persistent baseline registration tolerates missing callbacks and undefined state", async () => {

@@ -72,8 +72,6 @@ export function createAppState() {
         explicitPauseSerial: 0,
         scriptStartGeneration: 0,
         analysisBaselines: new Map(),
-        analysisBaselineOperation: null,
-        analysisBaselineOperationSerial: 0,
         romGeneration: 0,
         nativeBreakSerial: 0,
         currentBreakIdentity: null,

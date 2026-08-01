@@ -124,8 +124,6 @@ export function serializeWorkerError(error, {
     code = "",
     source = "",
     sourceName = "",
-    line: explicitLine,
-    column: explicitColumn,
     nameBytes = 256,
     messageBytes = 2048,
     stackBytes = 8192,
@@ -142,16 +140,7 @@ export function serializeWorkerError(error, {
         const anonymousMatch = match
             ? null
             : /(?:<anonymous>|evalmachine\.<anonymous>):(\d+)(?::(\d+))?/.exec(stack);
-        if (Number.isSafeInteger(Number(explicitLine)) && Number(explicitLine) > 0) {
-            const line = Number(explicitLine);
-            details.line = line;
-            details.column = Number.isSafeInteger(Number(explicitColumn)) && Number(explicitColumn) > 0
-                ? Number(explicitColumn) : 1;
-            details.sourceName = truncateUtf8(primitiveToString(sourceName), 256)
-                || "desmume-persistent-user.js";
-            const sourceLines = callIntrinsic(nativeStringSplit, primitiveToString(source), ["\n"]);
-            details.sourceExcerpt = truncateUtf8(sourceLines[line - 1] || "", sourceExcerptBytes);
-        } else if (match) {
+        if (match) {
             const line = nativeMathMax(1, NativeNumber(match[2]) - 2);
             details.line = line;
             details.column = NativeNumber(match[3] || 1);

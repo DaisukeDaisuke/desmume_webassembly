@@ -153,19 +153,7 @@ nativeAddEventListener("message", async (event) => {
         assertSandboxSource(message.code);
         send({ type: "parsed" });
     } catch (error) {
-        const location = error?.loc && typeof error.loc === "object" ? error.loc : {};
-        const line = Number(location.line);
-        const column = Number(location.column);
-        send({
-            type: "error",
-            error: serializeWorkerError(error, {
-                source: message.code,
-                phase: "compile",
-                sourceName: "desmume-persistent-user.js",
-                line: Number.isSafeInteger(line) ? Math.max(1, line - 1) : undefined,
-                column: Number.isSafeInteger(column) ? column + 1 : undefined
-            })
-        });
+        send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase: "compile" }) });
     }
 });
 })();

@@ -1,8 +1,7 @@
-import {withInternalMetadata} from "../internal-command-metadata.js";
-import {ErrorCode} from "../error-codes.js";
-import {readOwnDataProperty} from "../structured-value-normalizer.js";
-import {codedError, nonNegativeNumber} from "../validation.js";
-import {ResourceLimits} from "../resource-limits.js";
+import { withInternalMetadata } from "../internal-command-metadata.js";
+import { ErrorCode } from "../error-codes.js";
+import { readOwnDataProperty } from "../structured-value-normalizer.js";
+import { codedError, nonNegativeNumber } from "../validation.js";
 
 let analysisBaselineTemporarySerial = 0;
 
@@ -13,15 +12,10 @@ export function createContextCommands(context) {
         call,
         captureAnalysisBaselineScriptState = async () => [],
         currentRomIdentity,
-        dispatchScriptEvent = () => {
-        },
         emulatorActivity,
         ensureRomLoaded,
         fileTransactionService = {
-            run: async (reason, task) => task({
-                token: null, commit: async () => {
-                }
-            })
+            run: async (reason, task) => task({ token: null })
         },
         getRegisters,
         hasLoadedRom,
@@ -34,101 +28,14 @@ export function createContextCommands(context) {
         readAnalysisBaseline,
         sha256Hex,
         snapshotContext,
-        pauseForFileLoad = () => {
-            const activity = {...emulatorActivity(), explicitPauseSerial: state.explicitPauseSerial};
-            state.paused = true;
-            state.running = false;
-            native.pause?.(true);
-            return activity;
-        },
-        restoreAfterFileLoad = (activity) => {
-            const shouldResume = !!activity?.running && !activity?.paused;
-            state.paused = !shouldResume;
-            state.running = shouldResume;
-            native.pause?.(!shouldResume);
-        },
         state,
         syncNativeBreakStatus,
         ui,
-        validateAnalysisBaselineScriptState = async () => {
-        },
-        restoreAnalysisBaselineScriptState = async () => {
-        },
+        validateAnalysisBaselineScriptState = async () => {},
+        restoreAnalysisBaselineScriptState = async () => {},
         writeAnalysisBaseline
     } = context;
     const analysisBaselineLocks = new Map();
-
-    function baselineName(params = {}, required = false) {
-        if (!Object.hasOwn(params, "name")) {
-            if (required) throw codedError(ErrorCode.INVALID_ARGUMENT, "name is required");
-            return "default";
-        }
-        if (typeof params.name !== "string"
-            || !params.name
-            || params.name.length > ResourceLimits.analysisBaselineNameChars) {
-            throw codedError(
-                ErrorCode.INVALID_ARGUMENT,
-                `baseline name must be a non-empty string of at most ${ResourceLimits.analysisBaselineNameChars} characters`
-            );
-        }
-        return params.name;
-    }
-
-    function beginBaselineOperation(kind, name) {
-        const active = state.analysisBaselineOperation;
-        if (active) {
-            throw codedError(ErrorCode.BUSY, "Analysis baseline operation is already in progress", {
-                operationId: active.operationId,
-                name: active.name,
-                phase: active.phase,
-                operation: active.operation
-            });
-        }
-        const operation = {
-            operationId: (state.analysisBaselineOperationSerial = Number(
-                state.analysisBaselineOperationSerial || 0
-            ) + 1),
-            name,
-            phase: "acquire",
-            operation: kind,
-            startedAt: Date.now(),
-            deferredEffects: []
-        };
-        state.analysisBaselineOperation = operation;
-        return operation;
-    }
-
-    function setBaselinePhase(operation, phase) {
-        if (state.analysisBaselineOperation === operation) operation.phase = phase;
-    }
-
-    async function withBaselineOperation(kind, name, task) {
-        const operation = beginBaselineOperation(kind, name);
-        try {
-            return await task(operation);
-        } finally {
-            if (state.analysisBaselineOperation === operation) state.analysisBaselineOperation = null;
-        }
-    }
-
-    async function loadPersistentBaselineState(baseline) {
-        const inline = readOwnDataProperty(baseline, "persistentScripts");
-        if (inline !== undefined) return inline;
-        const slot = readOwnDataProperty(baseline, "persistentScriptsSlot");
-        if (!slot) return [];
-        const bytes = await idbGet(String(slot));
-        const size = Number(readOwnDataProperty(baseline, "persistentScriptsSize"));
-        const hash = readOwnDataProperty(baseline, "persistentScriptsSha256");
-        if (!bytes || !Number.isSafeInteger(size) || size < 0 || bytes.length !== size
-            || typeof hash !== "string" || await sha256Hex(bytes) !== hash) {
-            throw codedError(ErrorCode.STATE_INVALID, "analysis baseline persistent script data integrity check failed");
-        }
-        try {
-            return JSON.parse(new TextDecoder().decode(bytes));
-        } catch {
-            throw codedError(ErrorCode.STATE_INVALID, "analysis baseline persistent script data is invalid");
-        }
-    }
 
     async function withAnalysisBaselineLock(name, task) {
         const previous = analysisBaselineLocks.get(name) || Promise.resolve();
@@ -137,8 +44,7 @@ export function createContextCommands(context) {
             release = resolve;
         });
         analysisBaselineLocks.set(name, current);
-        await previous.catch(() => {
-        });
+        await previous.catch(() => {});
         try {
             return await task();
         } finally {
@@ -200,9 +106,9 @@ export function createContextCommands(context) {
         async cancelOperation() {
             const manager = getOperationManager();
             const operation = manager?.current() || null;
-            if (!operation) return {ok: true, cancelled: false, operation: null};
+            if (!operation) return { ok: true, cancelled: false, operation: null };
             await manager.cancelAndWait("explicit-cancel");
-            return {ok: true, cancelled: true, operation};
+            return { ok: true, cancelled: true, operation };
         },
 
         async listStateSlots() {
@@ -211,7 +117,7 @@ export function createContextCommands(context) {
                 && !key.startsWith(ANALYSIS_BASELINE_SLOT_PREFIX)
                 && !key.startsWith("input-recording:")
             ));
-            return {slots};
+            return { slots };
         },
 
         async deleteStateSlot(params = {}) {
@@ -222,7 +128,7 @@ export function createContextCommands(context) {
                 throw codedError(ErrorCode.INVALID_ARGUMENT, "a normal State slot is required");
             }
             await idbDelete(slot);
-            return {ok: true, slot};
+            return { ok: true, slot };
         },
 
         async listSaveSlots() {
@@ -237,7 +143,7 @@ export function createContextCommands(context) {
             const slot = String(params.slot || "");
             if (!slot) throw codedError(ErrorCode.INVALID_ARGUMENT, "slot is required");
             await idbDelete(`save:${slot}`);
-            return {ok: true, slot};
+            return { ok: true, slot };
         },
 
         async listAnalysisBaselines() {
@@ -256,19 +162,19 @@ export function createContextCommands(context) {
                     pcVerified: !!baseline.cpuState
                 });
             }
-            return {baselines};
+            return { baselines };
         },
 
         async deleteAnalysisBaseline(params = {}) {
-            const name = baselineName(params, true);
+            const name = String(params.name || "");
+            if (!name) throw codedError(ErrorCode.INVALID_ARGUMENT, "name is required");
             return withAnalysisBaselineLock(name, async () => {
             const baseline = readAnalysisBaseline(name);
             if (!baseline) throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
             await idbDelete(String(baseline.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`));
-            if (baseline.persistentScriptsSlot) await idbDelete(String(baseline.persistentScriptsSlot));
-                state.analysisBaselines.delete(name);
-                localStorage.removeItem(`analysis-baseline:${name}`);
-                return {ok: true, name};
+            state.analysisBaselines.delete(name);
+            localStorage.removeItem(`analysis-baseline:${name}`);
+            return { ok: true, name };
             });
         },
 
@@ -278,250 +184,164 @@ export function createContextCommands(context) {
 
         async saveAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline requires a loaded ROM");
-            const name = baselineName(params);
-            return withBaselineOperation("save", name, async (operation) => {
-                return withAnalysisBaselineLock(name, async () => {
-                    const existing = readAnalysisBaseline(name);
-                    if (existing && params.replace !== true) {
-                        throw codedError(
-                            ErrorCode.INVALID_ARGUMENT,
-                            `analysis baseline already exists: ${name}; pass replace:true to overwrite it`
-                        );
-                    }
-                    const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}-${++analysisBaselineTemporarySerial}`;
-                    const scriptSlot = `${slot}:scripts`;
-                    const generation = state.romGeneration;
-                    const activity = emulatorActivity();
-                    return fileTransactionService.run("Analysis baseline save", async ({commit}) => {
-                        await commit?.();
-                        const runState = pauseForFileLoad();
-                        let committed = false;
-                        try {
-                            setBaselinePhase(operation, "save-hooks");
-                            const persistentScripts = await captureAnalysisBaselineScriptState(name);
-                            // Re-check the exact participant set after all awaits and
-                            // immediately before Native State capture.
-                            await validateAnalysisBaselineScriptState(persistentScripts);
-                            setBaselinePhase(operation, "native-save");
-                            if (generation !== state.romGeneration) {
-                                throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
-                            }
-                            const stateBytes = native.saveStateBytes();
-                            const cpuState = {
-                                arm9: {
-                                    pc: Number(getRegisters("arm9").pc) >>> 0,
-                                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
-                                },
-                                arm7: {
-                                    pc: Number(getRegisters("arm7").pc) >>> 0,
-                                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
-                                }
-                            };
-                            const identity = await currentRomIdentity();
-                            if (generation !== state.romGeneration) {
-                                throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
-                            }
-                            const stateSha256 = await sha256Hex(stateBytes);
-                            const scriptBytes = new TextEncoder().encode(JSON.stringify(persistentScripts));
-                            const persistentScriptsSha256 = await sha256Hex(scriptBytes);
-                            const baseline = {
-                                name,
-                                metadataVersion: 1,
-                                persistentScriptsStorageVersion: 1,
-                                slot,
-                                persistentScriptsSlot: scriptSlot,
-                                persistentScriptsSize: scriptBytes.length,
-                                persistentScriptsSha256,
-                                ...identity,
-                                stateSize: stateBytes.length,
-                                stateSha256,
-                                cpuState,
-                                ...activity,
-                                skipIrq: !!ui.tracePrivilegeToggle.checked,
-                                traceEnabled: !!ui.traceToggle.checked,
-                                savedAt: new Date().toISOString()
-                            };
-                            Object.defineProperty(baseline, "persistentScripts", {
-                                value: persistentScripts,
-                                enumerable: false,
-                                configurable: true
-                    });
-                    setBaselinePhase(operation, "commit");
-                    try {
-                        await idbPut(slot, stateBytes);
-                        await idbPut(scriptSlot, scriptBytes);
-                        writeAnalysisBaseline(name, baseline);
-                        committed = true;
-                    } finally {
-                                if (!committed) {
-                                    await idbDelete(slot).catch(() => {
-                                    });
-                                    await idbDelete(scriptSlot).catch(() => {
-                                    });
-                                }
-                            }
-                            const previousSlot = existing
-                                ? String(existing.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`)
-                                : null;
-                            const previousScriptSlot = existing?.persistentScriptsSlot
-                                ? String(existing.persistentScriptsSlot)
-                                : null;
-                            if (previousSlot && previousSlot !== slot) await idbDelete(previousSlot).catch(() => {
-                            });
-                            if (previousScriptSlot && previousScriptSlot !== scriptSlot) {
-                                await idbDelete(previousScriptSlot).catch(() => {
-                                });
-                            }
-                            return {
-                                ok: true,
-                                name,
-                                slot,
-                                size: stateBytes.length,
-                                pcVerified: true,
-                                cpuState,
-                                ...emulatorActivity(),
-                                skipIrq: baseline.skipIrq,
-                                traceEnabled: baseline.traceEnabled
-                            };
-                        } finally {
-                            restoreAfterFileLoad(runState);
-                        }
-                    });
-                });
+            const name = String(params.name || "default");
+            return withAnalysisBaselineLock(name, async () => {
+            const existing = readAnalysisBaseline(name);
+            if (existing && params.replace !== true) {
+                throw codedError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    `analysis baseline already exists: ${name}; pass replace:true to overwrite it`
+                );
+            }
+            const slot = `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}:temporary:${Date.now().toString(36)}-${++analysisBaselineTemporarySerial}`;
+            const generation = state.romGeneration;
+            const activity = emulatorActivity();
+            const persistentScripts = await captureAnalysisBaselineScriptState(name);
+            const stateBytes = native.saveStateBytes();
+            const cpuState = {
+                arm9: {
+                    pc: Number(getRegisters("arm9").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
+                },
+                arm7: {
+                    pc: Number(getRegisters("arm7").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
+                }
+            };
+            const identity = await currentRomIdentity();
+            if (generation !== state.romGeneration) {
+                throw codedError(ErrorCode.CANCELLED, "ROM changed while saving analysis baseline");
+            }
+            const stateSha256 = await sha256Hex(stateBytes);
+            const baseline = {
+                name,
+                slot,
+                ...identity,
+                stateSize: stateBytes.length,
+                stateSha256,
+                cpuState,
+                persistentScripts,
+                ...activity,
+                skipIrq: !!ui.tracePrivilegeToggle.checked,
+                traceEnabled: !!ui.traceToggle.checked,
+                savedAt: new Date().toISOString()
+            };
+            let committed = false;
+            try {
+                await idbPut(slot, stateBytes);
+                writeAnalysisBaseline(name, baseline);
+                committed = true;
+            } finally {
+                if (!committed) await idbDelete(slot).catch(() => {});
+            }
+            const previousSlot = existing
+                ? String(existing.slot || `${ANALYSIS_BASELINE_SLOT_PREFIX}${name}`)
+                : null;
+            if (previousSlot && previousSlot !== slot) {
+                await idbDelete(String(previousSlot)).catch(() => {});
+            }
+            return {
+                ok: true,
+                name,
+                slot,
+                size: stateBytes.length,
+                pcVerified: true,
+                cpuState,
+                ...emulatorActivity(),
+                skipIrq: baseline.skipIrq,
+                traceEnabled: baseline.traceEnabled
+            };
             });
         },
 
         async restoreAnalysisBaseline(params = {}) {
             ensureRomLoaded("analysis baseline restore requires a loaded ROM");
-            const name = baselineName(params);
-            return withBaselineOperation("restore", name, async (operation) => {
-                return withAnalysisBaselineLock(name, async () => {
-                    return fileTransactionService.run("Analysis baseline restore", async ({token, commit}) => {
-                        const baseline = readAnalysisBaseline(name);
-                        if (!baseline) {
-                            throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
-                        }
-                        const rom = await currentRomIdentity();
-                        for (const field of ["romName", "romSize", "romSha256"]) {
-                            if (baseline[field] !== rom[field]) {
-                                throw codedError(
-                                    ErrorCode.STATE_INVALID,
-                                    `analysis baseline ROM mismatch: ${field}`,
-                                    {field}
-                                );
-                            }
-                        }
-                        const stateBytes = await idbGet(baseline.slot);
-                        const invalidState = !stateBytes
-                            || stateBytes.length !== baseline.stateSize
-                            || await sha256Hex(stateBytes) !== baseline.stateSha256;
-                        if (invalidState) {
+            const name = String(params.name || "default");
+            return withAnalysisBaselineLock(name, async () => {
+            return fileTransactionService.run("Analysis baseline restore", async ({ token }) => {
+            const baseline = readAnalysisBaseline(name);
+            if (!baseline) {
+                throw codedError(ErrorCode.STATE_NOT_LOADED, `analysis baseline not found: ${name}`);
+            }
+            const rom = await currentRomIdentity();
+            for (const field of ["romName", "romSize", "romSha256"]) {
+                if (baseline[field] !== rom[field]) {
+                    throw codedError(
+                        ErrorCode.STATE_INVALID,
+                        `analysis baseline ROM mismatch: ${field}`,
+                        { field }
+                    );
+                }
+            }
+            const stateBytes = await idbGet(baseline.slot);
+            const invalidState = !stateBytes
+                || stateBytes.length !== baseline.stateSize
+                || await sha256Hex(stateBytes) !== baseline.stateSha256;
+            if (invalidState) {
+                throw codedError(
+                    ErrorCode.STATE_INVALID,
+                    "analysis baseline state integrity check failed"
+                );
+            }
+            const persistentScripts = readOwnDataProperty(baseline, "persistentScripts");
+            await validateAnalysisBaselineScriptState(persistentScripts);
+            await call("loadState", withInternalMetadata({
+                slot: baseline.slot,
+                saveFlushBlockMs: params.saveFlushBlockMs
+            }, {
+                analysisBaselineSlotToken,
+                fileTransactionToken: token,
+                holdPaused: true
+            }));
+            state.paused = true;
+            state.running = false;
+            native.pause(true);
+            const restoredCpuState = {
+                arm9: {
+                    pc: Number(getRegisters("arm9").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm9").cpsr) >>> 0
+                },
+                arm7: {
+                    pc: Number(getRegisters("arm7").pc) >>> 0,
+                    cpsr: Number(getRegisters("arm7").cpsr) >>> 0
+                }
+            };
+            const pcVerified = !!baseline.cpuState;
+            if (pcVerified) {
+                for (const cpu of ["arm9", "arm7"]) {
+                    for (const register of ["pc", "cpsr"]) {
+                        if ((Number(baseline.cpuState[cpu]?.[register]) >>> 0)
+                            !== restoredCpuState[cpu][register]) {
                             throw codedError(
                                 ErrorCode.STATE_INVALID,
-                                "analysis baseline state integrity check failed"
-                            );
-                        }
-                        await commit?.();
-                        setBaselinePhase(operation, "validate");
-                        const persistentScripts = await loadPersistentBaselineState(baseline);
-                        const restorePlan = await validateAnalysisBaselineScriptState(persistentScripts);
-                        if (restorePlan) setBaselinePhase(operation, "validated");
-                        if (Array.isArray(restorePlan)) {
-                            for (const entry of restorePlan) {
-                                const script = entry?.script;
-                                if (script && (script.scriptInstanceId !== entry.scriptInstanceId
-                                    || !script.running
-                                    || !script.started
-                                    || !script.baselineHookRegistered)) {
-                                    throw codedError(
-                                        ErrorCode.STATE_INVALID,
-                                        `Analysis baseline persistent script instance changed: ${entry.name || "unknown"}`,
-                                        { scriptName: entry.name || null }
-                                    );
-                                }
-                            }
-                        }
-                        await call("loadState", withInternalMetadata({
-                            slot: baseline.slot,
-                            saveFlushBlockMs: params.saveFlushBlockMs
-                        }, {
-                            analysisBaselineSlotToken,
-                            fileTransactionToken: token,
-                            holdPaused: true,
-                            operation: "analysisBaseline",
-                            deferStateLoadEvent: true
-                        }));
-                        setBaselinePhase(operation, "native-loaded");
-                        state.paused = true;
-                        state.running = false;
-                        native.pause(true);
-                        const restoredCpuState = {
-                            arm9: {
-                                pc: Number(getRegisters("arm9").pc) >>> 0,
-                                cpsr: Number(getRegisters("arm9").cpsr) >>> 0
-                            },
-                            arm7: {
-                                pc: Number(getRegisters("arm7").pc) >>> 0,
-                                cpsr: Number(getRegisters("arm7").cpsr) >>> 0
-                            }
-                        };
-                        const pcVerified = !!baseline.cpuState;
-                        const restoredScripts = [];
-                        try {
-                            if (pcVerified) {
-                                for (const cpu of ["arm9", "arm7"]) {
-                                    for (const register of ["pc", "cpsr"]) {
-                                        if ((Number(baseline.cpuState[cpu]?.[register]) >>> 0)
-                                            !== restoredCpuState[cpu][register]) {
-                                            throw new Error(`analysis baseline ${cpu} ${register} mismatch`);
-                                        }
-                                    }
-                                }
-                            }
-                            setBaselinePhase(operation, "restore-hooks");
-                            await restoreAnalysisBaselineScriptState(name, restorePlan || persistentScripts, restoredScripts);
-                            setBaselinePhase(operation, "restore-effects");
-                            const deferredEffects = [...(operation.deferredEffects || [])];
-                            operation.deferredEffects.length = 0;
-                            for (const effect of deferredEffects) await call(effect.command, effect.params);
-                            if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
-                                await call("setStackTraceMode", {enabled: baseline.traceEnabled});
-                            }
-                            await call("setStackTracePrivilegeCheck", {enabled: baseline.skipIrq});
-                            dispatchScriptEvent("stateLoad", {slot: baseline.slot, analysisBaseline: true});
-                            if (baseline.running && !baseline.paused) await call("resume");
-                            else await call("pause");
-                            setBaselinePhase(operation, "complete");
-                            return {
-                                ok: true,
-                                name,
-                                restored: true,
-                                pcVerified,
-                                cpuState: restoredCpuState,
-                                ...await snapshotContext(params)
-                            };
-                    } catch (error) {
-                        operation.deferredEffects.length = 0;
-                        native.pause?.(true);
-                            state.paused = true;
-                            state.running = false;
-                            throw codedError(
-                                ErrorCode.STATE_PARTIALLY_RESTORED,
-                                `Analysis baseline restore partially completed: ${String(error?.message || error)}`,
+                                `analysis baseline ${cpu} ${register} mismatch`,
                                 {
-                                    nativeStateApplied: true,
-                                    restoredScripts,
-                                    remainingScripts: (restorePlan || persistentScripts).map((entry) => (
-                                        readOwnDataProperty(entry, "name") || entry.script?.name || ""
-                                    )).filter((scriptName) => !restoredScripts.includes(scriptName)),
-                                    failedScript: error?.mcpDetails?.scriptName || null,
-                                    paused: true,
-                                    causeCode: error?.mcpCode || null
+                                    cpu,
+                                    register,
+                                    expected: Number(baseline.cpuState[cpu]?.[register]) >>> 0,
+                                    actual: restoredCpuState[cpu][register]
                                 }
                             );
                         }
-                    });
-                });
+                    }
+                }
+            }
+            await restoreAnalysisBaselineScriptState(name, persistentScripts);
+            if (ui.traceToggle.checked !== !!baseline.traceEnabled) {
+                await call("setStackTraceMode", { enabled: baseline.traceEnabled });
+            }
+            await call("setStackTracePrivilegeCheck", { enabled: baseline.skipIrq });
+            if (baseline.running && !baseline.paused) await call("resume");
+            else await call("pause");
+            return {
+                ok: true,
+                name,
+                restored: true,
+                pcVerified,
+                cpuState: restoredCpuState,
+                ...await snapshotContext(params)
+            };
+            });
             });
         }
     };
