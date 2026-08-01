@@ -422,9 +422,6 @@ kill <PID>
 - `cd /workspaces/desmume_webassembly && nohup bash codespace-review.sh > .new-plan-review-2.log 2>&1 < /dev/null &"`
 - コードスペースをsshで起動せずに gh codespace cpするな。
 - workflowの待機は、gh run watch <RUN_ID> --exit-status使え
-- 実デプロイメントのerror収集は`gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 2` `gh run view <id> --repo DaisukeDaisuke/desmume_webassembly --log-failed | Select-String -Pattern 'not ok|AssertionError|failureType|
-  │ expected:|actual:|error:' -Context 4,12`でしろ、全部取得するな。私が画面の前にいるなら、取得しに行くから、エージェントを待つで70秒待て。
-
 
 # agents.md End
 
