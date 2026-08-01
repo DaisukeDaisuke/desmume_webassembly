@@ -1021,6 +1021,44 @@ test("persistent baseline JSON cannot pollute prototypes", () => {
     assert.equal({}.owned, undefined);
 });
 
+test("persistent events wait for the supervisor startup handshake", async () => {
+    const { createScriptService } = await bundledScriptServiceModule();
+    const posted = [];
+    const script = {
+        id: 5,
+        running: true,
+        started: false,
+        eventQueue: [],
+        eventBusy: false,
+        droppedEvents: 0,
+        worker: { postMessage: (message) => posted.push(message) }
+    };
+    const state = { scripts: new Map([[script.id, script]]) };
+    const service = createScriptService({
+        state,
+        ui: {},
+        responder,
+        breakpointOwners: {},
+        ensureRomLoaded: () => {},
+        finishPersistentScriptEvent: async () => true,
+        requestPersistentScriptResume: () => true,
+        settlePersistentScriptCallbacks: async () => {},
+        hex: String,
+        parseAddress: Number,
+        rawOutputText: JSON.stringify,
+        runCommand: async () => ({}),
+        getCommands: () => ({}),
+        onExplicitPause: () => {}
+    });
+    service.dispatchScriptEvent("tick", { frame: 1 });
+    assert.equal(posted.length, 0);
+    assert.equal(script.eventQueue.length, 0);
+    script.started = true;
+    service.dispatchScriptEvent("tick", { frame: 2 });
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].payload.frame, 2);
+});
+
 test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {
     const { createScriptService } = await bundledScriptServiceModule();
     const state = { scripts: new Map(), activeScriptId: 0 };
