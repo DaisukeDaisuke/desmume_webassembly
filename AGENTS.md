@@ -425,6 +425,11 @@ kill <PID>
 - 実デプロイメントのerror収集は`gh run list --repo DaisukeDaisuke/desmume_webassembly --branch main --limit 2` `gh run view <id> --repo DaisukeDaisuke/desmume_webassembly --log-failed | Select-String -Pattern 'not ok|AssertionError|failureType|
   │ expected:|actual:|error:' -Context 4,12`でしろ、全部取得するな。私が画面の前にいるなら、取得しに行くから、エージェントを待つで70秒待て。
 
+コスト削減のため、chrome-devtools-mcpによるデバッグは、GPT5.6 solがせず、C:\Users\owner\CLionProjects\deweb\.codex\config.tomlの通りにサブエージェントをスポーンする。
+sol側は、どういうテストをするべきなのかと、仕様書を渡して不明点は、直近数コミットでgit diffすることを推奨する。どのコミットからがテスト対象化はshaで明記する。
+メインエージェントは設計、統合、最終判断を担当する。
+また、メインエージェント側でchrome-devtools-mcpを立ち上げてはならない。サブエージェントは、ghコマンドも実行してはならない。
+
 
 # agents.md End
 
