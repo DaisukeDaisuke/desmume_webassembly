@@ -178,6 +178,7 @@ const scriptPauseService = createScriptPauseService();
 const pauseEventService = createPauseEventService();
 const stateLoadEventService = createSerialEventService();
 const fileTransactionEventService = createSerialEventService();
+let wakeEmulationLoop = () => {};
 const waitForInputWindow = createInputWindow({ pauseEventService });
 const inputTaskManager = createInputTaskManager();
 const frameComparator = createFrameComparator({ responder: mcpResponder });
@@ -256,6 +257,7 @@ const debuggerCoordinator = createDebuggerCoordinator({
     breakpointService,
     pauseEventService,
     getQueueBreakpointRefresh: () => queueBreakpointRefresh,
+    getWakeEmulationLoop: () => wakeEmulationLoop,
     log,
     hex,
     updateStatus,
@@ -322,7 +324,8 @@ const emulationLoop = createEmulationLoop({
     updateStatus,
     log
 });
-const { drawFrame, pumpAudio, applyFreezes, tick, scheduleTick } = emulationLoop;
+const { drawFrame, pumpAudio, applyFreezes, tick, scheduleTick, wakeTick } = emulationLoop;
+wakeEmulationLoop = wakeTick;
 
 const analysisBaselineSlotToken = Symbol("analysisBaselineSlot");
 const ANALYSIS_BASELINE_SLOT_PREFIX = "__analysis_baseline__:";

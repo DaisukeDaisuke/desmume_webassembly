@@ -84,6 +84,7 @@ export function createContextCommands(context) {
                 render: state.render,
                 audio: state.audio,
                 cpu: state.selectedCpu,
+                breakpointPolicy: state.breakpointPolicy || "allow",
                 recentFiles: state.recentFiles,
                 autoUpdate: {
                     enabled: state.autoUpdate.enabled,

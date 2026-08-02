@@ -456,6 +456,50 @@ test("special breakpoint ownership preserves user and script owners independentl
     assert.notEqual(user.id, script.id);
 });
 
+test("script-only breakpoint policy rejects user and operation owners without blocking script hooks", async () => {
+    const owners = createBreakpointOwnerStore();
+    const state = {
+        nextBreakpointId: 1,
+        selectedCpu: "arm9",
+        breakpoints: [],
+        breakpointPolicy: "allow"
+    };
+    const commands = createDebuggerControlCommands({
+        breakpointOwners: owners,
+        ensureReady: () => {},
+        ensureRomLoaded: () => {},
+        parseAddress: Number,
+        renderBreakpoints: () => {},
+        state,
+        ui: {
+            bpDataAbortToggle: { checked: false },
+            bpPrefetchAbortToggle: { checked: false },
+            bpUndefinedToggle: { checked: false }
+        }
+    });
+
+    assert.deepEqual(await commands.setBreakpointPolicy({ mode: "script-only" }), {
+        mode: "script-only"
+    });
+    await assert.rejects(
+        commands.setBreakpoint({ cpu: "arm9", type: "exec", address: 0x02000000 }),
+        (error) => error.mcpCode === "BREAKPOINT_POLICY_VIOLATION"
+    );
+    await assert.rejects(
+        commands.setBreakpoint(withInternalMetadata(
+            { cpu: "arm9", type: "exec", address: 0x02000004 },
+            { origin: "operation", operationId: 1 }
+        )),
+        (error) => error.mcpCode === "BREAKPOINT_POLICY_VIOLATION"
+    );
+    const script = await commands.setBreakpoint(withInternalMetadata(
+        { cpu: "arm9", type: "exec", address: 0x02000008 },
+        { origin: "script", scriptId: 2, triggerId: 3 }
+    ));
+    assert.equal(script.id, 1);
+    assert.equal(owners.classifySite({ cpu: "arm9", type: "exec", address: 0x02000008 }).scriptOnly, true);
+});
+
 test("the same breakpoint publishes again after each resume", async () => {
     const state = {
         ready: true,
@@ -849,6 +893,7 @@ test("pending script callbacks validate identity and clean up after script stop"
 test("pending persistent callback timeout fails closed without auto-resume", async () => {
     const messages = [];
     const logs = [];
+    const pauseEvents = [];
     const state = {
         ready: true, selectedCpu: "arm9", lastBreakKey: "", breakRefreshKey: "",
         scriptTriggers: [{ id: 1, scriptId: 3, callbackId: 5, type: "dataAbort", cpu: "arm9", address: 0 }],
@@ -875,6 +920,7 @@ test("pending persistent callback timeout fails closed without auto-resume", asy
     const coordinator = createDebuggerCoordinator({
         state, native, breakpointOwners: owners,
         breakpointService: createBreakpointService({ ownerStore: owners }),
+        pauseEventService: { publish: (event) => pauseEvents.push(event) },
         getQueueBreakpointRefresh: () => () => {}, log: (message) => logs.push(message),
         hex: String, updateStatus: () => {}, scriptCallbackTimeoutMs: 5
     });
@@ -887,6 +933,8 @@ test("pending persistent callback timeout fails closed without auto-resume", asy
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(state.pendingScriptEvents.size, 0);
     assert.equal(resumed, false);
+    assert.equal(pauseEvents.length, 1);
+    assert.equal(pauseEvents[0].scriptEventFailure, true);
     assert.equal(state.lastScriptError.code, "SCRIPT_EVENT_FINALIZATION_FAILED");
     assert.ok(logs.some((message) => message.includes("callback timeout")));
 });
@@ -930,6 +978,77 @@ test("script-only special breakpoints dispatch and auto-resume through special o
         scriptId: 3, callbackId: event.callbackId, callbackToken: event.callbackToken
     }), true);
     assert.equal(resumed, true);
+});
+
+test("script-only exec hooks stay internal, avoid public pause delivery, and wake immediately after completion", async () => {
+    const address = 0x02000000;
+    const messages = [];
+    const pauseEvents = [];
+    const logs = [];
+    let refreshes = 0;
+    let wakes = 0;
+    let pc = address;
+    let breakHit = true;
+    let resumed = false;
+    const state = {
+        ready: true, selectedCpu: "arm9", lastBreakKey: "", breakRefreshKey: "",
+        scriptTriggers: [{ id: 1, scriptId: 3, callbackId: 5, type: "exec", cpu: "arm9", address }],
+        scripts: new Map([[3, { running: true, worker: { postMessage: (message) => messages.push(message) } }]]),
+        pendingScriptEvents: new Map(), nextScriptEventId: 1, nextScriptCallbackToken: 1,
+        explicitPauseSerial: 0, frame: 0, romGeneration: 1,
+        fileTransactionSerial: 0, fileTransactionActive: false, loadingFile: false,
+        nativeBreakSerial: 0, breakpointsInSync: true
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner({ cpu: "arm9", type: "exec", address }, {
+        id: 1, origin: "script", scriptId: 3, triggerId: 1
+    });
+    const native = {
+        getStatus: () => ({
+            arm9: { pc },
+            lastBreak: breakHit
+                ? { hit: true, cpu: "arm9", kind: 0, address, pc, value: 0 }
+                : { hit: false }
+        }),
+        pause: (paused) => { if (!paused) resumed = true; },
+        clearBreakStatus: () => { breakHit = false; },
+        step: () => { pc += 4; return 1; },
+        setBreakpoint: () => {},
+        hasLoadedRom: () => true
+    };
+    const coordinator = createDebuggerCoordinator({
+        state,
+        native,
+        breakpointOwners: owners,
+        breakpointService: createBreakpointService({ ownerStore: owners }),
+        pauseEventService: { publish: (event) => pauseEvents.push(event) },
+        getQueueBreakpointRefresh: () => () => { refreshes++; },
+        getWakeEmulationLoop: () => () => { wakes++; },
+        log: (message) => logs.push(message),
+        hex: String,
+        updateStatus: () => {}
+    });
+
+    coordinator.syncNativeBreakStatus({
+        frame: 1,
+        arm9: { pc },
+        lastBreak: { hit: true, cpu: "arm9", kind: 0, address, pc, value: 0 }
+    });
+    assert.equal(messages.length, 1);
+    assert.equal(pauseEvents.length, 0);
+    assert.equal(refreshes, 0);
+    assert.equal(logs.length, 0);
+
+    const event = messages[0];
+    assert.equal(await coordinator.finishPersistentScriptEvent(event.eventId, {
+        scriptId: 3,
+        callbackId: event.callbackId,
+        callbackToken: event.callbackToken
+    }), true);
+    assert.equal(resumed, true);
+    assert.equal(wakes, 1);
+    assert.equal(state.paused, false);
+    assert.equal(state.running, true);
 });
 
 test("input waits honor pre-aborted signals", async () => {

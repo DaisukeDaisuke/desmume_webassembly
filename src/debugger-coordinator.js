@@ -7,6 +7,7 @@ export function createDebuggerCoordinator({
     breakpointService,
     pauseEventService = null,
     getQueueBreakpointRefresh,
+    getWakeEmulationLoop = () => null,
     log,
     hex,
     updateStatus,
@@ -23,6 +24,14 @@ export function createDebuggerCoordinator({
             "prefetchAbort",
             "undefinedInstruction"
         ][Number(kind)] || "unknown";
+    }
+
+    function pauseKindForBreakpointType(type) {
+        return type === "exec"
+            ? "executeBreakpoint"
+            : type === "read" || type === "write"
+                ? "memoryBreakpoint"
+                : "specialBreakpoint";
     }
 
     function getNativeStatus() {
@@ -113,6 +122,8 @@ export function createDebuggerCoordinator({
         state.paused = false;
         state.running = true;
         native.pause(false);
+        const wakeEmulationLoop = getWakeEmulationLoop();
+        if (typeof wakeEmulationLoop === "function") wakeEmulationLoop();
         updateStatus();
     }
 
@@ -125,6 +136,18 @@ export function createDebuggerCoordinator({
         state.paused = true;
         state.running = false;
         try { native.pause(true); } catch {}
+        if (pending.ownerClassification?.scriptOnly) {
+            pauseEventService?.publish({
+                pauseKind: pauseKindForBreakpointType(pending.type),
+                breakType: pending.type,
+                cpu: pending.cpu,
+                address: pending.address,
+                pc: pending.eventPc,
+                frame: Number(state.frame || 0),
+                scriptEventFailure: true,
+                reason
+            });
+        }
         try { await reconcileNativeBreakpoints(); } catch (reconcileError) {
             log(`breakpoint reconciliation failed after ${reason}: ${String(reconcileError?.message || reconcileError)}`);
         }
@@ -302,13 +325,24 @@ export function createDebuggerCoordinator({
         const breakpoint = nativeStatus.lastBreak;
         if (!breakpoint?.hit) return nativeStatus;
 
+        const type = breakpointKindName(breakpoint.kind);
+        const triggers = matchingScriptTriggers(type, breakpoint);
+        const site = {
+            type,
+            cpu: String(breakpoint.cpu),
+            address: Number(breakpoint.address) >>> 0
+        };
+        const ownerSite = ["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)
+            ? { cpu: "special", type, address: 0 }
+            : site;
+        const classification = { ...breakpointOwners.classifySite(ownerSite), ownerSite };
+        const internalScriptTrap = classification.scriptOnly && triggers.length > 0;
         state.paused = true;
         state.running = false;
         native.pause(true);
-        const type = breakpointKindName(breakpoint.kind);
-        state.breakLabel = `break ${type}`;
+        state.breakLabel = internalScriptTrap ? "" : `break ${type}`;
         const key = `${breakpoint.cpu}:${breakpoint.kind}:${breakpoint.address}:${breakpoint.pc}:${breakpoint.value}`;
-        if (state.breakRefreshKey !== key) {
+        if (!internalScriptTrap && state.breakRefreshKey !== key) {
             state.breakRefreshKey = key;
             getQueueBreakpointRefresh()(String(breakpoint.cpu || state.selectedCpu));
         }
@@ -323,17 +357,9 @@ export function createDebuggerCoordinator({
             address: Number(breakpoint.address) >>> 0,
             pc: Number(breakpoint.pc) >>> 0
         };
-        log(`break ${type} ${breakpoint.cpu} at ${hex(breakpoint.address)} pc ${hex(breakpoint.pc)}`);
-        const triggers = matchingScriptTriggers(type, breakpoint);
-        const site = {
-            type,
-            cpu: String(breakpoint.cpu),
-            address: Number(breakpoint.address) >>> 0
-        };
-        const ownerSite = ["dataAbort", "prefetchAbort", "undefinedInstruction"].includes(type)
-            ? { cpu: "special", type, address: 0 }
-            : site;
-        const classification = { ...breakpointOwners.classifySite(ownerSite), ownerSite };
+        if (!internalScriptTrap) {
+            log(`break ${type} ${breakpoint.cpu} at ${hex(breakpoint.address)} pc ${hex(breakpoint.pc)}`);
+        }
         breakpointService.publish({
             ...breakpoint,
             ...site,
@@ -341,18 +367,16 @@ export function createDebuggerCoordinator({
             pc: Number(breakpoint.pc) >>> 0,
             value: Number(breakpoint.value) >>> 0
         });
-        pauseEventService?.publish({
-            pauseKind: type === "exec"
-                ? "executeBreakpoint"
-                : type === "read" || type === "write"
-                    ? "memoryBreakpoint"
-                    : "specialBreakpoint",
-            breakType: type,
-            cpu: String(breakpoint.cpu),
-            address: Number(breakpoint.address) >>> 0,
-            pc: Number(breakpoint.pc) >>> 0,
-            frame: Number(state.frame || 0)
-        });
+        if (!internalScriptTrap) {
+            pauseEventService?.publish({
+                pauseKind: pauseKindForBreakpointType(type),
+                breakType: type,
+                cpu: String(breakpoint.cpu),
+                address: Number(breakpoint.address) >>> 0,
+                pc: Number(breakpoint.pc) >>> 0,
+                frame: Number(state.frame || 0)
+            });
+        }
         dispatchScriptTriggers(triggers, breakpoint, type, classification);
         return nativeStatus;
     }

@@ -19,6 +19,7 @@ export function createAppState() {
         touch: { active: false, x: 0, y: 0 },
         selectedCpu: "arm9",
         breakpoints: [],
+        breakpointPolicy: "allow",
         nextBreakpointId: 1,
         freezes: [],
         recentFiles: [],

@@ -19,6 +19,8 @@ export function createEmulationLoop({
     log = () => {}
 }) {
     let previousScreenDiagnostic = "ok";
+    let animationFrameId = 0;
+    let sleepTimerId = 0;
 
     function reportScreenDiagnostic(next, message = "") {
         if (next === previousScreenDiagnostic) return;
@@ -212,10 +214,36 @@ export function createEmulationLoop({
         }
     }
 
-    function scheduleTick() {
-        if (state.running && !state.paused && !state.loadingFile) requestAnimationFrame(tick);
-        else setTimeout(() => requestAnimationFrame(tick), 120);
+    function queueAnimationFrame() {
+        if (animationFrameId) return;
+        animationFrameId = requestAnimationFrame((now) => {
+            animationFrameId = 0;
+            tick(now);
+        });
     }
 
-    return { drawFrame, pumpAudio, applyFreezes, tick, scheduleTick };
+    function scheduleTick() {
+        if (state.running && !state.paused && !state.loadingFile) {
+            if (sleepTimerId) {
+                clearTimeout(sleepTimerId);
+                sleepTimerId = 0;
+            }
+            queueAnimationFrame();
+        } else if (!sleepTimerId && !animationFrameId) {
+            sleepTimerId = setTimeout(() => {
+                sleepTimerId = 0;
+                queueAnimationFrame();
+            }, 120);
+        }
+    }
+
+    function wakeTick() {
+        if (sleepTimerId) {
+            clearTimeout(sleepTimerId);
+            sleepTimerId = 0;
+        }
+        if (state.running && !state.paused && !state.loadingFile) queueAnimationFrame();
+    }
+
+    return { drawFrame, pumpAudio, applyFreezes, tick, scheduleTick, wakeTick };
 }

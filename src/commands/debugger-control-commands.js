@@ -1,4 +1,5 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
+import { ErrorCode } from "../error-codes.js";
 import { nonNegativeNumber, positiveInteger } from "../validation.js";
 
 export function createDebuggerControlCommands(context) {
@@ -27,12 +28,23 @@ export function createDebuggerControlCommands(context) {
         updateStatus
     } = context;
 
+    function assertBreakpointOriginAllowed(origin) {
+        if (state.breakpointPolicy !== "script-only" || origin === "script") return;
+        const error = new Error(`breakpoint origin is forbidden by script-only policy: ${origin}`);
+        error.mcpCode = ErrorCode.BREAKPOINT_POLICY_VIOLATION;
+        error.mcpDetails = { policy: state.breakpointPolicy, origin };
+        throw error;
+    }
+
     const debuggerCommands = {
         async setBreakpoint(params) {
             ensureRomLoaded("breakpoints require a loaded ROM");
             if (params.id && params.enabled === false) {
                 return debuggerCommands.removeBreakpoint({ id: params.id });
             }
+            const metadata = getInternalMetadata(params);
+            const origin = String(metadata.origin || "user");
+            assertBreakpointOriginAllowed(origin);
             const explicitId = params.id === undefined ? null : Number(params.id);
             if (explicitId !== null && (
                 !Number.isSafeInteger(explicitId)
@@ -47,8 +59,6 @@ export function createDebuggerControlCommands(context) {
             if (explicitId !== null) {
                 state.nextBreakpointId = Math.max(state.nextBreakpointId, explicitId + 1);
             }
-            const metadata = getInternalMetadata(params);
-            const origin = String(metadata.origin || "user");
             const breakpoint = {
                 id,
                 cpu: String(params.cpu ?? state.selectedCpu),
@@ -94,6 +104,7 @@ export function createDebuggerControlCommands(context) {
             }
             const metadata = getInternalMetadata(params);
             const origin = String(metadata.origin || "user");
+            assertBreakpointOriginAllowed(origin);
             const site = { cpu: "special", type: kind, address: 0 };
             const matchingOwner = breakpointOwners.getOwners(site).find((owner) => (
                 owner.origin === origin
@@ -119,6 +130,37 @@ export function createDebuggerControlCommands(context) {
             if (kind === "prefetchAbort") ui.bpPrefetchAbortToggle.checked = enabled;
             if (kind === "undefinedInstruction") ui.bpUndefinedToggle.checked = enabled;
             return { id, kind, enabled: params.enabled !== false, userEnabled: enabled };
+        },
+
+        async setBreakpointPolicy(params = {}) {
+            ensureReady();
+            const mode = String(params.mode || "");
+            if (!new Set(["allow", "script-only"]).has(mode)) {
+                const error = new Error("breakpoint policy mode must be allow or script-only");
+                error.mcpCode = ErrorCode.INVALID_ARGUMENT;
+                throw error;
+            }
+            if (mode === "script-only") {
+                const conflicts = breakpointOwners.list().flatMap((site) => (
+                    breakpointOwners.getOwners(site)
+                        .filter((owner) => owner.enabled !== false && owner.origin !== "script")
+                        .map((owner) => ({
+                            cpu: site.cpu,
+                            type: site.type,
+                            address: Number(site.address) >>> 0,
+                            id: owner.id,
+                            origin: owner.origin
+                        }))
+                ));
+                if (conflicts.length) {
+                    const error = new Error("script-only breakpoint policy requires all user and operation owners to be removed first");
+                    error.mcpCode = ErrorCode.BREAKPOINT_POLICY_VIOLATION;
+                    error.mcpDetails = { policy: mode, conflicts };
+                    throw error;
+                }
+            }
+            state.breakpointPolicy = mode;
+            return { mode };
         },
 
         async listBreakpoints() {

@@ -60,6 +60,7 @@ export function createApiDescriptions() {
         resetMemorySearch: "前回のメモリ検索スナップショットと候補を破棄します。",
         writeMemory: "指定アドレスにu8/u16/u32を書き込みます。",
         setBreakpoint: "実行/読み込み/書き込みブレークポイントを追加または削除します。",
+        setBreakpointPolicy: "breakpoint所有を許可する通常モードと、永続スクリプト所有だけを許可するscript-onlyモードを切り替えます。",
         setSpecialBreakpoint: "data abort、prefetch abort、undefined instruction で停止する特殊ブレークポイントを切り替えます。",
         listBreakpoints: "現在のブレークポイント一覧を返します。",
         removeBreakpoint: "ブレークポイントをid指定で削除します。",

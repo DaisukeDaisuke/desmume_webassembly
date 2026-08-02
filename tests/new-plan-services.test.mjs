@@ -531,6 +531,73 @@ test("realtime emulation drops stale work instead of draining it after a speed c
     }
 });
 
+test("emulation loop wake cancels the paused poll and schedules an immediate frame", () => {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers = new Map();
+    let timerSerial = 1;
+    let animationFrames = 0;
+    globalThis.requestAnimationFrame = () => {
+        animationFrames++;
+        return 100 + animationFrames;
+    };
+    globalThis.setTimeout = (callback, delay) => {
+        const id = timerSerial++;
+        timers.set(id, { callback, delay });
+        return id;
+    };
+    globalThis.clearTimeout = (id) => timers.delete(id);
+    try {
+        const state = {
+            ready: true,
+            running: false,
+            paused: true,
+            loadingFile: false,
+            render: false,
+            audio: false,
+            freezes: [],
+            frame: 0,
+            lastTick: 0,
+            frameBudget: 0,
+            speed: 1,
+            touch: { active: false },
+            keys: 0,
+            selectedCpu: "arm9",
+            framesSinceStateLoad: 0,
+            completedFrameSerial: 0,
+            fpsSampleTime: 0,
+            fpsSampleFrame: 0,
+            effectiveFps: 0
+        };
+        const loop = createEmulationLoop({
+            state,
+            ui: {},
+            frameService: { isValid: () => false, onFrameCompleted: () => {} },
+            native: { pause: () => {} },
+            handleNativeFault: () => {},
+            syncNativeBreakStatus: () => ({}),
+            dispatchScriptEvent: () => {},
+            updateStatus: () => {}
+        });
+
+        loop.scheduleTick();
+        assert.equal(timers.size, 1);
+        assert.equal([...timers.values()][0].delay, 120);
+        assert.equal(animationFrames, 0);
+
+        state.running = true;
+        state.paused = false;
+        loop.wakeTick();
+        assert.equal(timers.size, 0);
+        assert.equal(animationFrames, 1);
+    } finally {
+        globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
+    }
+});
+
 test("realtime emulation targets DS 60fps multiples without exceeding each tick batch", () => {
     const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
     globalThis.requestAnimationFrame = () => 1;
