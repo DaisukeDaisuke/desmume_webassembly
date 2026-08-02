@@ -547,7 +547,7 @@ export function createScriptService({
         const duplicate = [...state.scripts.values()].find((script) => script.code === code && script.asyncMode === asyncMode && script.running);
         if (duplicate) return scriptSummary(duplicate, true);
         const existing = [...state.scripts.values()].find((script) => script.name === name);
-        if (existing) await stopPersistentScript({ id: existing.id });
+        if (existing) await stopPersistentScript({ id: existing.id, resumeScriptOnlyTrap: true });
         const sourceBytes = new TextEncoder().encode(source).byteLength;
         const retainedBytes = pruneStoppedScripts(sourceBytes);
         if (!existing && (state.scripts.size >= ResourceLimits.totalScriptRecords
@@ -769,7 +769,9 @@ export function createScriptService({
         rejectPendingPScriptMcpCalls(script);
         script.eventQueue.length = 0;
         script.eventBusy = false;
-        await settlePersistentScriptCallbacks(script.id);
+        const resumeScriptOnlyTrap = params.resumeScriptOnlyTrap === true;
+        if (resumeScriptOnlyTrap) await script.queue;
+        await settlePersistentScriptCallbacks(script.id, { resumeScriptOnlyTrap });
         try {
             await unregisterScriptTriggers(script);
         } finally {

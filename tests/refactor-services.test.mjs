@@ -23,6 +23,7 @@ import { createInputController } from "../src/ui/input-controller.js";
 import { createEmulationLoop } from "../src/emulation-loop.js";
 import { createBreakpointService } from "../src/breakpoint-service.js";
 import { isValidAlgorithmWorkerResult } from "../src/frame-comparator-result.js";
+import { createScriptCommands } from "../src/commands/script-commands.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAME_WIDTH = 256;
@@ -888,6 +889,89 @@ test("pending script callbacks validate identity and clean up after script stop"
     await coordinator.settlePersistentScriptCallbacks(4);
     assert.equal(state.pendingScriptEvents.size, 0);
     assert.equal(paused, true);
+});
+
+test("controlled script replacement resumes an active script-only trap after callback cancellation", async () => {
+    const messages = [];
+    const pauseEvents = [];
+    let resumed = false;
+    let wakes = 0;
+    let breakHit = true;
+    const state = {
+        ready: true, selectedCpu: "arm9", lastBreakKey: "", breakRefreshKey: "",
+        scriptTriggers: [{ id: 1, scriptId: 4, callbackId: 8, type: "dataAbort", cpu: "arm9", address: 0 }],
+        scripts: new Map([[4, { running: true, worker: { postMessage: (message) => messages.push(message) } }]]),
+        pendingScriptEvents: new Map(), nextScriptEventId: 1, nextScriptCallbackToken: 1,
+        explicitPauseSerial: 0, frame: 0, romGeneration: 1,
+        fileTransactionSerial: 0, fileTransactionActive: false, loadingFile: false,
+        nativeBreakSerial: 0, breakpointsInSync: true
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner({ cpu: "special", type: "dataAbort", address: 0 }, {
+        id: 2, origin: "script", scriptId: 4, triggerId: 1
+    });
+    const native = {
+        getStatus: () => ({
+            arm9: { pc: 0x02000000 },
+            lastBreak: breakHit
+                ? { hit: true, cpu: "arm9", kind: 3, address: 0, pc: 0x02000000, value: 0 }
+                : { hit: false }
+        }),
+        pause: (paused) => { if (!paused) resumed = true; },
+        clearBreakStatus: () => { breakHit = false; },
+        hasLoadedRom: () => true
+    };
+    const coordinator = createDebuggerCoordinator({
+        state,
+        native,
+        breakpointOwners: owners,
+        breakpointService: createBreakpointService({ ownerStore: owners }),
+        pauseEventService: { publish: (event) => pauseEvents.push(event) },
+        getQueueBreakpointRefresh: () => () => {},
+        getWakeEmulationLoop: () => () => { wakes++; },
+        log: () => {},
+        hex: String,
+        updateStatus: () => {}
+    });
+
+    coordinator.syncNativeBreakStatus({
+        frame: 1, arm9: { pc: 0x02000000 },
+        lastBreak: { hit: true, cpu: "arm9", kind: 3, address: 0, pc: 0x02000000, value: 0 }
+    });
+    assert.equal(messages.length, 1);
+    assert.equal(state.paused, true);
+    await coordinator.settlePersistentScriptCallbacks(4, { resumeScriptOnlyTrap: true });
+    assert.equal(state.pendingScriptEvents.size, 0);
+    assert.equal(state.paused, false);
+    assert.equal(state.running, true);
+    assert.equal(resumed, true);
+    assert.equal(wakes, 1);
+    assert.equal(pauseEvents.length, 0);
+});
+
+test("restartScript requests safe resume for an active script-only trap", async () => {
+    const stopCalls = [];
+    const startCalls = [];
+    const script = { id: 7, name: "observer", code: "return [];", asyncMode: false };
+    const state = { scripts: new Map([[script.id, script]]), activeScriptId: script.id };
+    const commands = createScriptCommands({
+        state,
+        ui: {},
+        stopPersistentScript: async (params) => {
+            stopCalls.push(params);
+            return { id: params.id };
+        },
+        startPersistentScript: async (params) => {
+            startCalls.push(params);
+            return { id: 8, ...params };
+        }
+    });
+
+    const result = await commands.restartScript({ id: script.id });
+    assert.deepEqual(stopCalls, [{ id: 7, resumeScriptOnlyTrap: true }]);
+    assert.deepEqual(startCalls, [{ name: "observer", code: "return [];", asyncMode: false }]);
+    assert.equal(state.scripts.has(7), false);
+    assert.equal(result.id, 8);
 });
 
 test("pending persistent callback timeout fails closed without auto-resume", async () => {

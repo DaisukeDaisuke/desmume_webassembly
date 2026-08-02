@@ -201,12 +201,12 @@ export function createDebuggerCoordinator({
         };
     }
 
-    async function settlePersistentScriptCallbacks(scriptId) {
+    async function settlePersistentScriptCallbacks(scriptId, { resumeScriptOnlyTrap = false } = {}) {
         const completions = [];
         for (const [eventId, pending] of state.pendingScriptEvents) {
             for (const [token, callback] of pending.pendingCallbacks) {
                 if (callback.scriptId === Number(scriptId)) {
-                    pending.failed = true;
+                    if (!resumeScriptOnlyTrap) pending.failed = true;
                     pending.pendingCallbacks.delete(token);
                 }
             }

@@ -97,7 +97,7 @@ export function createScriptCommands({
         const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
         if (!script) throw new Error("script not found");
         const next = { name: script.name, code: script.code, asyncMode: script.asyncMode };
-        await stopPersistentScript({ id: script.id });
+        await stopPersistentScript({ id: script.id, resumeScriptOnlyTrap: true });
         state.scripts.delete(script.id);
         return startPersistentScript(next);
     }
