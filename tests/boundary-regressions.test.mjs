@@ -957,6 +957,35 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
     );
 });
 
+test("stopScript normalizes explicit targets without changing empty active-script fallback", async () => {
+    const stopCalls = [];
+    const commands = createScriptCommands({
+        state: { scripts: new Map(), activeScriptId: 1 },
+        ui: {},
+        stopPersistentScript: async (params) => {
+            stopCalls.push(params);
+            return { id: params.id ?? 1 };
+        }
+    });
+
+    assert.deepEqual(await commands.stopScript({ scriptId: 3 }), { id: 3 });
+    await assert.rejects(
+        commands.stopScript({ id: 2, scriptId: 3 }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /must match/.test(error.message)
+    );
+    await assert.rejects(
+        commands.stopScript({ id: "not-an-id" }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /id must be a positive safe integer/.test(error.message)
+    );
+    await assert.rejects(
+        commands.stopScript({ scriptId: 0 }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /scriptId must be a positive safe integer/.test(error.message)
+    );
+    assert.deepEqual(await commands.stopScript({ id: "3", scriptId: 3 }), { id: 3 });
+    assert.deepEqual(await commands.stopScript({}), { id: 1 });
+    assert.deepEqual(stopCalls, [{ id: 3 }, { id: 3 }, {}]);
+});
+
 test("published persistent MCP commands validate inputs and preserve value envelopes", async () => {
     const calls = [];
     const commands = createScriptCommands({

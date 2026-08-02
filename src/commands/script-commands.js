@@ -76,7 +76,21 @@ export function createScriptCommands({
     }
 
     async function stopScript(params = {}) {
-        return stopPersistentScript(params);
+        const hasId = Object.hasOwn(params, "id"), hasScriptId = Object.hasOwn(params, "scriptId");
+        if (!hasId && !hasScriptId) return stopPersistentScript(params);
+        const normalizeScriptId = (value, name) => {
+            const id = Number(value);
+            if (!Number.isSafeInteger(id) || id < 1) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, `${name} must be a positive safe integer`);
+            }
+            return id;
+        };
+        const id = hasId ? normalizeScriptId(params.id, "id") : undefined;
+        const scriptId = hasScriptId ? normalizeScriptId(params.scriptId, "scriptId") : undefined;
+        if (hasId && hasScriptId && id !== scriptId) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "id and scriptId must match");
+        }
+        return stopPersistentScript({ id: id ?? scriptId });
     }
 
     async function restartScript(params = {}) {
