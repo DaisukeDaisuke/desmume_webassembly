@@ -2047,7 +2047,7 @@ test("persistent sandbox publishes and invokes bounded MCP handlers", async () =
             }
         ];
     `, []);
-    const published = harness.messages.find((message) => message.type === "pscriptMcpPublished");
+    const published = harness.messages.find((message) => message.type === "registrationComplete");
     assert.deepEqual(JSON.parse(JSON.stringify(published.mcps)), [
         { name: "listActions", description: "Lists available actions." },
         { name: "domainFailure", description: "Returns application data containing ok false." }
@@ -2448,12 +2448,12 @@ test("persistent supervisor gates replies for authenticated child messages", asy
     assert.ok(child.messages.some((message) => message.replyId === "request-1"));
 
     const published = vm.runInContext(`({
-        type: "pscriptMcpPublished",
+        type: "registrationComplete",
         mcps: [{ name: "listActions", description: "Lists actions." }],
         channelToken: "secret"
     })`, context);
     childOnMessage({ data: published });
-    assert.ok(messages.some((message) => message.type === "pscriptMcpPublished"
+    assert.ok(messages.some((message) => message.type === "registrationComplete"
         && message.scriptInstanceId === "instance-1"));
 
     const invocation = vm.runInContext(`({
