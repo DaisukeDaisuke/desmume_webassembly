@@ -249,7 +249,7 @@ export function bindUi(context) {
             commands: Array.isArray(items) ? items : items.commands || []
         }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
     });
-    ui.scriptRunBtn.addEventListener("click", () => runCommand("runPersistentScript", { name: ui.scriptName.value, code: ui.scriptCode.value, asyncMode: ui.scriptAsyncMode.checked }).then((result) => {
+    ui.scriptRunBtn.addEventListener("click", () => runCommand("runLoadedPersistentScript", { name: ui.scriptName.value, asyncMode: ui.scriptAsyncMode.checked }).then((result) => {
         try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}
         selectScript(result.id);
     }).catch((e) => { ui.scriptRawOutput.value = e.message; ui.scriptOutput.textContent = e.message; }));

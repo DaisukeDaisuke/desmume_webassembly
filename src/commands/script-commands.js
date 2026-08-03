@@ -17,7 +17,118 @@ export function createScriptCommands({
     runCommand
 }) {
     async function runPersistentScript(params = {}) {
-        return startPersistentScript(params);
+        return successfulScriptIdentity(await startPersistentScript(params));
+    }
+
+    const SCRIPT_SELECTOR_KEYS = Object.freeze(["id", "scriptId", "name", "startupTimeoutMs"]);
+    const LOADED_SCRIPT_KEYS = Object.freeze(["name", "asyncMode", "startupTimeoutMs"]);
+
+    function exactParamKeys(params, allowed, label) {
+        if (!isPlainObject(params)) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${label} params must be a plain object`);
+        }
+        for (const key of Object.keys(params)) {
+            if (!allowed.includes(key)) {
+                throw codedError(ErrorCode.INVALID_ARGUMENT, `${label}.${key} is not allowed`);
+            }
+        }
+    }
+
+    function requiredScriptName(value, label = "name") {
+        if (typeof value !== "string" || !value.trim()) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${label} must be a non-empty string`);
+        }
+        return value.trim();
+    }
+
+    function positiveScriptId(value, label) {
+        const id = Number(value);
+        if (!Number.isSafeInteger(id) || id < 1) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${label} must be a positive safe integer`);
+        }
+        return id;
+    }
+
+    function successfulScriptIdentity(result, expected = {}) {
+        if (result?.ok === false) return result;
+        if (!Number.isSafeInteger(Number(result?.id)) || Number(result.id) < 1
+            || typeof result?.name !== "string" || !result.name) {
+            throw codedError(
+                ErrorCode.INTERNAL_ERROR,
+                "Persistent script startup completed without the required id and name"
+            );
+        }
+        if (result.running !== true || result.started !== true) {
+            throw codedError(
+                ErrorCode.INTERNAL_ERROR,
+                "Persistent script startup returned before running and started were true"
+            );
+        }
+        if (expected.id !== undefined && Number(result.id) !== Number(expected.id)) {
+            throw codedError(
+                ErrorCode.INTERNAL_ERROR,
+                `Persistent script restart changed id from ${expected.id} to ${result.id}`
+            );
+        }
+        if (expected.name !== undefined && result.name !== expected.name) {
+            throw codedError(
+                ErrorCode.INTERNAL_ERROR,
+                `Persistent script startup changed name from ${expected.name} to ${result.name}`
+            );
+        }
+        return result;
+    }
+
+    function resolveScript(params, label) {
+        exactParamKeys(params, SCRIPT_SELECTOR_KEYS, label);
+        const hasId = Object.hasOwn(params, "id");
+        const hasScriptId = Object.hasOwn(params, "scriptId");
+        const hasName = Object.hasOwn(params, "name");
+        const id = hasId ? positiveScriptId(params.id, `${label}.id`) : undefined;
+        const scriptId = hasScriptId
+            ? positiveScriptId(params.scriptId, `${label}.scriptId`)
+            : undefined;
+        if (id !== undefined && scriptId !== undefined && id !== scriptId) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, `${label}.id and ${label}.scriptId must match`);
+        }
+        const name = hasName ? requiredScriptName(params.name, `${label}.name`) : undefined;
+        const selectedId = id ?? scriptId;
+        const script = selectedId !== undefined
+            ? state.scripts.get(selectedId)
+            : name !== undefined
+                ? [...state.scripts.values()].find((candidate) => candidate.name === name)
+                : state.scripts.get(Number(state.activeScriptId));
+        if (!script) throw new Error("script not found");
+        if (name !== undefined && script.name !== name) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                `${label}.name does not identify the selected script`
+            );
+        }
+        return script;
+    }
+
+    async function runLoadedPersistentScript(params = {}) {
+        exactParamKeys(params, LOADED_SCRIPT_KEYS, "runLoadedPersistentScript");
+        const name = requiredScriptName(params.name, "runLoadedPersistentScript.name");
+        const existing = [...state.scripts.values()].find((script) => script.name === name);
+        const result = await startPersistentScript({
+            name,
+            ...(Object.hasOwn(params, "asyncMode") ? { asyncMode: !!params.asyncMode } : {}),
+            ...(Object.hasOwn(params, "startupTimeoutMs")
+                ? { startupTimeoutMs: params.startupTimeoutMs }
+                : {})
+        }, {
+            source: ui.scriptCode.value,
+            deduplicateByCode: false
+        });
+        const identified = successfulScriptIdentity(result, { name });
+        if (identified?.ok === false) return identified;
+        return {
+            ...identified,
+            source: "loaded-editor",
+            reloaded: !!existing
+        };
     }
 
     async function listScripts() {
@@ -94,12 +205,26 @@ export function createScriptCommands({
     }
 
     async function restartScript(params = {}) {
-        const script = state.scripts.get(Number(params.id ?? state.activeScriptId));
-        if (!script) throw new Error("script not found");
-        const next = { name: script.name, code: script.code, asyncMode: script.asyncMode };
+        const script = resolveScript(params, "restartScript");
+        const next = {
+            name: script.name,
+            code: script.code,
+            asyncMode: script.asyncMode,
+            ...(Object.hasOwn(params, "startupTimeoutMs")
+                ? { startupTimeoutMs: params.startupTimeoutMs }
+                : {})
+        };
         await stopPersistentScript({ id: script.id, resumeScriptOnlyTrap: true });
-        state.scripts.delete(script.id);
-        return startPersistentScript(next);
+        const result = await startPersistentScript(next, { deduplicateByCode: false });
+        const identified = successfulScriptIdentity(result, {
+            id: script.id,
+            name: script.name
+        });
+        if (identified?.ok === false) return identified;
+        return {
+            ...identified,
+            reloaded: true
+        };
     }
 
     async function getScript(params = {}) {
@@ -236,6 +361,7 @@ export function createScriptCommands({
         listPScriptMcp,
         listScripts,
         restartScript,
+        runLoadedPersistentScript,
         runSandboxBoundarySelfTest: sandboxBoundarySelfTest,
         runPersistentScript,
         runScript,

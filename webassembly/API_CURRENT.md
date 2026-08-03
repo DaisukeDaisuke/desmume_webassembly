@@ -50,14 +50,14 @@ Each shortcut is an `async` function on `window`; call it with positional argume
 | `y` / `Y` | `setScale` / `copyCallStackCsv` | `y(scale)` / `Y()` |
 | `z` / `Z` | `setRotation` / `takeScreenshot` | `z(rotation)` / `Z(type, includeDataUrl)` |
 ## Public command inventory
-The current public registry exposes 141 command names. Compatibility aliases are included in this count. `window.DesmumeMCP.list()` is the runtime source of truth; this inventory is the reviewable document counterpart.
+The current public registry exposes 142 command names. Compatibility aliases are included in this count. `window.DesmumeMCP.list()` is the runtime source of truth; this inventory is the reviewable document counterpart.
 - System and context: `status`, `getOperation`, `cancelOperation`, `snapshotContext`, `saveAnalysisBaseline`, `restoreAnalysisBaseline`, `listAnalysisBaselines`, `deleteAnalysisBaseline`, `pause`, `resume`, `continue`, `reset`, `reloadRom`, `setSpeed`, `setRenderEnabled`, `setAudio`, `setScale`, `setRotation`, `setAutoUpdate`, `setFeatureSet`.
 - ROM, Save, State, and recent files: `loadRomFile`, `loadRomBytes`, `loadRomUrl`, `importSaveFile`, `exportSaveFile`, `saveSaveSlot`, `loadSaveSlot`, `listSaveSlots`, `deleteSaveSlot`, `saveState`, `loadState`, `loadStateBytes`, `loadStateUrl`, `importStateFile`, `exportStateFile`, `listStateSlots`, `deleteStateSlot`, `listRecentFiles`, `reloadRecentFile`.
 - Input and screenshots: `setInput`, `getInputState`, `releaseInput`, `setKeyBinding`, `runInputHold`, `runInputTap`, `runTouchHold`, `runInputSequence`, `listInputSequences`, `deleteInputSequence`, `recordInput`, `replayInput`, `listInputRecordings`, `deleteInputRecording`, `takeScreenshot`, `stepFrames`.
 - Registers, memory, and binary utilities: `getRegisters`, `setRegister`, `dumpMemory`, `injectMemoryFile`, `injectBytes`, `searchMemory`, `resetMemorySearch`, `writeMemory`, `setMemoryFreeze`, `listMemoryFreezes`, `applyMemoryFreezes`, `binaryFloat`, `setCTableSeed`, `memoryGetRegister`, `memorySetRegister`, `memoryReadByte`, `memoryReadWord`, `memoryReadDword`, `memoryWriteByte`, `memoryWriteWord`, `memoryWriteDword`.
 - Disassembly and debugger control: `disassemble`, `disassembleBytes`, `setBreakpoint`, `setSpecialBreakpoint`, `listBreakpoints`, `removeBreakpoint`, `clearBreakpoints`, `clearBreakStatus`, `step`, `smartStep`, `stepOver`, `stepNextBranchOrReturn`, `nextBranchOrReturn`, `trueNextBranch`, `nextTrueBranch`, `setStackTraceMode`, `setStackTracePrivilegeCheck`, `stackTrace`, `callStack`, `listOtherCoroutines`, `getOtherCoroutines`, `copyCallStackMarkdown`, `copyCallStackCsv`, `runUntilReturn`, `runUntilNextCall`, `returnToPop`, `nextFunctionEnter`, `nextCall`, `nextFunctionCall`.
 - Wait and frame operations: `wait`, `waitMs`, `waitForBreak`, `waitForPause`, `waitForStateLoad`, `waitForFileTransaction`, `runUntil`, `runUntilMemoryRead`, `runUntilMemoryWrite`, `captureFrame`, `listFrameSnapshots`, `deleteFrameSnapshot`, `compareFrame`, `waitForScreenChange`, `waitForFrameMatch`, `waitForScreenStable`.
-- Isolated and persistent scripts: `eval`, `runScript`, `injectScript`, `batch`, `runPersistentScript`, `listScripts`, `listPScriptMcp`, `callPScriptMcp`, `stopScript`, `restartScript`, `getScript`, `listScriptPrint`, `clearScriptPrint`, `runSandboxBoundarySelfTest`.
+- Isolated and persistent scripts: `eval`, `runScript`, `injectScript`, `batch`, `runPersistentScript`, `runLoadedPersistentScript`, `listScripts`, `listPScriptMcp`, `callPScriptMcp`, `stopScript`, `restartScript`, `getScript`, `listScriptPrint`, `clearScriptPrint`, `runSandboxBoundarySelfTest`.
 - Compatibility aliases: `reg`, `regw`, `read8`, `read16`, `read32`, `write8`, `write16`, `write32`.
 ## Commands
 - `status`: Returns pause state, file-load gate state, ROM-loaded state, frame count, render/audio/debug toggles, speed, selected CPU, and current PC/CPSR values. `fileTransaction.active/serial/reason` reports the whole file boundary, while `stateLoadSerial` increments only after a State has been applied. For file-input automation, record `stateLoadSerial` before selection, then wait until it increases and `fileTransaction.active` is false.
@@ -207,8 +207,26 @@ Acorn 8.17.0 and ssim.js 3.5.0 are exact-version build dependencies. Their gener
 `ssim-trim` uses the locally bundled, exact `ssim.js` 3.5.0 package. It executes only inside the embedded algorithm Worker after that Worker removes network, storage, raw-message, sub-Worker, and runtime code-generation capabilities. The library receives only frame pixels and comparison options for the active comparison. Worker startup, timeout, protocol, or execution failures remain isolated from `px`, `px-window`, `hist`, `blk`, and `edge`.
 ## Persistent injection scripts
 `runPersistentScript` starts a locally isolated Worker and keeps it alive until `stopScript` is called. Calls are queued independently for each script context, so two scripts cannot corrupt one another's internal queue state. The default is blocking `{ "asyncMode": false }`. Enable `{ "asyncMode": true }` only for a non-blocking register-observation script.
-- `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": false }` starts a script. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
-- `listScripts`, `stopScript: { id }`, `restartScript: { id }`, and `getScript: { id }` manage saved worker code. `getScript` returns at most 65536 source characters with `truncated` and `originalChars`; main-thread regular-expression evaluation is intentionally unavailable.
+- `runPersistentScript`: `{ "name": "watch-hp", "code": "...", "asyncMode": false }` starts source supplied directly in the API request. Updating a name replaces its previous running copy, and identical running code in the same mode is not registered twice.
+- `runLoadedPersistentScript`: `{ "name": "battle_observer_mcp", "asyncMode": false, "startupTimeoutMs": 10000 }` directly starts or updates the source currently loaded in the Persistent Scripts editor. `name` is required. The call does not resolve successfully until the Worker startup handshake has completed and the result contains `running:true`, `started:true`, the actual positive integer `id`, and the exact requested `name`. It also reports `source:"loaded-editor"` and whether the name was reloaded. The command does not accept `code`.
+```js
+const started = await window.DesmumeMCP.call("runLoadedPersistentScript", {
+  name: "battle_observer_mcp",
+  asyncMode: false,
+  startupTimeoutMs: 10000
+});
+// { ok:true, id:2, name:"battle_observer_mcp", running:true, started:true, source:"loaded-editor", reloaded:false, ... }
+```
+- **API automation must call `runLoadedPersistentScript` directly. Clicking `Run / Update`, calling an element's `.click()`, dispatching a click event, locating the button in the DOM, or using coordinate-based UI automation is prohibited. UI click経由での起動は禁止する。**
+- `restartScript` accepts `{ "id": 2 }`, `{ "scriptId": 2 }`, or `{ "name": "battle_observer_mcp" }`; omitting all selectors restarts the currently selected script for the UI button. It restarts the saved source with the same `id` and `name`, clears its console through record replacement, and does not resolve successfully until `running:true`, `started:true`, and the preserved `id` and `name` are returned. It must be called directly; click/DOM/coordinate automation is prohibited.
+```js
+const restarted = await window.DesmumeMCP.call("restartScript", {
+  name: "battle_observer_mcp",
+  startupTimeoutMs: 10000
+});
+// { ok:true, id:2, name:"battle_observer_mcp", running:true, started:true, reloaded:true, ... }
+```
+- `listScripts`, `stopScript: { id }`, and `getScript: { id }` manage saved worker code. `getScript` returns at most 65536 source characters with `truncated` and `originalChars`; main-thread regular-expression evaluation is intentionally unavailable.
 - A persistent script may return an array of `{ name, description, handler }` definitions from its top level. `name` must match `^[A-Za-z][A-Za-z0-9._-]{0,63}$`, `description` is required, and `handler` may be any function; its awaited result remains inside the sandbox until it is normalized for return.
 - `listPScriptMcp: { scriptId? }` returns `{ mcps: [{ scriptId, scriptName, name, description }] }` for running scripts whose publication has completed. Stopped scripts are omitted.
 - `callPScriptMcp: { scriptId, name, params, blocking, timeoutMs? }` invokes one published handler and returns `{ scriptId, scriptName, name, blocking, value }`. `blocking` is required. It does not pause the emulator: `true` serializes the handler with persistent events and other blocking handlers, while `false` may run concurrently. A handler that reads or writes closure state must require `blocking:true`. This contract is independent of `asyncMode:false`; blocking does not bypass async-mode command restrictions.

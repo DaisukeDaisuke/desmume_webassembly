@@ -949,7 +949,7 @@ test("controlled script replacement resumes an active script-only trap after cal
     assert.equal(pauseEvents.length, 0);
 });
 
-test("restartScript requests safe resume for an active script-only trap", async () => {
+test("restartScript preserves id/name and requests safe resume for an active script-only trap", async () => {
     const stopCalls = [];
     const startCalls = [];
     const script = { id: 7, name: "observer", code: "return [];", asyncMode: false };
@@ -959,19 +959,93 @@ test("restartScript requests safe resume for an active script-only trap", async 
         ui: {},
         stopPersistentScript: async (params) => {
             stopCalls.push(params);
-            return { id: params.id };
+            return { id: params.id, name: script.name };
         },
-        startPersistentScript: async (params) => {
-            startCalls.push(params);
-            return { id: 8, ...params };
+        startPersistentScript: async (params, internalOptions) => {
+            startCalls.push({ params, internalOptions });
+            return { id: script.id, name: script.name, running: true, started: true };
         }
     });
 
-    const result = await commands.restartScript({ id: script.id });
+    const result = await commands.restartScript({ name: script.name, startupTimeoutMs: 10000 });
     assert.deepEqual(stopCalls, [{ id: 7, resumeScriptOnlyTrap: true }]);
-    assert.deepEqual(startCalls, [{ name: "observer", code: "return [];", asyncMode: false }]);
-    assert.equal(state.scripts.has(7), false);
-    assert.equal(result.id, 8);
+    assert.deepEqual(startCalls, [{
+        params: { name: "observer", code: "return [];", asyncMode: false, startupTimeoutMs: 10000 },
+        internalOptions: { deduplicateByCode: false }
+    }]);
+    assert.equal(result.id, 7);
+    assert.equal(result.name, "observer");
+    assert.equal(result.reloaded, true);
+});
+
+test("runLoadedPersistentScript starts the current editor source under the exact requested name", async () => {
+    const startCalls = [];
+    const state = {
+        scripts: new Map([[3, { id: 3, name: "same-code-other-name", code: "return [];", running: true }]]),
+        activeScriptId: 3
+    };
+    const commands = createScriptCommands({
+        state,
+        ui: { scriptCode: { value: "return [];" } },
+        startPersistentScript: async (params, internalOptions) => {
+            startCalls.push({ params, internalOptions });
+            return { id: 9, name: params.name, running: true, started: true };
+        }
+    });
+
+    const result = await commands.runLoadedPersistentScript({
+        name: "battle_observer_mcp",
+        asyncMode: false,
+        startupTimeoutMs: 10000
+    });
+    assert.deepEqual(startCalls, [{
+        params: { name: "battle_observer_mcp", asyncMode: false, startupTimeoutMs: 10000 },
+        internalOptions: { source: "return [];", deduplicateByCode: false }
+    }]);
+    assert.equal(result.id, 9);
+    assert.equal(result.name, "battle_observer_mcp");
+    assert.equal(result.source, "loaded-editor");
+    assert.equal(result.reloaded, false);
+});
+
+test("runLoadedPersistentScript rejects code input and incomplete startup identities", async () => {
+    const state = { scripts: new Map(), activeScriptId: 0 };
+    const commands = createScriptCommands({
+        state,
+        ui: { scriptCode: { value: "return [];" } },
+        startPersistentScript: async () => ({ running: true, started: true })
+    });
+    await assert.rejects(
+        () => commands.runLoadedPersistentScript({ name: "observer", code: "return [];" }),
+        /code is not allowed/
+    );
+    await assert.rejects(
+        () => commands.runLoadedPersistentScript({ name: "observer" }),
+        /required id and name/
+    );
+
+    const premature = createScriptCommands({
+        state,
+        ui: { scriptCode: { value: "return [];" } },
+        startPersistentScript: async () => ({
+            id: 4,
+            name: "observer",
+            running: true,
+            started: false
+        })
+    });
+    await assert.rejects(
+        () => premature.runLoadedPersistentScript({ name: "observer" }),
+        /before running and started were true/
+    );
+});
+
+test("API_CURRENT prohibits click-based loaded-script startup", async () => {
+    const api = await readFile(new URL("../webassembly/API_CURRENT.md", import.meta.url), "utf8");
+    assert.match(api, /runLoadedPersistentScript/);
+    assert.match(api, /UI click経由での起動は禁止する/);
+    assert.match(api, /\.click\(\)/);
+    assert.match(api, /dispatching a click event/);
 });
 
 test("pending persistent callback timeout fails closed without auto-resume", async () => {

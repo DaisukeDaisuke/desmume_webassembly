@@ -524,8 +524,8 @@ export function createScriptService({
         return operation;
     }
     
-    async function startPersistentScript(params = {}) {
-        const source = params.code ?? ui.scriptCode.value;
+    async function startPersistentScript(params = {}, internalOptions = {}) {
+        const source = internalOptions.source ?? params.code ?? ui.scriptCode.value;
         if (typeof source !== "string" || !source.trim() || source.length > 262144) {
             return responder.fail(ErrorCode.SCRIPT_SOURCE_INVALID, "Persistent script source must be a non-empty string up to 262144 characters");
         }
@@ -544,10 +544,17 @@ export function createScriptService({
                 "startupTimeoutMs must be between 1 and 600000"
             );
         }
-        const duplicate = [...state.scripts.values()].find((script) => script.code === code && script.asyncMode === asyncMode && script.running);
-        if (duplicate) return scriptSummary(duplicate, true);
         const existing = [...state.scripts.values()].find((script) => script.name === name);
-        if (existing) await stopPersistentScript({ id: existing.id, resumeScriptOnlyTrap: true });
+        const duplicate = internalOptions.deduplicateByCode === false
+            ? null
+            : [...state.scripts.values()].find((script) => (
+                script !== existing
+                && script.code === code
+                && script.asyncMode === asyncMode
+                && script.running
+            ));
+        if (duplicate) return scriptSummary(duplicate, true);
+        if (existing?.running) await stopPersistentScript({ id: existing.id, resumeScriptOnlyTrap: true });
         const sourceBytes = new TextEncoder().encode(source).byteLength;
         const retainedBytes = pruneStoppedScripts(sourceBytes);
         if (!existing && (state.scripts.size >= ResourceLimits.totalScriptRecords
