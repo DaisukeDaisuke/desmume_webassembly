@@ -149,16 +149,30 @@ function forwardAuthenticatedChildMessage(childMessage) {
         });
         return;
     }
+    if (childMessage.type === "eventRelease") {
+        postMessage({
+            type: "eventRelease",
+            eventId: Number(childMessage.eventId) || 0,
+            callbackId: Number(childMessage.callbackId) || 0,
+            callbackToken: typeof childMessage.callbackToken === "string"
+                ? childMessage.callbackToken.slice(0, 256) : "",
+            mode: childMessage.mode === "resume" ? "resume" : "invalid"
+        });
+        return;
+    }
     if (childMessage.type === "print") {
         const values = smallValue(childMessage.values);
         if (!Array.isArray(values)) throw new TypeError("sandbox print payload is invalid");
         postMessage({ type: "print", values });
         return;
     }
-    if (childMessage.type === "pscriptMcpPublished") {
+    if (childMessage.type === "registrationComplete") {
         postMessage({
-            type: "pscriptMcpPublished",
+            type: "registrationComplete",
             scriptInstanceId,
+            fallbackId: childMessage.fallbackId == null
+                ? null
+                : String(childMessage.fallbackId).slice(0, 64),
             mcps: normalizePersistentMcpMetadata(childMessage.mcps)
         });
         return;
@@ -216,7 +230,10 @@ function forwardAuthenticatedChildMessage(childMessage) {
         return;
     }
     childEventBusy = false;
-    postMessage({ type: "eventAck" });
+    postMessage({
+        type: "eventAck",
+        queueEventId: Number(childMessage.queueEventId) || 0
+    });
     pumpEventQueue();
 }
 
@@ -276,8 +293,8 @@ function startSandbox(message) {
         }
         if (childMessage.channelToken !== channelToken
             || ![
-                "call", "register", "eventDone", "eventProcessed", "print", "compiled", "started",
-                "failed", "pscriptMcpPublished", "pscriptMcpResult"
+                "call", "register", "eventDone", "eventRelease", "eventProcessed", "print", "compiled", "started",
+                "failed", "registrationComplete", "pscriptMcpResult"
             ].includes(childMessage.type)) {
             fail(new Error("sandbox Worker sent an invalid message"), "child-auth");
             disposeSandbox();
@@ -333,6 +350,12 @@ function startParser(message) {
             return;
         }
         if (parserMessage.type === "parsed") {
+            postMessage({
+                type: "sourceIdentity",
+                scriptId: parserMessage.scriptId == null
+                    ? null
+                    : String(parserMessage.scriptId).slice(0, 64)
+            });
             disposeParser();
             startSandbox(message);
             return;

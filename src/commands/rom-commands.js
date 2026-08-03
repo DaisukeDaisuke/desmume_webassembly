@@ -6,6 +6,7 @@ export function createRomCommands({
     ui,
     native,
     cancelAndWait = async () => false,
+    dispatchScriptEventAndWait = async () => {},
     fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
     ensureReady,
     ensureWasmReady,
@@ -32,11 +33,17 @@ export function createRomCommands({
                 await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     writeRomFile(file.name, bytes);
-                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(), resume: true });
+                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(), resume: false });
                     if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM load failed (${result})`, { nativeCode: result });
                     loaded = true;
+                    await dispatchScriptEventAndWait("start", {
+                        generation: ++state.scriptStartGeneration,
+                        reason: "loadRomFile"
+                    });
+                    lifecycleComplete = true;
                     log(`ROM loaded: ${file.name} (${bytes.length} bytes)`);
                     return {
                         ret: result,
@@ -46,7 +53,9 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ ...runState, running: true, paused: false });
+                    if (loaded && lifecycleComplete) {
+                        restoreAfterFileLoad({ ...runState, running: true, paused: false });
+                    }
                     else stopAfterFailedLoad();
                 }
             });
@@ -62,11 +71,17 @@ export function createRomCommands({
                 const resume = params.resume !== false;
                 const name = params.name || "mcp-rom.nds";
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     writeRomFile(name, bytes);
-                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: false });
                     if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM load failed (${result})`, { nativeCode: result });
                     loaded = true;
+                    await dispatchScriptEventAndWait("start", {
+                        generation: ++state.scriptStartGeneration,
+                        reason: "loadRomBytes"
+                    });
+                    lifecycleComplete = true;
                     log(`ROM loaded from MCP bytes: ${name} (${bytes.length} bytes)`);
                     return {
                         ret: result,
@@ -76,7 +91,9 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
+                    if (loaded && lifecycleComplete) {
+                        restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
+                    }
                     else stopAfterFailedLoad();
                 }
             });
@@ -104,11 +121,17 @@ export function createRomCommands({
                 const resume = params.resume !== false;
                 const name = params.name || url.split("/").pop() || "url-rom.nds";
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     writeRomFile(name, bytes);
-                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: false });
                     if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM load failed (${result})`, { nativeCode: result });
                     loaded = true;
+                    await dispatchScriptEventAndWait("start", {
+                        generation: ++state.scriptStartGeneration,
+                        reason: "loadRomUrl"
+                    });
+                    lifecycleComplete = true;
                     log(`ROM loaded from URL: ${name} (${bytes.length} bytes)`);
                     return {
                         ret: result,
@@ -118,7 +141,9 @@ export function createRomCommands({
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
+                    if (loaded && lifecycleComplete) {
+                        restoreAfterFileLoad({ ...runState, running: resume, paused: !resume });
+                    }
                     else stopAfterFailedLoad();
                 }
             });

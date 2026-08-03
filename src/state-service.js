@@ -1,7 +1,11 @@
+import { ErrorCode } from "./error-codes.js";
+import { codedError } from "./validation.js";
+
 export function createStateService({
     state,
     native,
     frameService,
+    wakeEmulationLoop = () => {},
     onScreenInvalid = () => {},
     onStatusChange = () => {},
     onFault = () => {},
@@ -64,6 +68,19 @@ export function createStateService({
             state.paused = false;
             state.running = true;
             native.pause(false);
+            const nativePaused = typeof native.isPaused === "function" ? native.isPaused() : false;
+            if (nativePaused) {
+                state.paused = true;
+                state.running = false;
+                native.pause(true);
+                onStatusChange();
+                throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    "file load completed, but native resume did not clear the paused state",
+                    { nativePaused: true }
+                );
+            }
+            wakeEmulationLoop();
         } else {
             state.paused = true;
             state.running = false;

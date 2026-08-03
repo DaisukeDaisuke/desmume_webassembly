@@ -128,6 +128,17 @@ export function createBreakpointOwnerStore({
                 }
             }
             return removed;
+        },
+        discardOwnersByOrigin(origin) {
+            const removed = [];
+            for (const entry of [...sites.values()]) {
+                for (const owner of [...entry.owners.values()]) {
+                    if (origin !== "all" && owner.origin !== origin) continue;
+                    const result = this.discardOwner(owner.id);
+                    if (result) removed.push({ ...owner, site: result.entry });
+                }
+            }
+            return removed;
         }
     };
 }

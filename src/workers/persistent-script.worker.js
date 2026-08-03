@@ -60,6 +60,12 @@ let droppedTicks = 0;
 let asyncMode = false;
 let activeEvent = null;
 let initialized = false;
+const CALLBACK_DESTRUCTIVE_COMMANDS = new Set([
+    "reset", "reloadRom", "reloadRecentFile",
+    "loadRomFile", "loadRomBytes", "loadRomUrl",
+    "loadState", "loadStateBytes", "loadStateUrl", "importStateFile",
+    "restoreAnalysisBaseline", "loadSaveSlot", "importSaveFile"
+]);
 
 for (const name of [
     "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "importScripts", "Function",
@@ -143,10 +149,41 @@ function ask(type, data = {}) {
 const mcp = {
     call: (command, params = {}) => {
         const normalizedParams = normalizeWorkerRpcParams(command, params);
+        if (activeEvent?.eventId && CALLBACK_DESTRUCTIVE_COMMANDS.has(command)) {
+            const error = new NativeError(
+                `${command} is unavailable inside a persistent breakpoint callback because it requires lifecycle handlers after the callback releases. Invoke it after the callback or through the external API.`
+            );
+            error.code = "COMMAND_NOT_ALLOWED";
+            error.details = {
+                command,
+                eventId: activeEvent.eventId,
+                reason: "destructive-callback-reentrancy"
+            };
+            return Promise.reject(error);
+        }
+        if (command === "resume" && activeEvent?.eventId) {
+            if (activeEvent.released) {
+                const error = new NativeError("resume was already requested for this callback");
+                error.code = "SCRIPT_RESUME_NOT_COMPLETED";
+                return Promise.reject(error);
+            }
+            const eventIdentity = {
+                eventId: activeEvent.eventId,
+                callbackId: activeEvent.callbackId,
+                callbackToken: activeEvent.callbackToken
+            };
+            activeEvent.released = true;
+            send({ type: "eventRelease", ...eventIdentity, mode: "resume" });
+            return ask("call", {
+                command,
+                params: normalizedParams,
+                ...eventIdentity
+            });
+        }
         return ask("call", {
             command,
             params: normalizedParams,
-            eventId: activeEvent?.eventId || 0,
+            eventId: activeEvent?.released ? 0 : activeEvent?.eventId || 0,
             callbackId: activeEvent?.callbackId,
             callbackToken: activeEvent?.callbackToken
         });
@@ -300,34 +337,54 @@ function fail(error, phase = "runtime") {
     });
 }
 
-function validatePublishedMcps(value) {
-    if (value === undefined || value === null) return { handlers: new Map(), metadata: [] };
-    if (!Array.isArray(value)) {
-        throw new TypeError("persistent script top-level return must be an MCP definition array, null, or undefined");
+function validatePlainObject(value, label) {
+    if (!value || typeof value !== "object") throw new TypeError(`${label} must be an object`);
+    const prototype = nativeObjectGetPrototypeOf(value);
+    if (prototype !== nativeObjectPrototype && prototype !== null) {
+        throw new TypeError(`${label} must be a plain object`);
     }
-    if (value.length > ResourceLimits.persistentMcpEndpointsPerScript) {
+    const descriptors = nativeObjectGetOwnPropertyDescriptors(value);
+    for (const key of nativeObjectKeys(descriptors)) {
+        const descriptor = readOwnDataProperty(descriptors, key);
+        if (!descriptor || !nativeObjectHasOwn(descriptor, "value")) {
+            throw new TypeError(`${label} contains an accessor`);
+        }
+    }
+    return value;
+}
+
+function validatePublishedMcps(value) {
+    let fallbackId = null;
+    let definitions = value;
+    if (value === undefined || value === null) definitions = [];
+    else if (!Array.isArray(value)) {
+        const result = validatePlainObject(value, "persistent script top-level return");
+        const rawFallbackId = readOwnDataProperty(result, "fallbackId");
+        if (rawFallbackId !== undefined && rawFallbackId !== null) {
+            if (typeof rawFallbackId !== "string"
+                || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(rawFallbackId)) {
+                throw new TypeError("persistent script fallbackId must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$");
+            }
+            fallbackId = rawFallbackId;
+        }
+        const rawMcps = readOwnDataProperty(result, "mcps");
+        definitions = rawMcps === undefined || rawMcps === null ? [] : rawMcps;
+    }
+    if (!Array.isArray(definitions)) {
+        throw new TypeError("persistent script mcps must be an array, null, or undefined");
+    }
+    if (definitions.length > ResourceLimits.persistentMcpEndpointsPerScript) {
         throw new RangeError(
             `persistent MCP endpoint limit exceeded (${ResourceLimits.persistentMcpEndpointsPerScript})`
         );
     }
     const handlers = new Map();
-    const metadata = new Array(value.length);
-    for (let index = 0; index < value.length; index++) {
-        const definition = readOwnDataProperty(value, `${index}`);
-        if (!definition || typeof definition !== "object") {
-            throw new TypeError(`persistent MCP definition ${index} must be an object`);
-        }
-        const prototype = nativeObjectGetPrototypeOf(definition);
-        if (prototype !== nativeObjectPrototype && prototype !== null) {
-            throw new TypeError(`persistent MCP definition ${index} must be a plain object`);
-        }
-        const descriptors = nativeObjectGetOwnPropertyDescriptors(definition);
-        for (const key of nativeObjectKeys(descriptors)) {
-            const descriptor = readOwnDataProperty(descriptors, key);
-            if (!descriptor || !nativeObjectHasOwn(descriptor, "value")) {
-                throw new TypeError(`persistent MCP definition ${index} contains an accessor`);
-            }
-        }
+    const metadata = new Array(definitions.length);
+    for (let index = 0; index < definitions.length; index++) {
+        const definition = validatePlainObject(
+            readOwnDataProperty(definitions, `${index}`),
+            `persistent MCP definition ${index}`
+        );
         const name = readOwnDataProperty(definition, "name");
         const description = normalizePersistentMcpDescription(
             readOwnDataProperty(definition, "description")
@@ -343,14 +400,18 @@ function validatePublishedMcps(value) {
         handlers.set(name, handler);
         metadata[index] = { name, description };
     }
-    return { handlers, metadata: normalizePersistentMcpMetadata(metadata) };
+    return { fallbackId, handlers, metadata: normalizePersistentMcpMetadata(metadata) };
 }
 
 function publishPersistentMcps(value) {
     const published = validatePublishedMcps(value);
     persistentMcps.clear();
     for (const [name, handler] of published.handlers) persistentMcps.set(name, handler);
-    send({ type: "pscriptMcpPublished", mcps: published.metadata });
+    send({
+        type: "registrationComplete",
+        fallbackId: published.fallbackId,
+        mcps: published.metadata
+    });
     for (const item of published.metadata) print(`MCP published: ${item.name}`);
 }
 
@@ -427,7 +488,8 @@ async function runEvent(message) {
         eventId: Number(message.eventId) || 0,
         callbackId: Number(message.callbackId),
         triggerId: Number(message.triggerId) || 0,
-        callbackToken: String(message.callbackToken || "")
+        callbackToken: String(message.callbackToken || ""),
+        released: false
     };
     try {
         for (const [id, entry] of callbacks) {
@@ -440,14 +502,18 @@ async function runEvent(message) {
             }
         }
     } finally {
+        const completedEvent = activeEvent;
         activeEvent = previousEvent;
-        if (message.eventId) send({
+        if (message.eventId && !completedEvent.released) send({
             type: "eventDone",
             eventId: message.eventId,
             callbackId: message.callbackId,
             callbackToken: message.callbackToken
         });
-        send({ type: "eventProcessed" });
+        send({
+            type: "eventProcessed",
+            queueEventId: Number(message.queueEventId) || 0
+        });
     }
 }
 

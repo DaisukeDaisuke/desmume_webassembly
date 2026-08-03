@@ -95,10 +95,16 @@ function lockDownRuntimeCodeGeneration() {
     }
 }
 
-function assertSandboxSource(source) {
+function parseSandboxSource(source) {
+    const scriptIds = [];
     const ast = parse(`async function __desmumeSandbox__(){\n${String(source)}\n}`, {
         ecmaVersion: "latest",
-        sourceType: "script"
+        sourceType: "script",
+        onComment: (block, text) => {
+            if (block) return;
+            const match = String(text).match(/^\s*@script-id\s+([^\s]+)\s*$/);
+            if (match) scriptIds.push(match[1]);
+        }
     });
     const pending = [ast];
     const seen = new Set();
@@ -112,6 +118,15 @@ function assertSandboxSource(source) {
             else if (value && typeof value === "object") pending.push(value);
         }
     }
+    const uniqueScriptIds = [...new Set(scriptIds)];
+    if (uniqueScriptIds.length > 1) {
+        throw new SyntaxError("persistent script contains conflicting @script-id directives");
+    }
+    const scriptId = uniqueScriptIds[0] || null;
+    if (scriptId !== null && !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(scriptId)) {
+        throw new SyntaxError("@script-id must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$");
+    }
+    return { scriptId };
 }
 
 lockDownRuntimeCodeGeneration();
@@ -149,8 +164,8 @@ nativeAddEventListener("message", async (event) => {
         return;
     }
     try {
-        assertSandboxSource(message.code);
-        send({ type: "parsed" });
+        const parsed = parseSandboxSource(message.code);
+        send({ type: "parsed", scriptId: parsed.scriptId });
     } catch (error) {
         send({ type: "error", error: serializeWorkerError(error, { source: message.code, phase: "compile" }) });
     }

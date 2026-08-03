@@ -249,12 +249,21 @@ export function bindUi(context) {
             commands: Array.isArray(items) ? items : items.commands || []
         }).then((r) => ui.mcpOutput.textContent = JSON.stringify(r, null, 2)).catch((e) => ui.mcpOutput.textContent = e.message);
     });
-    ui.scriptRunBtn.addEventListener("click", () => runCommand("runLoadedPersistentScript", { name: ui.scriptName.value, asyncMode: ui.scriptAsyncMode.checked }).then((result) => {
-        try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: ui.scriptName.value, code: ui.scriptCode.value })); } catch {}
-        selectScript(result.id);
-    }).catch((e) => { ui.scriptRawOutput.value = e.message; ui.scriptOutput.textContent = e.message; }));
+    ui.scriptRunBtn.addEventListener("click", () => {
+        const params = { asyncMode: ui.scriptAsyncMode.checked };
+        const name = ui.scriptName.value.trim();
+        if (name) params.name = name;
+        runCommand("runLoadedPersistentScript", params).then((result) => {
+            ui.scriptName.value = result.name;
+            try { localStorage.setItem("desmume-script-draft", JSON.stringify({ name: result.name, code: ui.scriptCode.value })); } catch {}
+            selectScript(result.id);
+        }).catch((e) => { ui.scriptRawOutput.value = e.message; ui.scriptOutput.textContent = e.message; });
+    });
     ui.scriptStopBtn.addEventListener("click", () => runCommand("stopScript", {}).catch((e) => log(e.message)));
-    ui.scriptRestartBtn.addEventListener("click", () => runCommand("restartScript", {}).then((result) => selectScript(result.id)).catch((e) => log(e.message)));
+    ui.scriptRestartBtn.addEventListener("click", () => runCommand("restartScript", {}).then((result) => {
+        ui.scriptName.value = result.name;
+        selectScript(result.id);
+    }).catch((e) => log(e.message)));
     ui.scriptClearOutputBtn.addEventListener("click", () => runCommand("clearScriptPrint", {}).catch((e) => log(e.message)));
     ui.scriptFile.addEventListener("change", () => readFileFromInput(ui.scriptFile).then(({ file, bytes }) => {
         ui.scriptCode.value = new TextDecoder().decode(bytes);

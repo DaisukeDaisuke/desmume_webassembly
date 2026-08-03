@@ -228,6 +228,11 @@ export function createNativeBridge({
         return state.fns.pauseEmu(paused ? 1 : 0);
     }
 
+    function isPaused() {
+        ensureReady();
+        return state.fns.isPaused() !== 0;
+    }
+
     function loadRom(size) {
         ensureReady();
         return checkResult(state.fns.loadROM(Number(size)), "loadROM");
@@ -496,6 +501,7 @@ export function createNativeBridge({
         initialize,
         fileExists,
         isRomLoaded,
+        isPaused,
         binaryFloat,
         loadBufferedState,
         loadRom,

@@ -16,6 +16,7 @@ export function createRuntimeCommands(context) {
         cancelOperation,
         fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
         dispatchScriptEvent,
+        dispatchScriptEventAndWait,
         drawFrame,
         ensureReady,
         ensureRomLoaded,
@@ -36,6 +37,12 @@ export function createRuntimeCommands(context) {
         ui,
         updateStatus
     } = context;
+    const wakeEmulationLoop = typeof context.wakeEmulationLoop === "function"
+        ? context.wakeEmulationLoop
+        : () => {};
+    const waitForScriptEvent = typeof dispatchScriptEventAndWait === "function"
+        ? dispatchScriptEventAndWait
+        : async (event, payload) => dispatchScriptEvent?.(event, payload);
 
     function resetRealtimePacing() {
         const now = performance.now();
@@ -95,9 +102,28 @@ export function createRuntimeCommands(context) {
             resetRealtimePacing();
             native.clearBreakStatus();
             native.pause(false);
+            const nativePaused = typeof native.isPaused === "function" ? native.isPaused() : false;
+            if (nativePaused) {
+                state.paused = true;
+                state.running = false;
+                updateStatus();
+                throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    "resume did not clear the native paused state",
+                    { nativePaused: true }
+                );
+            }
+            wakeEmulationLoop();
             onScreenValid();
             updateStatus();
-            return { ok: true, romLoaded: true };
+            return {
+                ok: true,
+                romLoaded: true,
+                resumed: true,
+                paused: false,
+                running: true,
+                nativePaused: false
+            };
         },
 
         async reset(params = {}) {
@@ -108,18 +134,20 @@ export function createRuntimeCommands(context) {
                 const runState = pauseForFileLoad();
                 const hold = params.holdPaused ?? params.hold ?? ui.resetHoldToggle.checked;
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     const result = await reloadCurrentRom({
                         waitMs: bootWaitMs(params),
-                        resume: !hold && runState.running && !runState.paused
+                        resume: false
                     });
                     if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reset failed (${result})`, { nativeCode: result });
                     loaded = true;
                     if (result === 0) {
-                        dispatchScriptEvent("start", {
+                        await waitForScriptEvent("start", {
                             generation: ++state.scriptStartGeneration,
                             reason: "reset"
                         });
+                        lifecycleComplete = true;
                     }
                     return {
                         ret: result,
@@ -129,7 +157,7 @@ export function createRuntimeCommands(context) {
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(
                         hold ? { ...runState, running: false, paused: true } : runState
                     );
                     else stopAfterFailedLoad();
@@ -149,15 +177,17 @@ export function createRuntimeCommands(context) {
                         && !runState.paused
                         && !ui.resetHoldToggle.checked);
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
-                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume });
+                    const result = await reloadCurrentRom({ waitMs: bootWaitMs(params), resume: false });
                     if (result !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `ROM reload failed (${result})`, { nativeCode: result });
                     loaded = true;
                     if (result === 0) {
-                        dispatchScriptEvent("start", {
+                        await waitForScriptEvent("start", {
                             generation: ++state.scriptStartGeneration,
                             reason: "reloadRom"
                         });
+                        lifecycleComplete = true;
                     }
                     return {
                         ret: result,
@@ -167,7 +197,7 @@ export function createRuntimeCommands(context) {
                         romLoaded: native.isRomLoaded()
                     };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(
                         resume ? runState : { ...runState, running: false, paused: true }
                     );
                     else stopAfterFailedLoad();

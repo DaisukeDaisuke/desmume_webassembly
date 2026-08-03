@@ -14,6 +14,7 @@ import { createViewService } from "../src/ui/view-service.js";
 import { createCommandDispatcher } from "../src/command-dispatcher.js";
 import { createDebuggerCoordinator } from "../src/debugger-coordinator.js";
 import { createRuntimeCommands } from "../src/commands/runtime-commands.js";
+import { createStateCommands } from "../src/commands/state-commands.js";
 import { createBreakpointOwnerStore } from "../src/breakpoint-owner-store.js";
 import { createDebuggerControlCommands } from "../src/commands/debugger-control-commands.js";
 import { withInternalMetadata } from "../src/internal-command-metadata.js";
@@ -746,7 +747,9 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
     new URL("../src/workers/parser.worker.js", import.meta.url)
   ]) {
     const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /assertSandboxSource/);
+    assert.match(source, /parseSandboxSource/);
+    assert.match(source, /if \(block\) return/);
+    assert.match(source, /\^\\s\*@script-id/);
     assert.match(source, /Object\.defineProperty\(globalThis/);
     assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
     assert.match(source, /type: "ready", hardened: true, layer: "parser"/);
@@ -756,7 +759,7 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
     new URL("../src/workers/persistent-script.worker.js", import.meta.url)
   ]) {
     const source = await readFile(workerUrl, "utf8");
-    assert.doesNotMatch(source, /assertSandboxSource/);
+    assert.doesNotMatch(source, /parseSandboxSource/);
     assert.match(source, /Object\.defineProperty\(globalThis/);
     assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
     assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
@@ -949,10 +952,250 @@ test("controlled script replacement resumes an active script-only trap after cal
     assert.equal(pauseEvents.length, 0);
 });
 
-test("restartScript preserves id/name and requests safe resume for an active script-only trap", async () => {
+test("callback resume releases only its callback and resolves after the full breakpoint barrier", async () => {
+    const messages = [];
+    let nativePaused = true;
+    let breakHit = true;
+    let pc = 0x02000000;
+    let steps = 0;
+    let wakes = 0;
+    const state = {
+        ready: true,
+        selectedCpu: "arm9",
+        lastBreakKey: "",
+        breakRefreshKey: "",
+        scriptTriggers: [
+            { id: 1, scriptId: 4, callbackId: 8, type: "exec", cpu: "arm9", address: 0x02000000 },
+            { id: 2, scriptId: 5, callbackId: 9, type: "exec", cpu: "arm9", address: 0x02000000 }
+        ],
+        scripts: new Map([
+            [4, { running: true, worker: { postMessage: (message) => messages.push(message) } }],
+            [5, { running: true, worker: { postMessage: (message) => messages.push(message) } }]
+        ]),
+        pendingScriptEvents: new Map(),
+        nextScriptEventId: 1,
+        nextScriptCallbackToken: 1,
+        explicitPauseSerial: 0,
+        frame: 0,
+        romGeneration: 1,
+        fileTransactionSerial: 0,
+        fileTransactionActive: false,
+        loadingFile: false,
+        nativeBreakSerial: 0,
+        breakpointsInSync: true
+    };
+    const owners = createBreakpointOwnerStore();
+    owners.addOwner({ cpu: "arm9", type: "exec", address: 0x02000000 }, {
+        id: 2, origin: "script", scriptId: 4, triggerId: 1
+    });
+    owners.addOwner({ cpu: "arm9", type: "exec", address: 0x02000000 }, {
+        id: 3, origin: "script", scriptId: 5, triggerId: 2
+    });
+    const native = {
+        getStatus: () => ({
+            arm9: { pc },
+            lastBreak: breakHit
+                ? { hit: true, cpu: "arm9", kind: 0, address: 0x02000000, pc: 0x02000000, value: 0 }
+                : { hit: false }
+        }),
+        pause: (value) => { nativePaused = value; },
+        isPaused: () => nativePaused,
+        clearBreakStatus: () => { breakHit = false; },
+        step: () => { steps++; pc += 4; return 1; },
+        setBreakpoint: () => {},
+        hasLoadedRom: () => true
+    };
+    const coordinator = createDebuggerCoordinator({
+        state,
+        native,
+        breakpointOwners: owners,
+        breakpointService: { publish: () => {} },
+        getQueueBreakpointRefresh: () => () => {},
+        getWakeEmulationLoop: () => () => { wakes++; },
+        log: () => {},
+        hex: String,
+        updateStatus: () => {}
+    });
+
+    coordinator.syncNativeBreakStatus({
+        frame: 1,
+        arm9: { pc: 0x02000000 },
+        lastBreak: { hit: true, cpu: "arm9", kind: 0, address: 0x02000000, pc: 0x02000000, value: 0 }
+    });
+    assert.equal(messages.length, 2);
+    const first = messages.find((message) => message.scriptId === 4);
+    const second = messages.find((message) => message.scriptId === 5);
+    const resumeCompletion = coordinator.requestPersistentScriptResume(first.eventId, {
+        scriptId: first.scriptId,
+        callbackId: first.callbackId,
+        callbackToken: first.callbackToken
+    });
+    assert.ok(resumeCompletion instanceof Promise);
+    assert.equal(nativePaused, true);
+    assert.equal(steps, 0);
+    assert.equal(state.pendingScriptEvents.size, 1);
+
+    assert.equal(await coordinator.finishPersistentScriptEvent(second.eventId, {
+        scriptId: second.scriptId,
+        callbackId: second.callbackId,
+        callbackToken: second.callbackToken
+    }), true);
+    const result = await resumeCompletion;
+    assert.deepEqual(result, {
+        ok: true,
+        resumed: true,
+        eventId: first.eventId,
+        steppedPast: true,
+        nativePaused: false,
+        running: true,
+        paused: false
+    });
+    assert.equal(state.pendingScriptEvents.size, 0);
+    assert.equal(nativePaused, false);
+    assert.equal(state.paused, false);
+    assert.equal(state.running, true);
+    assert.equal(steps, 1);
+    assert.equal(wakes, 1);
+});
+
+test("State load remains paused until persistent stateLoad handlers complete", async () => {
+    const events = [];
+    let releaseLifecycle;
+    let lifecycleEntered;
+    const lifecycleStarted = new Promise((resolve) => { lifecycleEntered = resolve; });
+    const lifecycleHold = new Promise((resolve) => { releaseLifecycle = resolve; });
+    const commands = createStateCommands({
+        analysisBaselineSlotToken: Symbol("baseline"),
+        blockSaveFlush: () => events.push("flush-blocked"),
+        cancelAndWait: async () => events.push("cancelled"),
+        dispatchScriptEvent: () => {},
+        dispatchScriptEventAndWait: async (event) => {
+            events.push(`lifecycle:${event}`);
+            lifecycleEntered();
+            await lifecycleHold;
+            events.push("lifecycle-complete");
+        },
+        drawLoadedStateFrame: () => events.push("frame-invalidated"),
+        ensureRomLoaded: () => {},
+        idbGet: async () => null,
+        isAnalysisBaselineSlot: () => false,
+        loadStateBytesFromMemory: () => 0,
+        native: {
+            loadBufferedState: () => { events.push("native-load"); return 0; },
+            setTraceSuspended: () => {}
+        },
+        pauseForFileLoad: () => { events.push("paused"); return { running: true, paused: false }; },
+        rememberSlot: () => {},
+        restoreAfterFileLoad: () => events.push("restored"),
+        state: { frame: 9, traceEnabled: false },
+        stopAfterFailedStateLoad: () => events.push("failed-stop")
+    });
+
+    const loading = commands.loadState();
+    await lifecycleStarted;
+    assert.deepEqual(events, [
+        "cancelled",
+        "paused",
+        "native-load",
+        "flush-blocked",
+        "frame-invalidated",
+        "lifecycle:stateLoad"
+    ]);
+    releaseLifecycle();
+    await loading;
+    assert.deepEqual(events.slice(-2), ["lifecycle-complete", "restored"]);
+    assert.equal(events.includes("failed-stop"), false);
+});
+
+test("State load handler failure never restores the previous running state", async () => {
+    const events = [];
+    const commands = createStateCommands({
+        analysisBaselineSlotToken: Symbol("baseline"),
+        blockSaveFlush: () => {},
+        cancelAndWait: async () => {},
+        dispatchScriptEvent: () => {},
+        dispatchScriptEventAndWait: async () => {
+            throw new Error("stateLoad handler failed");
+        },
+        drawLoadedStateFrame: () => {},
+        ensureRomLoaded: () => {},
+        idbGet: async () => null,
+        isAnalysisBaselineSlot: () => false,
+        loadStateBytesFromMemory: () => 0,
+        native: { loadBufferedState: () => 0, setTraceSuspended: () => {} },
+        pauseForFileLoad: () => ({ running: true, paused: false }),
+        rememberSlot: () => {},
+        restoreAfterFileLoad: () => events.push("restored"),
+        state: { frame: 9, traceEnabled: false },
+        stopAfterFailedStateLoad: () => events.push("failed-stop")
+    });
+
+    await assert.rejects(commands.loadState(), /stateLoad handler failed/);
+    assert.deepEqual(events, ["failed-stop"]);
+});
+
+test("callPScriptMcp accepts MCP-only lookup and defaults its caller timeout to 60 seconds", async () => {
+    const calls = [];
+    const commands = createScriptCommands({
+        state: { scripts: new Map(), activeScriptId: 0 },
+        ui: {},
+        callPScriptMcp: async (params) => { calls.push(params); return { ok: true }; }
+    });
+
+    await commands.callPScriptMcp({ name: "observerRead", params: { fresh: true }, blocking: true });
+    assert.deepEqual(calls, [{
+        name: "observerRead",
+        params: { fresh: true },
+        blocking: true,
+        timeoutMs: 60000
+    }]);
+});
+
+test("clearBreakpoints removes logical owners before one native reconciliation", async () => {
+    let nativeClears = 0;
+    const registered = [];
+    const owners = createBreakpointOwnerStore({
+        onClearNative: () => { nativeClears++; },
+        onFirstOwner: (site) => registered.push(`${site.cpu}:${site.type}:${site.address}`)
+    });
+    owners.addOwner({ cpu: "arm9", type: "exec", address: 0x02000000 }, {
+        id: 1, origin: "user"
+    });
+    owners.addOwner({ cpu: "arm9", type: "exec", address: 0x02000004 }, {
+        id: 2, origin: "script", scriptId: 4
+    });
+    nativeClears = 0;
+    registered.length = 0;
+    const state = {
+        breakpoints: [{ id: 1, cpu: "arm9", type: "exec", address: 0x02000000 }]
+    };
+    const commands = createDebuggerControlCommands({
+        breakpointOwners: owners,
+        ensureReady: () => {},
+        renderBreakpoints: () => {},
+        state,
+        updateStatus: () => {}
+    });
+
+    const result = await commands.clearBreakpoints({ origin: "user" });
+    assert.equal(nativeClears, 1);
+    assert.deepEqual(registered, ["arm9:exec:33554436"]);
+    assert.deepEqual(result.removedIds, [1]);
+    assert.equal(result.breakpointsInSync, true);
+    assert.deepEqual(state.breakpoints, []);
+    assert.equal(owners.getOwners({ cpu: "arm9", type: "exec", address: 0x02000004 }).length, 1);
+});
+
+test("restartScript preserves API identity and requests safe resume for an active script-only trap", async () => {
     const stopCalls = [];
     const startCalls = [];
-    const script = { id: 7, name: "observer", code: "return [];", asyncMode: false };
+    const script = {
+        id: 7,
+        name: "observer",
+        identitySource: "api-name",
+        code: "return [];",
+        asyncMode: false
+    };
     const state = { scripts: new Map([[script.id, script]]), activeScriptId: script.id };
     const commands = createScriptCommands({
         state,
@@ -971,7 +1214,7 @@ test("restartScript preserves id/name and requests safe resume for an active scr
     assert.deepEqual(stopCalls, [{ id: 7, resumeScriptOnlyTrap: true }]);
     assert.deepEqual(startCalls, [{
         params: { name: "observer", code: "return [];", asyncMode: false, startupTimeoutMs: 10000 },
-        internalOptions: { deduplicateByCode: false }
+        internalOptions: { deduplicateByCode: false, existingId: 7 }
     }]);
     assert.equal(result.id, 7);
     assert.equal(result.name, "observer");
@@ -1006,6 +1249,38 @@ test("runLoadedPersistentScript starts the current editor source under the exact
     assert.equal(result.name, "battle_observer_mcp");
     assert.equal(result.source, "loaded-editor");
     assert.equal(result.reloaded, false);
+});
+
+test("runLoadedPersistentScript omits an empty UI name and accepts a generated identity", async () => {
+    const startCalls = [];
+    const commands = createScriptCommands({
+        state: { scripts: new Map(), activeScriptId: 0 },
+        ui: { scriptCode: { value: "return [];" } },
+        startPersistentScript: async (params, internalOptions) => {
+            startCalls.push({ params, internalOptions });
+            return {
+                id: 12,
+                name: "script-12",
+                nameProvisional: true,
+                identitySource: "generated",
+                running: true,
+                started: true,
+                topLevelRunning: false,
+                registrationComplete: true,
+                mcpCount: 0,
+                mcpNames: []
+            };
+        }
+    });
+
+    const result = await commands.runLoadedPersistentScript({ asyncMode: false });
+    assert.deepEqual(startCalls, [{
+        params: { asyncMode: false },
+        internalOptions: { source: "return [];", deduplicateByCode: false }
+    }]);
+    assert.equal(result.id, 12);
+    assert.equal(result.name, "script-12");
+    assert.equal(result.mcpCount, 0);
 });
 
 test("runLoadedPersistentScript rejects code input and incomplete startup identities", async () => {

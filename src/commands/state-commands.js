@@ -9,6 +9,7 @@ export function createStateCommands(context) {
         bytesFromParams,
         cancelAndWait = async () => false,
         dispatchScriptEvent,
+        dispatchScriptEventAndWait,
         download,
         drawLoadedStateFrame,
         ensureReady,
@@ -30,6 +31,9 @@ export function createStateCommands(context) {
         stopAfterFailedStateLoad,
         ui
     } = context;
+    const waitForScriptEvent = typeof dispatchScriptEventAndWait === "function"
+        ? dispatchScriptEventAndWait
+        : async (event, payload) => dispatchScriptEvent?.(event, payload);
 
     const stateCommands = {
         async saveState(params = {}) {
@@ -80,6 +84,7 @@ export function createStateCommands(context) {
                 if (!metadata.operation) await cancelAndWait("state-load");
                 await commit();
                 const runState = pauseForFileLoad();
+                let lifecycleComplete = false;
                 try {
                     if (params.slot && !isAnalysisBaselineSlot(params.slot) && !metadata.recordingReplay) {
                         rememberSlot(params.slot);
@@ -97,10 +102,14 @@ export function createStateCommands(context) {
                     drawLoadedStateFrame({
                         showResumeNotice: !(runState.running && !runState.paused)
                     });
-                    dispatchScriptEvent("stateLoad", { slot: params.slot || null });
+                    await waitForScriptEvent("stateLoad", {
+                        slot: params.slot || null,
+                        source: "loadState"
+                    });
+                    lifecycleComplete = true;
                     return { ok: true, paused: runState.paused, reset: false };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(metadata.holdPaused
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(metadata.holdPaused
                         ? { ...runState, running: false, paused: true }
                         : runState);
                     else stopAfterFailedStateLoad();
@@ -123,6 +132,7 @@ export function createStateCommands(context) {
                 await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     const ret = native.loadStateFile(bytes);
                     if (ret !== 0) throw codedError(
@@ -139,9 +149,14 @@ export function createStateCommands(context) {
                     });
                     await recordRecentFile("state", file.name, bytes);
                     log(`state imported: ${file.name}`);
+                    await waitForScriptEvent("stateLoad", {
+                        name: file.name,
+                        source: "importStateFile"
+                    });
+                    lifecycleComplete = true;
                     return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(runState);
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(runState);
                     else stopAfterFailedStateLoad();
                 }
             });
@@ -159,6 +174,7 @@ export function createStateCommands(context) {
                 await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     const ret = native.loadStateFile(bytes);
                     if (ret !== 0) throw codedError(
@@ -174,9 +190,14 @@ export function createStateCommands(context) {
                         showResumeNotice: !(runState.running && !runState.paused)
                     });
                     log(`state loaded from MCP bytes: ${params.name || "mcp-state.dst"}`);
+                    await waitForScriptEvent("stateLoad", {
+                        name: params.name || "mcp-state.dst",
+                        source: "loadStateBytes"
+                    });
+                    lifecycleComplete = true;
                     return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(runState);
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(runState);
                     else stopAfterFailedStateLoad();
                 }
             });
@@ -194,6 +215,7 @@ export function createStateCommands(context) {
                 await commit();
                 const runState = pauseForFileLoad();
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     const ret = native.loadStateFile(bytes);
                     if (ret !== 0) throw codedError(
@@ -208,10 +230,16 @@ export function createStateCommands(context) {
                     drawLoadedStateFrame({
                         showResumeNotice: !(runState.running && !runState.paused)
                     });
-                    log(`state loaded from URL: ${params.name || url.split("/").pop() || "url-state.dst"}`);
+                    const name = params.name || url.split("/").pop() || "url-state.dst";
+                    log(`state loaded from URL: ${name}`);
+                    await waitForScriptEvent("stateLoad", {
+                        name,
+                        source: "loadStateUrl"
+                    });
+                    lifecycleComplete = true;
                     return { ok: true, ret, size: bytes.length, reset: false, paused: runState.paused };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(runState);
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(runState);
                     else stopAfterFailedStateLoad();
                 }
             });

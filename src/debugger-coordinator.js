@@ -1,4 +1,6 @@
 import { ResourceLimits } from "./resource-limits.js";
+import { ErrorCode } from "./error-codes.js";
+import { codedError } from "./validation.js";
 
 export function createDebuggerCoordinator({
     state,
@@ -98,7 +100,7 @@ export function createDebuggerCoordinator({
             || pending.fileTransactionSerial !== state.fileTransactionSerial
             || state.fileTransactionActive || state.loadingFile || !sameBreak
             || !currentClassification.scriptOnly || state.breakpointsInSync !== true
-            || !native.hasLoadedRom()) return;
+            || !native.hasLoadedRom()) return null;
 
         // Exec hooks stop before the instruction. MMU read/write hooks have already
         // completed the access, so stepping those would duplicate the side effect.
@@ -112,7 +114,7 @@ export function createDebuggerCoordinator({
             if (statusAfterStep?.lastBreak?.hit) {
                 syncNativeBreakStatus(statusAfterStep);
                 updateStatus();
-                return;
+                return null;
             }
         }
         state.breakLabel = "";
@@ -122,9 +124,55 @@ export function createDebuggerCoordinator({
         state.paused = false;
         state.running = true;
         native.pause(false);
+        const nativePaused = typeof native.isPaused === "function" ? native.isPaused() : false;
+        if (nativePaused) {
+            state.paused = true;
+            state.running = false;
+            throw codedError(
+                ErrorCode.SCRIPT_RESUME_NOT_COMPLETED,
+                "Persistent script resume did not clear the native paused state",
+                { eventId: Number(eventId), nativePaused: true }
+            );
+        }
         const wakeEmulationLoop = getWakeEmulationLoop();
         if (typeof wakeEmulationLoop === "function") wakeEmulationLoop();
         updateStatus();
+        return {
+            ok: true,
+            resumed: true,
+            eventId: Number(eventId),
+            steppedPast: pending.type === "exec",
+            nativePaused: false,
+            running: true,
+            paused: false
+        };
+    }
+
+    function rejectReleaseWaiters(pending, error) {
+        for (const waiter of pending.releaseWaiters || []) waiter.reject(error);
+        pending.releaseWaiters = [];
+    }
+
+    function resolveReleaseWaiters(pending, result) {
+        for (const waiter of pending.releaseWaiters || []) waiter.resolve(result);
+        pending.releaseWaiters = [];
+    }
+
+    async function completePersistentScriptEvent(eventId, pending) {
+        try {
+            const result = await finishCompletedPersistentScriptEvent(eventId, pending);
+            if (pending.releaseWaiters?.length) {
+                if (result?.resumed === true) resolveReleaseWaiters(pending, result);
+                else rejectReleaseWaiters(pending, codedError(
+                    ErrorCode.SCRIPT_RESUME_NOT_COMPLETED,
+                    "Persistent script resume could not complete because the event no longer qualified for automatic resume",
+                    { eventId: Number(eventId), resumed: false }
+                ));
+            }
+        } catch (error) {
+            rejectReleaseWaiters(pending, error);
+            await failPersistentScriptEvent(eventId, pending, "callback finalization failure", error);
+        }
     }
 
     async function failPersistentScriptEvent(eventId, pending, reason, error = null, code = "SCRIPT_EVENT_FINALIZATION_FAILED") {
@@ -133,6 +181,11 @@ export function createDebuggerCoordinator({
         }
         clearTimeout(pending.timeoutId);
         pending.failed = true;
+        rejectReleaseWaiters(pending, codedError(
+            ErrorCode.SCRIPT_RESUME_NOT_COMPLETED,
+            `Persistent script resume was cancelled: ${reason}`,
+            { eventId: Number(eventId), reason }
+        ));
         state.paused = true;
         state.running = false;
         try { native.pause(true); } catch {}
@@ -176,11 +229,7 @@ export function createDebuggerCoordinator({
         }
         pending.pendingCallbacks.delete(token);
         if (pending.pendingCallbacks.size) return true;
-        try {
-            await finishCompletedPersistentScriptEvent(eventId, pending);
-        } catch (error) {
-            await failPersistentScriptEvent(eventId, pending, "callback finalization failure", error);
-        }
+        await completePersistentScriptEvent(eventId, pending);
         return true;
     }
 
@@ -193,12 +242,22 @@ export function createDebuggerCoordinator({
             || Number(identity.callbackId) !== callback.callbackId) {
             return null;
         }
-        callback.resumeRequested = true;
-        return {
-            deferred: true,
-            eventId: Number(eventId),
-            eligible: breakpointOwners.classifySite(pending.ownerSite).scriptOnly
-        };
+        if (callback.released) return null;
+        callback.released = true;
+        pending.pendingCallbacks.delete(token);
+        const completion = new Promise((resolve, reject) => {
+            pending.releaseWaiters.push({
+                resolve,
+                reject,
+                token,
+                scriptId: callback.scriptId,
+                callbackId: callback.callbackId
+            });
+        });
+        if (!pending.pendingCallbacks.size) {
+            void completePersistentScriptEvent(eventId, pending);
+        }
+        return completion;
     }
 
     async function settlePersistentScriptCallbacks(scriptId, { resumeScriptOnlyTrap = false } = {}) {
@@ -210,8 +269,22 @@ export function createDebuggerCoordinator({
                     pending.pendingCallbacks.delete(token);
                 }
             }
+            const retainedReleaseWaiters = [];
+            for (const waiter of pending.releaseWaiters || []) {
+                if (waiter.scriptId === Number(scriptId)) {
+                    if (!resumeScriptOnlyTrap) pending.failed = true;
+                    waiter.reject(codedError(
+                        ErrorCode.SCRIPT_RESUME_NOT_COMPLETED,
+                        "Persistent script stopped before callback resume completed",
+                        { eventId: Number(eventId), scriptId: Number(scriptId) }
+                    ));
+                } else {
+                    retainedReleaseWaiters.push(waiter);
+                }
+            }
+            pending.releaseWaiters = retainedReleaseWaiters;
             if (!pending.pendingCallbacks.size) {
-                completions.push(finishCompletedPersistentScriptEvent(eventId, pending));
+                completions.push(completePersistentScriptEvent(eventId, pending));
             }
         }
         await Promise.all(completions);
@@ -240,6 +313,7 @@ export function createDebuggerCoordinator({
                 address: Number(breakpoint.address) >>> 0,
                 eventPc: Number(breakpoint.pc) >>> 0,
                 failed: true,
+                releaseWaiters: [],
                 timeoutId: 0
             };
             state.pendingScriptEvents.set(eventId, pending);
@@ -259,7 +333,7 @@ export function createDebuggerCoordinator({
             pendingCallbacks.set(callbackToken, {
                 scriptId: Number(trigger.scriptId),
                 callbackId: Number(trigger.callbackId),
-                resumeRequested: false
+                released: false
             });
             trigger.callbackToken = callbackToken;
         }
@@ -277,6 +351,7 @@ export function createDebuggerCoordinator({
             eventPc: Number(breakpoint.pc) >>> 0,
             ownerClassification: classification,
             failed: false,
+            releaseWaiters: [],
             timeoutId: 0
         };
         state.pendingScriptEvents.set(eventId, pending);

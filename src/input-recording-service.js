@@ -15,6 +15,7 @@ export function createInputRecordingService({
     idbGet,
     idbPut,
     idbDelete,
+    idbDeleteMany = async (keys) => Promise.all(keys.map((item) => idbDelete(item))),
     idbKeys,
     frameService,
     pauseEventService,
@@ -378,10 +379,10 @@ export function createInputRecordingService({
         const id = recordingId(params.id);
         const metadata = await idbGet(key(META_PREFIX, id));
         if (!metadata) return responder.fail(ErrorCode.RECORDING_NOT_FOUND, `Input recording not found: ${id}`);
-        await Promise.all([
-            idbDelete(key(META_PREFIX, id)),
-            idbDelete(metadata.dataKey),
-            metadata.stateKey ? idbDelete(metadata.stateKey) : Promise.resolve()
+        await idbDeleteMany([
+            key(META_PREFIX, id),
+            metadata.dataKey,
+            metadata.stateKey
         ]);
         return responder.ok({ id });
     }

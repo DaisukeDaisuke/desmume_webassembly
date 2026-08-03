@@ -1017,7 +1017,7 @@ test("published persistent MCP commands validate inputs and preserve value envel
         blocking: true
     });
     assert.deepEqual(result.value, [{ id: "menu.item", enabled: true }]);
-    assert.equal(calls[0].timeoutMs, 3000);
+    assert.equal(calls[0].timeoutMs, 60000);
     const webResult = responder.toWebMcpContent(responder.ok(result));
     assert.deepEqual(
         JSON.parse(JSON.stringify(webResult.structuredContent.value)),
@@ -1047,6 +1047,7 @@ test("persistent MCP timeout ends caller wait without stopping FIFO state", asyn
         started: true,
         name: "orchestrator",
         running: true,
+        registrationComplete: true,
         scriptInstanceId: "instance-timeout",
         pscriptMcps: new Map([
             ["slow", { name: "slow", description: "Slow handler." }],

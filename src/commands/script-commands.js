@@ -20,8 +20,15 @@ export function createScriptCommands({
         return successfulScriptIdentity(await startPersistentScript(params));
     }
 
-    const SCRIPT_SELECTOR_KEYS = Object.freeze(["id", "scriptId", "name", "startupTimeoutMs"]);
-    const LOADED_SCRIPT_KEYS = Object.freeze(["name", "asyncMode", "startupTimeoutMs"]);
+    const SCRIPT_SELECTOR_KEYS = Object.freeze([
+        "id", "scriptId", "name", "startupTimeoutMs", "waitForRegistration"
+    ]);
+    const LOADED_SCRIPT_KEYS = Object.freeze([
+        "name", "asyncMode", "startupTimeoutMs", "waitForRegistration"
+    ]);
+    const CALL_PSCRIPT_MCP_KEYS = Object.freeze([
+        "id", "scriptId", "scriptName", "name", "params", "blocking", "timeoutMs"
+    ]);
 
     function exactParamKeys(params, allowed, label) {
         if (!isPlainObject(params)) {
@@ -110,19 +117,26 @@ export function createScriptCommands({
 
     async function runLoadedPersistentScript(params = {}) {
         exactParamKeys(params, LOADED_SCRIPT_KEYS, "runLoadedPersistentScript");
-        const name = requiredScriptName(params.name, "runLoadedPersistentScript.name");
-        const existing = [...state.scripts.values()].find((script) => script.name === name);
+        const name = Object.hasOwn(params, "name")
+            ? requiredScriptName(params.name, "runLoadedPersistentScript.name")
+            : undefined;
+        const existing = name === undefined
+            ? null
+            : [...state.scripts.values()].find((script) => script.name === name);
         const result = await startPersistentScript({
-            name,
+            ...(name === undefined ? {} : { name }),
             ...(Object.hasOwn(params, "asyncMode") ? { asyncMode: !!params.asyncMode } : {}),
             ...(Object.hasOwn(params, "startupTimeoutMs")
                 ? { startupTimeoutMs: params.startupTimeoutMs }
+                : {}),
+            ...(Object.hasOwn(params, "waitForRegistration")
+                ? { waitForRegistration: params.waitForRegistration !== false }
                 : {})
         }, {
             source: ui.scriptCode.value,
             deduplicateByCode: false
         });
-        const identified = successfulScriptIdentity(result, { name });
+        const identified = successfulScriptIdentity(result, name === undefined ? {} : { name });
         if (identified?.ok === false) return identified;
         return {
             ...identified,
@@ -145,18 +159,30 @@ export function createScriptCommands({
     }
 
     async function callPublishedPScriptMcp(params = {}) {
-        if (!Object.hasOwn(params, "scriptId")
-            || !Object.hasOwn(params, "name")
+        exactParamKeys(params, CALL_PSCRIPT_MCP_KEYS, "callPScriptMcp");
+        if (!Object.hasOwn(params, "name")
             || !Object.hasOwn(params, "blocking")) {
             throw codedError(
                 ErrorCode.INVALID_ARGUMENT,
-                "callPScriptMcp requires scriptId, name, and blocking"
+                "callPScriptMcp requires name and blocking"
             );
         }
-        const scriptId = Number(params.scriptId);
-        if (!Number.isSafeInteger(scriptId) || scriptId < 1) {
-            throw codedError(ErrorCode.INVALID_ARGUMENT, "scriptId must be a positive safe integer");
+        const hasId = Object.hasOwn(params, "id");
+        const hasScriptId = Object.hasOwn(params, "scriptId");
+        const id = hasId ? positiveScriptId(params.id, "callPScriptMcp.id") : undefined;
+        const scriptId = hasScriptId
+            ? positiveScriptId(params.scriptId, "callPScriptMcp.scriptId")
+            : undefined;
+        if (id !== undefined && scriptId !== undefined && id !== scriptId) {
+            throw codedError(
+                ErrorCode.INVALID_ARGUMENT,
+                "callPScriptMcp.id and callPScriptMcp.scriptId must match"
+            );
         }
+        const selectedScriptId = id ?? scriptId;
+        const scriptName = Object.hasOwn(params, "scriptName")
+            ? requiredScriptName(params.scriptName, "callPScriptMcp.scriptName")
+            : undefined;
         const name = params.name;
         if (typeof name !== "string"
             || name.length > ResourceLimits.persistentMcpNameChars
@@ -173,12 +199,13 @@ export function createScriptCommands({
         if (!isPlainObject(handlerParams)) {
             throw codedError(ErrorCode.INVALID_ARGUMENT, "params must be a plain object");
         }
-        const timeoutMs = Number(params.timeoutMs ?? 3000);
+        const timeoutMs = Number(params.timeoutMs ?? 60000);
         if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) {
             throw codedError(ErrorCode.INVALID_ARGUMENT, "timeoutMs must be between 1 and 600000");
         }
         return callPScriptMcp({
-            scriptId,
+            ...(selectedScriptId === undefined ? {} : { scriptId: selectedScriptId }),
+            ...(scriptName === undefined ? {} : { scriptName }),
             name,
             params: handlerParams,
             blocking: params.blocking,
@@ -207,18 +234,24 @@ export function createScriptCommands({
     async function restartScript(params = {}) {
         const script = resolveScript(params, "restartScript");
         const next = {
-            name: script.name,
             code: script.code,
             asyncMode: script.asyncMode,
+            ...(script.identitySource === "api-name" ? { name: script.name } : {}),
             ...(Object.hasOwn(params, "startupTimeoutMs")
                 ? { startupTimeoutMs: params.startupTimeoutMs }
+                : {}),
+            ...(Object.hasOwn(params, "waitForRegistration")
+                ? { waitForRegistration: params.waitForRegistration !== false }
                 : {})
         };
         await stopPersistentScript({ id: script.id, resumeScriptOnlyTrap: true });
-        const result = await startPersistentScript(next, { deduplicateByCode: false });
+        const result = await startPersistentScript(next, {
+            deduplicateByCode: false,
+            existingId: script.id
+        });
         const identified = successfulScriptIdentity(result, {
             id: script.id,
-            name: script.name
+            ...(script.identitySource === "api-name" ? { name: script.name } : {})
         });
         if (identified?.ok === false) return identified;
         return {

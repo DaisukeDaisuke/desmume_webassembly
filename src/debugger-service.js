@@ -588,7 +588,13 @@ export function createDebuggerService({
         return keys;
     }
 
-    async function idbDelete(key) {
+    async function idbDeleteMany(keys) {
+        const normalizedKeys = [...new Set(
+            (Array.isArray(keys) ? keys : [keys])
+                .filter((key) => key !== undefined && key !== null)
+                .map(String)
+        )];
+        if (!normalizedKeys.length) return;
         const db = await new Promise((resolve, reject) => {
             const req = indexedDB.open("desmume-web-debugger", 1);
             req.onupgradeneeded = () => req.result.createObjectStore("states");
@@ -597,11 +603,17 @@ export function createDebuggerService({
         });
         await new Promise((resolve, reject) => {
             const tx = db.transaction("states", "readwrite");
-            tx.objectStore("states").delete(key);
+            const store = tx.objectStore("states");
+            for (const key of normalizedKeys) store.delete(key);
             tx.oncomplete = resolve;
+            tx.onabort = () => reject(tx.error);
             tx.onerror = () => reject(tx.error);
         });
         db.close();
+    }
+
+    async function idbDelete(key) {
+        return idbDeleteMany([key]);
     }
 
     return {
@@ -645,6 +657,7 @@ export function createDebuggerService({
         idbPut,
         idbGet,
         idbKeys,
-        idbDelete
+        idbDelete,
+        idbDeleteMany
     };
 }

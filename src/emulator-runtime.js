@@ -304,6 +304,7 @@ const {
     renderScripts,
     selectScript,
     dispatchScriptEvent,
+    dispatchScriptEventAndWait,
     startPersistentScript,
     stopPersistentScript,
     scriptSummary,
@@ -363,6 +364,7 @@ const stateService = createStateService({
     state,
     native: nativeBridge,
     frameService,
+    wakeEmulationLoop: () => wakeEmulationLoop(),
     onScreenInvalid: ({ showResumeNotice }) => {
         if (showResumeNotice) screenInvalidNotice.show();
         else screenInvalidNotice.clear();
@@ -437,7 +439,8 @@ const {
     idbPut,
     idbGet,
     idbKeys,
-    idbDelete
+    idbDelete,
+    idbDeleteMany
 } = debuggerService;
 
 const commands = createCommands({
@@ -462,6 +465,7 @@ const commands = createCommands({
     copyText,
     currentRomIdentity,
     dispatchScriptEvent,
+    dispatchScriptEventAndWait,
     download,
     drawFrame,
     drawLoadedStateFrame,
@@ -554,6 +558,7 @@ const commands = createCommands({
     u32FromBytes,
     ui,
     updateStatus,
+    wakeEmulationLoop: () => wakeTick,
     waitChecked,
     waitForInputWindow,
     writeAnalysisBaseline,
@@ -594,6 +599,7 @@ inputRecordingService = createInputRecordingService({
     idbGet,
     idbPut,
     idbDelete,
+    idbDeleteMany,
     idbKeys,
     frameService,
     pauseEventService,

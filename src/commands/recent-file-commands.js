@@ -7,6 +7,7 @@ export function createRecentFileCommands(context) {
         blockSaveFlush,
         bootWaitMs,
         cancelAndWait = async () => false,
+        dispatchScriptEventAndWait = async () => {},
         fileTransactionService = { run: async (reason, task) => task({ commit: async () => {} }) },
         drawLoadedStateFrame,
         ensureReady,
@@ -54,15 +55,21 @@ export function createRecentFileCommands(context) {
                 if (item.kind === "save") {
                     const runState = pauseForFileLoad();
                     let loaded = false;
+                    let lifecycleComplete = false;
                     try {
                         const saveLoad = await applySaveAndReloadRom(
                             item.name || item.slot || "save.sav",
                             bytes,
-                            { waitMs: bootWaitMs() }
+                            { waitMs: bootWaitMs(), resume: false }
                         );
                         const ret = saveLoad.ret;
                         if (ret !== 0) throw codedError(ErrorCode.NATIVE_ERROR, `Recent Save load failed (${ret})`, { nativeCode: ret });
                         loaded = true;
+                        await dispatchScriptEventAndWait("start", {
+                            generation: ++state.scriptStartGeneration,
+                            reason: "reloadRecentSave"
+                        });
+                        lifecycleComplete = true;
                         return {
                             ret,
                             item,
@@ -73,13 +80,14 @@ export function createRecentFileCommands(context) {
                             path: saveLoad.path
                         };
                     } finally {
-                        if (loaded) restoreAfterFileLoad(runState);
+                        if (loaded && lifecycleComplete) restoreAfterFileLoad(runState);
                         else stopAfterFailedStateLoad();
                     }
                 }
 
                 const runState = pauseForFileLoad();
                 let loaded = false;
+                let lifecycleComplete = false;
                 try {
                     const ret = item.slot ? loadStateBytesFromMemory(bytes) : native.loadStateFile(bytes);
                     if (ret !== 0) throw codedError(
@@ -94,9 +102,16 @@ export function createRecentFileCommands(context) {
                     drawLoadedStateFrame({
                         showResumeNotice: !(runState.running && !runState.paused)
                     });
+                    await dispatchScriptEventAndWait("stateLoad", {
+                        id,
+                        name: item.name || null,
+                        slot: item.slot || null,
+                        source: "reloadRecentState"
+                    });
+                    lifecycleComplete = true;
                     return { ok: true, ret, item, size: bytes.length, paused: runState.paused };
                 } finally {
-                    if (loaded) restoreAfterFileLoad(runState);
+                    if (loaded && lifecycleComplete) restoreAfterFileLoad(runState);
                     else stopAfterFailedStateLoad();
                 }
             });

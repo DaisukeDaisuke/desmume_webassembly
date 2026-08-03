@@ -33,9 +33,60 @@ export function createScriptService({
     onExplicitPause
 }) {
     let scriptInstanceSerial = 1;
+    let queuedScriptEventSerial = 1;
     const commands = new Proxy({}, {
         get: (_, command) => getCommands()[command]
     });
+
+    const SCRIPT_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+    const IDENTITY_PRIORITY = Object.freeze({
+        generated: 0,
+        "runtime-return": 1,
+        "source-comment": 2,
+        "api-name": 3
+    });
+
+    function normalizeScriptIdentity(value) {
+        return typeof value === "string" && SCRIPT_NAME_PATTERN.test(value) ? value : null;
+    }
+
+    function applyScriptIdentity(script, candidate, source) {
+        const name = normalizeScriptIdentity(candidate);
+        if (!name) return false;
+        if (source === "source-comment") script.declaredCommentId = name;
+        if (source === "runtime-return") script.declaredReturnFallbackId = name;
+        const currentPriority = IDENTITY_PRIORITY[script.identitySource] ?? 0;
+        const nextPriority = IDENTITY_PRIORITY[source] ?? 0;
+        if (name === script.name) {
+            if (nextPriority >= currentPriority) {
+                script.identitySource = source;
+                script.nameProvisional = false;
+            }
+            return true;
+        }
+        if (nextPriority <= currentPriority) {
+            script.identityConflict = true;
+            return false;
+        }
+        const collision = [...state.scripts.values()].find((other) => (
+            other !== script && other.name === name
+        ));
+        if (collision) {
+            script.identityConflict = true;
+            script.identityCollision = {
+                requestedName: name,
+                existingId: collision.id,
+                existingRunning: collision.running === true
+            };
+            return false;
+        }
+        script.name = name;
+        script.nameProvisional = false;
+        script.identitySource = source;
+        renderScripts();
+        if (state.activeScriptId === script.id) ui.scriptName.value = script.name;
+        return true;
+    }
 
     const scriptBytes = (script) => new TextEncoder().encode(`${script.code}\n${script.output.join("\n")}`).byteLength;
 
@@ -147,25 +198,60 @@ export function createScriptService({
         renderScripts();
     }
     
+    function enqueueScriptEvent(script, message) {
+        if (message.event === "tick") {
+            const index = script.eventQueue.findIndex((queued) => queued.event === "tick");
+            if (index >= 0) {
+                script.eventQueue[index] = message;
+                script.droppedEvents++;
+                return true;
+            }
+        }
+        if (script.eventQueue.length >= ResourceLimits.persistentEventQueue) {
+            void failPersistentScript(script, new Error(`main event queue exceeded ${ResourceLimits.persistentEventQueue}`));
+            return false;
+        }
+        script.eventQueue.push(message);
+        pumpScriptEvents(script);
+        return true;
+    }
+
     function dispatchScriptEvent(type, payload = {}) {
         for (const script of state.scripts.values()) {
             if (!script.running || !script.started) continue;
             const message = { type: "event", event: type, payload };
-            if (type === "tick") {
-                const index = script.eventQueue.findIndex((queued) => queued.event === "tick");
-                if (index >= 0) {
-                    script.eventQueue[index] = message;
-                    script.droppedEvents++;
-                    continue;
-                }
-            }
-            if (script.eventQueue.length >= ResourceLimits.persistentEventQueue) {
-                void failPersistentScript(script, new Error(`main event queue exceeded ${ResourceLimits.persistentEventQueue}`));
-                continue;
-            }
-            script.eventQueue.push(message);
-            pumpScriptEvents(script);
+            enqueueScriptEvent(script, message);
         }
+    }
+
+    async function dispatchScriptEventAndWait(type, payload = {}) {
+        const completions = [];
+        for (const script of state.scripts.values()) {
+            if (!script.running || !script.started) continue;
+            const queueEventId = queuedScriptEventSerial++;
+            let pendingAck;
+            const completion = new Promise((resolve, reject) => {
+                pendingAck = { resolve, reject, type };
+                script.pendingEventAcks.set(queueEventId, pendingAck);
+            });
+            completions.push(completion);
+            if (!enqueueScriptEvent(script, {
+                type: "event",
+                event: type,
+                payload,
+                queueEventId
+            })) {
+                script.pendingEventAcks.delete(queueEventId);
+                pendingAck.reject(codedError(ErrorCode.BUSY, `Persistent script event queue is full: ${type}`, {
+                    scriptId: script.id,
+                    scriptName: script.name,
+                    event: type
+                }));
+                break;
+            }
+        }
+        await Promise.all(completions);
+        return { event: type, scriptsCompleted: completions.length };
     }
 
     function pumpScriptEvents(script) {
@@ -198,8 +284,30 @@ export function createScriptService({
         script.pendingPScriptMcpCalls.clear();
         script.expiredPScriptMcpCalls.clear();
         script.inFlightPScriptMcpCalls.clear();
-        script.pscriptMcps.clear();
-        script.pscriptMcpPublished = false;
+    }
+
+    function rejectPendingScriptEventAcks(script, reason = "Persistent script stopped before event processing completed") {
+        for (const [queueEventId, pending] of script.pendingEventAcks) {
+            pending.reject(codedError(ErrorCode.CANCELLED, reason, {
+                scriptId: script.id,
+                scriptName: script.name,
+                queueEventId,
+                event: pending.type
+            }));
+        }
+        script.pendingEventAcks.clear();
+    }
+
+    function waitForScriptRegistration(script) {
+        if (script.registrationComplete) return Promise.resolve(scriptSummary(script, true));
+        return new Promise((resolve) => {
+            script.registrationWaiters.add(resolve);
+        });
+    }
+
+    function settleScriptRegistrationWaiters(script, result) {
+        for (const resolve of script.registrationWaiters) resolve(result);
+        script.registrationWaiters.clear();
     }
 
     function pruneExpiredPScriptMcpTombstones(script) {
@@ -241,29 +349,68 @@ export function createScriptService({
         return { mcps };
     }
 
-    function callPScriptMcp({ scriptId, name, params, blocking, timeoutMs }) {
-        const script = state.scripts.get(scriptId);
-        if (!script || !isCurrentScript(script)) {
+    function compactPScriptMcpDirectory() {
+        return [...state.scripts.values()]
+            .filter(isCurrentScript)
+            .sort((left, right) => left.id - right.id)
+            .map((script) => ({
+                id: script.id,
+                name: script.name,
+                registrationComplete: script.registrationComplete,
+                mcps: script.registrationComplete
+                    ? [...script.pscriptMcps.keys()].sort()
+                    : []
+            }));
+    }
+
+    function resolvePScriptMcpTarget({ scriptId, scriptName, name }) {
+        let scripts = [...state.scripts.values()].filter(isCurrentScript);
+        if (scriptId !== undefined) scripts = scripts.filter((script) => script.id === scriptId);
+        if (scriptName !== undefined) scripts = scripts.filter((script) => script.name === scriptName);
+        const matches = scripts.filter((script) => (
+            script.registrationComplete && script.pscriptMcps.has(name)
+        ));
+        if (matches.length === 1) return matches[0];
+        if (matches.length > 1) {
             throw codedError(
-                ErrorCode.SCRIPT_MCP_NOT_FOUND,
-                `Persistent script is not running: ${scriptId}`,
-                { scriptId, name }
+                ErrorCode.SCRIPT_MCP_AMBIGUOUS,
+                `Multiple persistent scripts publish MCP: ${name}`,
+                {
+                    matches: matches.map((script) => ({ id: script.id, name: script.name })),
+                    requiredSelector: "scriptId, id, or scriptName"
+                }
             );
         }
-        if (!script.pscriptMcpPublished) {
+        const selectedPending = scripts.find((script) => !script.registrationComplete);
+        if (selectedPending && (scriptId !== undefined || scriptName !== undefined)) {
             throw codedError(
                 ErrorCode.BUSY,
-                "Persistent script MCP publication is not complete",
-                { scriptId, name, published: false }
+                "Persistent script registration is not complete",
+                {
+                    scriptId: selectedPending.id,
+                    scriptName: selectedPending.name,
+                    name,
+                    registrationComplete: false
+                }
             );
         }
-        if (!script.pscriptMcps.has(name)) {
-            throw codedError(
-                ErrorCode.SCRIPT_MCP_NOT_FOUND,
-                `Persistent script MCP is not published: ${name}`,
-                { scriptId, name }
-            );
-        }
+        throw codedError(
+            ErrorCode.SCRIPT_MCP_NOT_FOUND,
+            `Persistent script MCP is not available: ${name}`,
+            {
+                requested: {
+                    ...(scriptId === undefined ? {} : { scriptId }),
+                    ...(scriptName === undefined ? {} : { scriptName }),
+                    name
+                },
+                available: compactPScriptMcpDirectory()
+            }
+        );
+    }
+
+    function callPScriptMcp({ scriptId, scriptName, name, params, blocking, timeoutMs }) {
+        const script = resolvePScriptMcpTarget({ scriptId, scriptName, name });
+        scriptId = script.id;
         pruneExpiredPScriptMcpTombstones(script);
         if (script.inFlightPScriptMcpCalls.size >= ResourceLimits.pendingPersistentMcpCallsPerScript) {
             throw codedError(ErrorCode.BUSY, "Persistent script MCP call limit reached", {
@@ -307,8 +454,14 @@ export function createScriptService({
                 pruneExpiredPScriptMcpTombstones(script);
                 reject(codedError(
                     ErrorCode.TIMEOUT,
-                    "Persistent script MCP call timed out.",
-                    { scriptId, name, timeoutMs }
+                    `Persistent script MCP call timed out after ${timeoutMs} ms. Increase callPScriptMcp.timeoutMs (milliseconds) for long-running handlers.`,
+                    {
+                        scriptId,
+                        scriptName: script.name,
+                        name,
+                        timeoutMs,
+                        timeoutParameter: "timeoutMs"
+                    }
                 ));
             }, timeoutMs);
             script.pendingPScriptMcpCalls.set(callId, pending);
@@ -333,19 +486,31 @@ export function createScriptService({
         return promise;
     }
 
-    function publishPScriptMcps(script, message) {
-        if (message.scriptInstanceId !== script.scriptInstanceId || script.pscriptMcpPublished) {
+    function completeScriptRegistration(script, message) {
+        if (message.scriptInstanceId !== script.scriptInstanceId || script.registrationComplete) {
             throw codedError(
                 ErrorCode.WORKER_PROTOCOL_ERROR,
-                "Persistent script sent an invalid MCP publication"
+                "Persistent script sent an invalid registration completion"
             );
+        }
+        if (message.fallbackId !== null && message.fallbackId !== undefined) {
+            if (!normalizeScriptIdentity(message.fallbackId)) {
+                throw codedError(
+                    ErrorCode.WORKER_PROTOCOL_ERROR,
+                    "Persistent script returned an invalid fallbackId"
+                );
+            }
+            applyScriptIdentity(script, message.fallbackId, "runtime-return");
         }
         const metadata = normalizePersistentMcpMetadata(message.mcps);
         const next = new Map();
         for (const item of metadata) next.set(item.name, item);
         script.pscriptMcps = next;
+        script.registrationComplete = true;
+        script.topLevelRunning = false;
         script.pscriptMcpPublished = true;
         renderScripts();
+        settleScriptRegistrationWaiters(script, scriptSummary(script, true));
     }
 
     function finishPScriptMcpCall(script, message) {
@@ -475,19 +640,35 @@ export function createScriptService({
         "memoryWriteByte", "memoryWriteWord", "memoryWriteDword", "dumpMemory",
         "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze"
     ]);
+    const CALLBACK_DESTRUCTIVE_COMMANDS = new Set([
+        "reset", "reloadRom", "reloadRecentFile",
+        "loadRomFile", "loadRomBytes", "loadRomUrl",
+        "loadState", "loadStateBytes", "loadStateUrl", "importStateFile",
+        "restoreAnalysisBaseline", "loadSaveSlot", "importSaveFile"
+    ]);
     
     function queuePersistentScriptOperation(script, command, params, eventIdentity = {}) {
         const eventId = Number(eventIdentity.eventId) || 0;
         const operation = script.queue.then(async () => {
             if (!script.running) throw new Error(`script stopped before queued ${command} operation`);
             if (command === "resume" && eventId) {
-                const deferred = requestPersistentScriptResume(eventId, {
-                    scriptId: script.id,
-                    callbackId: eventIdentity.callbackId,
-                    callbackToken: eventIdentity.callbackToken
-                });
-                if (!deferred) throw new Error("resume request did not match the active script event");
-                return deferred;
+                const token = String(eventIdentity.callbackToken || "");
+                const completion = script.pendingEventReleases.get(token);
+                if (!completion) throw new Error("resume request was not preceded by a valid event release");
+                script.pendingEventReleases.delete(token);
+                return completion;
+            }
+            if (eventId && CALLBACK_DESTRUCTIVE_COMMANDS.has(command)) {
+                throw codedError(
+                    ErrorCode.COMMAND_NOT_ALLOWED,
+                    `${command} is unavailable inside a persistent breakpoint callback because lifecycle completion would be re-entrant`,
+                    {
+                        command,
+                        eventId,
+                        scriptId: script.id,
+                        reason: "destructive-callback-reentrancy"
+                    }
+                );
             }
             if (script.asyncMode && ASYNC_SCRIPT_BLOCKED_COMMANDS.has(command)) {
                 throw new Error(`${command} is unavailable in persistent-script async mode because it requires immediate emulator state. Restart with asyncMode:false (or clear “async queue” in the UI).`);
@@ -526,8 +707,8 @@ export function createScriptService({
     
     async function startPersistentScript(params = {}, internalOptions = {}) {
         const source = internalOptions.source ?? params.code ?? ui.scriptCode.value;
-        if (typeof source !== "string" || !source.trim() || source.length > 262144) {
-            return responder.fail(ErrorCode.SCRIPT_SOURCE_INVALID, "Persistent script source must be a non-empty string up to 262144 characters");
+        if (typeof source !== "string" || source.length > 262144) {
+            return responder.fail(ErrorCode.SCRIPT_SOURCE_INVALID, "Persistent script source must be a string up to 262144 characters");
         }
         try {
             assertSafeScriptSource(source);
@@ -535,8 +716,17 @@ export function createScriptService({
             return responder.fail(error.mcpCode, error.message, error.mcpDetails);
         }
         const code = source;
-        const name = String(params.name ?? ui.scriptName.value ?? "scratch").trim() || "scratch";
+        const explicitName = Object.hasOwn(params, "name")
+            ? String(params.name ?? "").trim()
+            : "";
+        if (explicitName && !normalizeScriptIdentity(explicitName)) {
+            return responder.fail(
+                ErrorCode.INVALID_ARGUMENT,
+                "name must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$"
+            );
+        }
         const asyncMode = !!(params.asyncMode ?? ui.scriptAsyncMode.checked);
+        const waitForRegistration = params.waitForRegistration !== false;
         const startupTimeoutMs = Number(params.startupTimeoutMs ?? 3000);
         if (!Number.isFinite(startupTimeoutMs) || startupTimeoutMs <= 0 || startupTimeoutMs > 600000) {
             return responder.fail(
@@ -544,7 +734,12 @@ export function createScriptService({
                 "startupTimeoutMs must be between 1 and 600000"
             );
         }
-        const existing = [...state.scripts.values()].find((script) => script.name === name);
+        const existingId = Number(internalOptions.existingId);
+        const existing = Number.isSafeInteger(existingId) && existingId > 0
+            ? state.scripts.get(existingId)
+            : explicitName
+                ? [...state.scripts.values()].find((script) => script.name === explicitName)
+                : null;
         const duplicate = internalOptions.deduplicateByCode === false
             ? null
             : [...state.scripts.values()].find((script) => (
@@ -553,7 +748,11 @@ export function createScriptService({
                 && script.asyncMode === asyncMode
                 && script.running
             ));
-        if (duplicate) return scriptSummary(duplicate, true);
+        if (duplicate) {
+            return waitForRegistration && !duplicate.registrationComplete
+                ? waitForScriptRegistration(duplicate)
+                : scriptSummary(duplicate, true);
+        }
         if (existing?.running) await stopPersistentScript({ id: existing.id, resumeScriptOnlyTrap: true });
         const sourceBytes = new TextEncoder().encode(source).byteLength;
         const retainedBytes = pruneStoppedScripts(sourceBytes);
@@ -572,9 +771,17 @@ export function createScriptService({
                 maximum: ResourceLimits.persistentScripts
             });
         }
+        const id = existing?.id || state.nextScriptId++;
+        const name = explicitName || `script-${id}`;
         const script = {
-            id: existing?.id || state.nextScriptId++,
+            id,
             name,
+            nameProvisional: !explicitName,
+            identitySource: explicitName ? "api-name" : "generated",
+            identityConflict: false,
+            identityCollision: null,
+            declaredCommentId: null,
+            declaredReturnFallbackId: null,
             code,
             asyncMode,
             queue: Promise.resolve(),
@@ -582,11 +789,16 @@ export function createScriptService({
             workerHost: null,
             running: true,
             started: false,
+            topLevelRunning: false,
+            registrationComplete: false,
             output: [],
             triggers: [],
             ownedBreakpointIds: new Set(),
             eventQueue: [],
             eventBusy: false,
+            pendingEventAcks: new Map(),
+            pendingEventReleases: new Map(),
+            registrationWaiters: new Set(),
             droppedEvents: 0,
             scriptInstanceId: `${Date.now().toString(36)}-${scriptInstanceSerial++}`,
             pscriptMcps: new Map(),
@@ -611,7 +823,7 @@ export function createScriptService({
         script.workerHost = workerHost;
         state.scripts.set(script.id, script);
         state.activeScriptId = script.id;
-        let startupSettled = false;
+        let resultSettled = false;
         let ready = false;
         let compiled = false;
         const seenRequestIds = new Set();
@@ -619,16 +831,16 @@ export function createScriptService({
         const startup = new Promise((resolve) => {
             resolveStartup = resolve;
         });
-        const settleStartup = (result) => {
-            if (startupSettled) return false;
-            startupSettled = true;
-            clearTimeout(startupTimer);
+        const settleResult = (result) => {
+            if (resultSettled) return false;
+            resultSettled = true;
             resolveStartup(result);
             return true;
         };
         const handleWorkerFailure = async (result, message) => {
+            settleScriptRegistrationWaiters(script, result);
             await failPersistentScript(script, message);
-            settleStartup(result);
+            settleResult(result);
         };
         const startupTimer = setTimeout(() => {
             const result = responder.fail(
@@ -660,6 +872,13 @@ export function createScriptService({
                             definition.defaults
                         ])
                     });
+                } else if (msg.type === "sourceIdentity") {
+                    if (!ready || compiled) {
+                        throw new Error("Persistent script source identity arrived outside parser phase");
+                    }
+                    if (msg.scriptId !== null && msg.scriptId !== undefined) {
+                        applyScriptIdentity(script, msg.scriptId, "source-comment");
+                    }
                 } else if (msg.type === "call") {
                     if (!ready) throw new Error("Persistent script sent RPC before ready");
                     if (seenRequestIds.size >= ResourceLimits.pendingWorkerRpc) {
@@ -699,11 +918,31 @@ export function createScriptService({
                     } finally {
                         seenRequestIds.delete(msg.id);
                     }
-                } else if (msg.type === "pscriptMcpPublished") {
-                    if (!ready || !compiled || !script.running) {
-                        throw new Error("Persistent script published MCP metadata before startup");
+                } else if (msg.type === "eventRelease") {
+                    if (!ready || !compiled || !script.started || !script.running
+                        || msg.mode !== "resume") {
+                        throw new Error("Persistent script sent an invalid event release");
                     }
-                    publishPScriptMcps(script, msg);
+                    const callbackToken = String(msg.callbackToken || "");
+                    if (!callbackToken || script.pendingEventReleases.has(callbackToken)) {
+                        throw new Error("Persistent script reused or omitted an event release token");
+                    }
+                    const completion = requestPersistentScriptResume(msg.eventId, {
+                        scriptId: script.id,
+                        callbackId: msg.callbackId,
+                        callbackToken
+                    });
+                    if (!completion) {
+                        throw new Error("Persistent script event release did not match the active callback");
+                    }
+                    completion.catch(() => undefined);
+                    script.pendingEventReleases.set(callbackToken, completion);
+                } else if (msg.type === "registrationComplete") {
+                    if (!ready || !compiled || !script.started || !script.running) {
+                        throw new Error("Persistent script completed registration before startup");
+                    }
+                    completeScriptRegistration(script, msg);
+                    if (waitForRegistration) settleResult(scriptSummary(script, false));
                 } else if (msg.type === "pscriptMcpResult") {
                     if (!ready || !script.running) {
                         throw new Error("Persistent script returned an MCP result before startup");
@@ -725,6 +964,20 @@ export function createScriptService({
                     scriptConsoleLine(script, msg.values);
                 } else if (msg.type === "eventAck") {
                     script.eventBusy = false;
+                    const queueEventId = Number(msg.queueEventId) || 0;
+                    if (queueEventId) {
+                        const pending = script.pendingEventAcks.get(queueEventId);
+                        if (!pending) {
+                            throw new Error("Persistent script acknowledged an unknown queued event");
+                        }
+                        script.pendingEventAcks.delete(queueEventId);
+                        pending.resolve({
+                            scriptId: script.id,
+                            scriptName: script.name,
+                            queueEventId,
+                            event: pending.type
+                        });
+                    }
                     pumpScriptEvents(script);
                 } else if (msg.type === "compiled" && ready && !compiled) {
                     compiled = true;
@@ -733,7 +986,9 @@ export function createScriptService({
                         throw new Error("Persistent script started before compile acknowledgement");
                     }
                     script.started = true;
-                    settleStartup(scriptSummary(script, false));
+                    script.topLevelRunning = true;
+                    clearTimeout(startupTimer);
+                    if (!waitForRegistration) settleResult(scriptSummary(script, false));
                 } else if (msg.type === "failed") {
                     const result = scriptFailureResult(msg, code);
                     await handleWorkerFailure(result, result.error.message);
@@ -772,19 +1027,43 @@ export function createScriptService({
         const script = state.scripts.get(id);
         if (!script) throw new Error(`script not found: ${id}`);
         script.running = false;
+        script.topLevelRunning = false;
         script.stoppedAt = Date.now();
         rejectPendingPScriptMcpCalls(script);
+        rejectPendingScriptEventAcks(script);
+        if (!script.registrationComplete) {
+            settleScriptRegistrationWaiters(script, responder.fail(
+                ErrorCode.CANCELLED,
+                "Persistent script stopped before registration completed",
+                { scriptId: script.id, scriptName: script.name }
+            ));
+        }
         script.eventQueue.length = 0;
         script.eventBusy = false;
         const resumeScriptOnlyTrap = params.resumeScriptOnlyTrap === true;
-        if (resumeScriptOnlyTrap) await script.queue;
         await settlePersistentScriptCallbacks(script.id, { resumeScriptOnlyTrap });
+        script.pendingEventReleases.clear();
+        let queueTimedOut = false;
+        await Promise.race([
+            script.queue,
+            new Promise((resolve) => setTimeout(() => {
+                queueTimedOut = true;
+                resolve();
+            }, 10000))
+        ]);
         try {
             await unregisterScriptTriggers(script);
         } finally {
             script.workerHost?.dispose();
             renderScripts();
             renderScriptConsole(script);
+        }
+        if (queueTimedOut) {
+            throw codedError(
+                ErrorCode.TIMEOUT,
+                "Persistent script queue did not settle before stop",
+                { scriptId: script.id, scriptName: script.name, timeoutMs: 10000 }
+            );
         }
         return scriptSummary(script, false);
     }
@@ -804,11 +1083,22 @@ export function createScriptService({
     }
     
     function scriptSummary(script, duplicate = false) {
+        const mcpNames = [...script.pscriptMcps.keys()].sort();
         return {
             id: script.id,
             name: script.name,
+            nameProvisional: script.nameProvisional,
+            identitySource: script.identitySource,
+            ...(script.declaredCommentId ? { declaredCommentId: script.declaredCommentId } : {}),
+            ...(script.declaredReturnFallbackId
+                ? { declaredReturnFallbackId: script.declaredReturnFallbackId }
+                : {}),
+            ...(script.identityConflict ? { identityConflict: true } : {}),
+            ...(script.identityCollision ? { identityCollision: script.identityCollision } : {}),
             running: script.running,
             started: script.started,
+            topLevelRunning: script.topLevelRunning,
+            registrationComplete: script.registrationComplete,
             asyncMode: script.asyncMode,
             triggers: script.triggers.map(({ id, type, address, cpu }) => ({
                 id,
@@ -816,7 +1106,9 @@ export function createScriptService({
                 address: hex(address),
                 cpu
             })),
-            mcpCount: script.pscriptMcps.size,
+            mcpCount: script.registrationComplete ? script.pscriptMcps.size : null,
+            mcpNames: mcpNames.slice(0, 16),
+            mcpNamesTruncated: mcpNames.length > 16,
             mcpPublished: script.pscriptMcpPublished,
             duplicate
         };
@@ -828,6 +1120,7 @@ export function createScriptService({
         renderScripts,
         selectScript,
         dispatchScriptEvent,
+        dispatchScriptEventAndWait,
         startPersistentScript,
         stopPersistentScript,
         scriptSummary,

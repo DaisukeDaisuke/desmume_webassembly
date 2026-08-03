@@ -1,6 +1,6 @@
 import { getInternalMetadata } from "../internal-command-metadata.js";
 import { ErrorCode } from "../error-codes.js";
-import { nonNegativeNumber, positiveInteger } from "../validation.js";
+import { codedError, nonNegativeNumber, positiveInteger } from "../validation.js";
 
 export function createDebuggerControlCommands(context) {
     const {
@@ -187,13 +187,33 @@ export function createDebuggerControlCommands(context) {
                 error.mcpCode = "INVALID_ARGUMENT";
                 throw error;
             }
-            const removed = breakpointOwners.removeOwnersByOrigin(origin);
+            const removed = breakpointOwners.discardOwnersByOrigin(origin);
             const removedIds = new Set(removed.map((item) => item.id));
             state.breakpoints = state.breakpoints.filter((item) => !removedIds.has(item.id));
+            let reconciliation;
+            try {
+                reconciliation = breakpointOwners.reconcileNativeBreakpoints();
+            } catch (error) {
+                renderBreakpoints();
+                updateStatus();
+                throw codedError(
+                    ErrorCode.NATIVE_ERROR,
+                    "Breakpoint owners were cleared, but native breakpoint reconciliation failed",
+                    {
+                        origin,
+                        removedIds: [...removedIds],
+                        breakpointsInSync: false,
+                        nativeMessage: String(error?.message || error).slice(0, 300)
+                    }
+                );
+            }
             renderBreakpoints();
+            updateStatus();
             return {
                 ok: true,
                 removedIds: [...removedIds],
+                breakpointsInSync: true,
+                reconciliation,
                 breakpoints: state.breakpoints,
                 remaining: breakpointOwners.list().map((site) => ({
                     cpu: site.cpu,

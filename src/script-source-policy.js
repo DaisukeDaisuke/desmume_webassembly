@@ -10,10 +10,10 @@ export function containsDynamicImport(source) {
 }
 
 export function assertSafeScriptSource(source) {
-    if (typeof source !== "string" || !source.trim() || source.length > 262144) {
+    if (typeof source !== "string" || source.length > 262144) {
         throw codedError(
             ErrorCode.SCRIPT_SOURCE_INVALID,
-            "Script source must be a non-empty string up to 262144 characters",
+            "Script source must be a string up to 262144 characters",
             { parser: "acorn", version: "8.17.0", validationLayer: "hardened-worker" }
         );
     }
