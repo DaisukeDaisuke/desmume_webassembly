@@ -676,6 +676,29 @@ test("State service forwards notice ownership and preserves the requested run st
     assert.deepEqual(pauses, [true, false]);
 });
 
+test("state-service restarts stack tracing after state load without reconnecting stale history", () => {
+    const traceEnableCalls = [];
+    const state = {
+        running: false, paused: true, ready: true, loadingFile: false,
+        frameBudget: 0, lastTick: 0, nativeFault: false,
+        screenValid: true, framesSinceStateLoad: 0, stateLoadSerial: 0,
+        traceEnabled: true, traceStateSynchronized: false
+    };
+    const service = createStateService({
+        state,
+        native: {
+            setTraceEnabled: (enabled) => traceEnableCalls.push(enabled)
+        },
+        frameService: { invalidateAfterStateLoad: () => {} },
+        onStatusChange: () => {}
+    });
+
+    service.invalidateAfterLoad();
+
+    assert.deepEqual(traceEnableCalls, [false, true]);
+    assert.equal(state.traceStateSynchronized, true);
+});
+
 test("status exposes a monotonic State application gate distinct from file selection", async () => {
     const commands = createContextCommands({
         state: {

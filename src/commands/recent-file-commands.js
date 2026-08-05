@@ -96,7 +96,6 @@ export function createRecentFileCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
-                    native.setTraceSuspended(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({

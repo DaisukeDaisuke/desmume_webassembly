@@ -13,3 +13,7 @@
 /WEBMCP_EMULATOR_BUGS.md
 /public/emulator.js
 /public/desmume.worker.js
+/old/coi-serviceworker/
+/old/interface-design/
+/pixelmatch/
+/ssim/

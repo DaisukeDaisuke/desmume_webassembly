@@ -20,7 +20,11 @@ export function createStateService({
         state.screenValid = false;
         state.framesSinceStateLoad = 0;
         state.stateLoadSerial++;
-        state.traceStateSynchronized = state.traceEnabled !== true;
+        if (state.traceEnabled === true) {
+            native.setTraceEnabled(false);
+            native.setTraceEnabled(true);
+        }
+        state.traceStateSynchronized = true;
         onScreenInvalid({ showResumeNotice });
         eventService?.publish({
             stateLoadSerial: Number(state.stateLoadSerial || 0),

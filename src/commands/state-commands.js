@@ -96,7 +96,6 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
-                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -141,7 +140,6 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
-                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -183,7 +181,6 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
-                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(saveFlushBlockMs);
                     drawLoadedStateFrame({
@@ -224,7 +221,6 @@ export function createStateCommands(context) {
                         { nativeCode: ret }
                     );
                     loaded = true;
-                    native.setTraceSuspended?.(state.traceEnabled);
                     state.frame = 0;
                     blockSaveFlush(nonNegativeNumber(params.saveFlushBlockMs ?? 30000, "saveFlushBlockMs"));
                     drawLoadedStateFrame({
