@@ -7,6 +7,7 @@ import { createScriptPauseService } from "../src/script-pause-service.js";
 import { createNativeBridge } from "../src/native-bridge.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 import { compareFramePixels } from "../src/frame-diff/index.js";
+import { compactOutputText } from "../src/compact-output.js";
 
 test("responder returns normal errors", async () => {
   const responder = createMcpResponder({ logger: {} });
@@ -21,6 +22,21 @@ test("responder normalizes malformed failure results", () => {
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "INTERNAL_ERROR");
   assert.doesNotThrow(() => responder.formatCompact({ ok: false }));
+});
+
+test("compact WebMCP text does not JSON-escape nested eval output", () => {
+  const serialized = '{"path":"C:\\\\games\\\\dq9.nds"}';
+  assert.equal(
+    compactOutputText({ ok: true, value: serialized }),
+    `ok=true\nvalue=${serialized}`
+  );
+  assert.equal(
+    compactOutputText({
+      ok: false,
+      error: { code: "ROM_NOT_LOADED", message: "eval requires a loaded ROM" }
+    }),
+    "ok=false\nerror.code=ROM_NOT_LOADED\nerror.message=eval requires a loaded ROM"
+  );
 });
 
 test("native result codes distinguish operation errors from faults", () => {

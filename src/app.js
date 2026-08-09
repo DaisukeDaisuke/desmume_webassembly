@@ -1,6 +1,7 @@
 import { applyScreenLayout } from "./ui/screen-layout.js";
 import { createRuntimeLoader } from "./runtime-loader.js";
 import { createBootstrapWebMcpTools } from "./bootstrap-webmcp.js";
+import { compactOutputText } from "./compact-output.js";
 
 const ui = Object.fromEntries(
     [...document.querySelectorAll("[id]")]
@@ -207,13 +208,7 @@ window.DesmumeRuntimeLoader = Object.freeze({
 
 function webMcpContent(result) {
     const structured = result && typeof result === "object" ? result : { ok: true, value: result };
-    return {
-        content: [{
-            type: "text",
-            text: JSON.stringify(structured)
-        }],
-        structuredContent: structured
-    };
+    return compactOutputText(structured);
 }
 
 function parseWebMcpInput(input) {
