@@ -6,7 +6,7 @@ export function compactOutputText(result) {
     return flattenObject(result);
 }
 
-function flattenObject(value) {
+export function flattenObject(value) {
     const lines = [];
     let blockId = 1;
     let nodes = 0;

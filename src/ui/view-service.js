@@ -1,5 +1,5 @@
 import { positiveInteger } from "../validation.js";
-import { compactOutputText } from "../compact-output.js";
+import { compactOutputText, flattenObject } from "../compact-output.js";
 
 export function createViewService({
     state,
