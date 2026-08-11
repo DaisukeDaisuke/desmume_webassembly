@@ -34,6 +34,18 @@ export function createMemoryCommands(context) {
         }
     }
 
+    function refreshInjectedCurrentInstruction(cpu, address, length) {
+        if (length <= 0) return;
+        const pc = native.getPc(cpu) >>> 0;
+        const cpsr = native.getRegister(cpu, 16) >>> 0;
+        const thumb = (cpsr & 0x20) !== 0;
+        const instructionSize = thumb ? 2 : 4;
+        const injectionEnd = address + length;
+        const instructionEnd = pc + instructionSize;
+        if (address >= instructionEnd || injectionEnd <= pc) return;
+        native.setRegister(cpu, 15, thumb ? (pc | 1) : pc);
+    }
+
     const memoryCommands = {
         async applyMemoryFreezes() {
             applyFreezes();
@@ -83,6 +95,7 @@ export function createMemoryCommands(context) {
             for (let offset = 0; offset < bytes.length; offset += 1) {
                 native.writeMemory(params.cpu, address + offset, bytes[offset], 1);
             }
+            refreshInjectedCurrentInstruction(params.cpu, address, bytes.length);
             log(`memory injected: ${file.name} -> ${hex(address)} (${bytes.length} bytes)`);
             const visibleStart = parseAddress(ui.memoryAddress.value, 0, params.cpu);
             const visibleLength = Number(ui.memoryLength.value);
