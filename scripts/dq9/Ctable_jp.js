@@ -3,8 +3,15 @@
 
 const CPU = "arm9";
 const CTABLE_SEED = 0x02385f0c;
+const LCG_MULTIPLIER = 0x5d588b656c078965n;
+const LCG_INCREMENT = 0x269ec3n;
+const LCG_INVERSE_MULTIPLIER = 0xdedcedae9638806dn;
+const LCG_MASK = (1n << 64n) - 1n;
+const MAX_INITIAL_SEED = (1n << 48n) - 1n;
+const MAX_RECOVER_POSITION = 3000;
 const reg = (name) => memory.reg(name, CPU);
 let counter = 0;
+let lastSeed = null;
 
 function swap32(value) {
   const n = Number(value) >>> 0;
@@ -13,6 +20,60 @@ function swap32(value) {
 
 async function native32(address) {
   return swap32(await memory.read32(address, CPU));
+}
+
+async function currentSeed64() {
+  const low = BigInt(await native32(CTABLE_SEED));
+  const high = BigInt(await native32(CTABLE_SEED + 4));
+  return (high << 32n) | low;
+}
+
+function nextSeed(seed) {
+  return (seed * LCG_MULTIPLIER + LCG_INCREMENT) & LCG_MASK;
+}
+
+function previousSeed(seed) {
+  return ((seed - LCG_INCREMENT) * LCG_INVERSE_MULTIPLIER) & LCG_MASK;
+}
+
+function recoverInitialSeed(currentSeed) {
+  const candidates = [];
+  let seed = currentSeed;
+
+  for (let position = 0; position <= MAX_RECOVER_POSITION; position++) {
+    if (seed <= MAX_INITIAL_SEED) candidates.push({ initialSeed: seed, position });
+    seed = previousSeed(seed);
+  }
+
+  return candidates;
+}
+
+async function syncCounterFromSeed() {
+  const seed = await currentSeed64();
+
+  if (lastSeed !== null && seed === nextSeed(lastSeed)) {
+    lastSeed = seed;
+    return true;
+  }
+
+  lastSeed = null;
+  const candidates = recoverInitialSeed(seed);
+  if (candidates.length !== 1) {
+    print(`C-table counter sync failed: ${candidates.length} initial-seed candidates`);
+    return false;
+  }
+
+  const candidate = candidates[0];
+  counter = candidate.position;
+  lastSeed = seed;
+  print(`C-table counter resynced: #${counter} initial=0x${candidate.initialSeed.toString(16).padStart(12, "0")}`);
+  return true;
+}
+
+async function consumeRandomPosition() {
+  if (!await syncCounterFromSeed()) return "?";
+  counter++;
+  return counter;
 }
 
 async function trace(callback) {
@@ -28,8 +89,8 @@ await exec(0x02075488, async () => {
   const r0 = await reg("r0");
   const lr = await reg("r14");
   if (r0 === CTABLE_SEED && lr !== 0x02075628) {
-    counter++;
-    print(`c rand: lr 0x${lr.toString(16).padStart(8, "0")} max 0x${(await reg("r1")).toString(16).padStart(8, "0")} #${counter}`);
+    const position = await consumeRandomPosition();
+    print(`c rand: lr 0x${lr.toString(16).padStart(8, "0")} max 0x${(await reg("r1")).toString(16).padStart(8, "0")} #${position}`);
   } else if (r0 !== CTABLE_SEED) {
     print("c rand: non-C-table path");
   }
@@ -37,19 +98,34 @@ await exec(0x02075488, async () => {
 
 await exec(0x02075514, async () => {
   if (await reg("r0") === CTABLE_SEED) {
-    counter++;
-    print(`float: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 0x${(await reg("r1")).toString(16).padStart(8, "0")} r2 0x${(await reg("r2")).toString(16).padStart(8, "0")} #${counter}`);
+    const position = await consumeRandomPosition();
+    print(`float: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 0x${(await reg("r1")).toString(16).padStart(8, "0")} r2 0x${(await reg("r2")).toString(16).padStart(8, "0")} #${position}`);
   }
 });
 
 await exec(0x020754d8, async () => {
   const lr = await reg("r14");
-  if (lr !== 0x02075534 && lr !== 0x020754b0) print(`getFloatRand: lr 0x${lr.toString(16).padStart(8, "0")} #${++counter}`);
+  if (lr !== 0x02075534 && lr !== 0x020754b0) {
+    const position = await consumeRandomPosition();
+    print(`getFloatRand: lr 0x${lr.toString(16).padStart(8, "0")} #${position}`);
+  }
 });
 
-await exec(0x02075604, async () => print(`randIntRange: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 ${await reg("r1")} r2 ${await reg("r2")} #${++counter}`));
-await exec(0x02075560, async () => print(`getFloatRandWithPower: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 ${await reg("r1")} r2 ${await reg("r2")} r3 ${await reg("r3")} #${++counter}`));
-await exec(0x0207544c, async () => { const lr = await reg("r14"); if (lr !== 0x020754f0) print(`UpdateLGC: lr 0x${lr.toString(16).padStart(8, "0")} #${++counter}`); });
+await exec(0x02075604, async () => {
+  const position = await consumeRandomPosition();
+  print(`randIntRange: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 ${await reg("r1")} r2 ${await reg("r2")} #${position}`);
+});
+await exec(0x02075560, async () => {
+  const position = await consumeRandomPosition();
+  print(`getFloatRandWithPower: lr 0x${(await reg("r14")).toString(16).padStart(8, "0")} r1 ${await reg("r1")} r2 ${await reg("r2")} r3 ${await reg("r3")} #${position}`);
+});
+await exec(0x0207544c, async () => {
+  const lr = await reg("r14");
+  if (lr !== 0x020754f0) {
+    const position = await consumeRandomPosition();
+    print(`UpdateLGC: lr 0x${lr.toString(16).padStart(8, "0")} #${position}`);
+  }
+});
 
 for (const [address, label] of [[0x021ebd9c, "start FUN_021ebd9c_ct"], [0x0215f950, "end FUN_021ebd9c_ct"], [0x021594bc, "start FUN_021594bc"], [0x0215f980, "end FUN_021594bc"], [0x02158dfc, "start FUN_02158dfc"], [0x0215f924, "end FUN_02158dfc"]]) {
   await exec(address, async () => print(`-------- ${label} --------`));
@@ -80,4 +156,6 @@ await exec(0x021ecf78, async () => print(`ProcessingDefense1: ${await reg("r0")}
 
 printhex("seed1 native", await native32(CTABLE_SEED));
 printhex("seed2 native", await native32(CTABLE_SEED + 4));
+const startupCandidates = recoverInitialSeed(await currentSeed64());
+print(`initial seed: ${startupCandidates.length === 1 ? `0x${startupCandidates[0].initialSeed.toString(16).padStart(12, "0")}` : `unresolved (${startupCandidates.length} candidates)`}`);
 print("Ctable trace hooks registered");
