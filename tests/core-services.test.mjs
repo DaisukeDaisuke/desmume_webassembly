@@ -8,6 +8,65 @@ import { createNativeBridge } from "../src/native-bridge.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 import { compareFramePixels } from "../src/frame-diff/index.js";
 import { compactOutputText } from "../src/compact-output.js";
+import { createUiInteractionLock, LOCK_ATTRIBUTE } from "../src/ui/interaction-lock.js";
+
+test("UI interaction lock blocks trusted human events and preserves programmatic events", () => {
+  const attributes = new Map();
+  const handlers = new Map();
+  let appendedStyle = null;
+  const root = {
+    setAttribute(name, value) { attributes.set(name, value); },
+    removeAttribute(name) { attributes.delete(name); }
+  };
+  const eventTarget = {
+    addEventListener(type, handler) { handlers.set(type, handler); },
+    removeEventListener(type, handler) {
+      if (handlers.get(type) === handler) handlers.delete(type);
+    }
+  };
+  const documentRef = {
+    documentElement: root,
+    head: { append(node) { appendedStyle = node; } },
+    createElement(type) {
+      assert.equal(type, "style");
+      return {
+        id: "",
+        textContent: "",
+        remove() { appendedStyle = null; }
+      };
+    }
+  };
+  const lock = createUiInteractionLock({ documentRef, eventTarget });
+  assert.match(appendedStyle.textContent, /pointer-events: none/u);
+  assert.equal(handlers.has("keyup"), false);
+  assert.deepEqual(lock.set({ owner: "micro-macro:a", locked: true }), {
+    locked: true,
+    ownerCount: 1,
+    owners: ["micro-macro:a"]
+  });
+  lock.set({ owner: "micro-macro:b", locked: true });
+  assert.equal(attributes.get(LOCK_ATTRIBUTE), "true");
+  let trustedPrevented = 0;
+  let trustedStopped = 0;
+  handlers.get("click")({
+    isTrusted: true,
+    preventDefault: () => { trustedPrevented++; },
+    stopImmediatePropagation: () => { trustedStopped++; }
+  });
+  assert.equal(trustedPrevented, 1);
+  assert.equal(trustedStopped, 1);
+  handlers.get("click")({
+    isTrusted: false,
+    preventDefault: () => { throw new Error("programmatic event must not be blocked"); },
+    stopImmediatePropagation: () => { throw new Error("programmatic event must not be blocked"); }
+  });
+  assert.equal(lock.set({ owner: "micro-macro:a", locked: false }).locked, true);
+  assert.equal(lock.set({ owner: "micro-macro:b", locked: false }).locked, false);
+  assert.equal(attributes.has(LOCK_ATTRIBUTE), false);
+  lock.dispose();
+  assert.equal(handlers.size, 0);
+  assert.equal(appendedStyle, null);
+});
 
 test("responder returns normal errors", async () => {
   const responder = createMcpResponder({ logger: {} });

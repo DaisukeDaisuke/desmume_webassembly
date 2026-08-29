@@ -121,6 +121,7 @@ export function createCommands(context) {
         u16FromBytes,
         u32FromBytes,
         ui,
+        uiInteractionLock,
         updateStatus,
         wakeEmulationLoop,
         waitChecked,
@@ -379,7 +380,7 @@ export function createCommands(context) {
             runIsolatedScript,
             runCommand
         }),
-        ...createFeatureCommands({ native, ui }),
+        ...createFeatureCommands({ native, ui, uiInteractionLock }),
     };
     
     Object.assign(commands, {

@@ -39,6 +39,7 @@ export function createApiDescriptions() {
         listMemoryFreezes: "現在有効なメモリフリーズ一覧を返します。",
         setScale: "画面倍率を指定します。",
         setRotation: "画面回転を指定します。",
+        setUiInteractionLock: "owner単位で人間のGUI操作を一時ロック/解除します。ロック中もDesmumeMCP、WebMCP、永続スクリプトなどプログラム経路は影響を受けません。",
         setInput: "エミュレーター動作中のDSボタンを押下/解放します。停止中はerrorになり、手動pauseだけresume:trueで再開完了後に入力できます。",
         getInputState: "現在のDS button bitmask、押下button、touch状態を返します。",
         releaseInput: "BUSY中や停止中でも全buttonとtouchを強制解放します。",
