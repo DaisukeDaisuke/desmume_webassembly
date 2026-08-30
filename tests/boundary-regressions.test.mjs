@@ -1090,7 +1090,10 @@ test("persistent script console is bounded only by 150 KiB and drops oldest whol
     state.scripts.set(script.id, script);
     const service = createScriptService({
         state,
-        ui: {},
+        ui: {
+            scriptRawOutput: { value: "" },
+            scriptOutput: { textContent: "" }
+        },
         responder,
         breakpointOwners: {},
         ensureRomLoaded: () => {},
