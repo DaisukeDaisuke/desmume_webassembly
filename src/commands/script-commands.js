@@ -282,7 +282,7 @@ export function createScriptCommands({
     }
 
     async function listScriptPrint(params = {}) {
-        const max = Math.max(1, Math.min(1000, Number(params.max ?? 10)));
+        const max = Math.max(1, Number(params.max ?? 10));
         const scripts = params.id == null
             ? [...state.scripts.values()]
             : [state.scripts.get(Number(params.id))].filter(Boolean);

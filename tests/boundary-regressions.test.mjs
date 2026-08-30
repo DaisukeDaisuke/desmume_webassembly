@@ -38,6 +38,7 @@ import {
 import { normalizeBoundedValue } from "../src/bounded-value.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 import { serializeWorkerError } from "../src/worker-error-summary.js";
+import { ResourceLimits } from "../src/resource-limits.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -980,6 +981,21 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
     );
 });
 
+test("listScriptPrint has no fixed line-count ceiling", async () => {
+    const output = Array.from({ length: 1201 }, (_, index) => `line-${index}`);
+    const commands = createScriptCommands({
+        state: {
+            scripts: new Map([[7, { id: 7, name: "logger", output }]]),
+            activeScriptId: 7
+        },
+        ui: {}
+    });
+    const result = await commands.listScriptPrint({ id: 7, max: 1201 });
+    assert.equal(result.logs.length, 1201);
+    assert.equal(result.logs[0].text, "line-0");
+    assert.equal(result.logs.at(-1).text, "line-1200");
+});
+
 test("stopScript normalizes explicit targets without changing empty active-script fallback", async () => {
     const stopCalls = [];
     const commands = createScriptCommands({
@@ -1059,6 +1075,51 @@ test("persistent MCP normalizers keep structured boundaries separated", () => {
     assert.equal(Object.getPrototypeOf(params), null);
     assert.equal(Object.getPrototypeOf(params.selection), null);
     assert.equal(Object.getPrototypeOf(result), null);
+});
+
+test("persistent script console is bounded only by 150 KiB and drops oldest whole lines", async () => {
+    const { createScriptService } = await bundledScriptServiceModule();
+    const state = { scripts: new Map(), activeScriptId: 0 };
+    const script = {
+        id: 7,
+        name: "logger",
+        running: true,
+        output: [],
+        code: ""
+    };
+    state.scripts.set(script.id, script);
+    const service = createScriptService({
+        state,
+        ui: {},
+        responder,
+        breakpointOwners: {},
+        ensureRomLoaded: () => {},
+        finishPersistentScriptEvent: async () => true,
+        requestPersistentScriptResume: () => true,
+        settlePersistentScriptCallbacks: async () => {},
+        hex: String,
+        parseAddress: Number,
+        rawOutputText: String,
+        runCommand: async () => ({}),
+        getCommands: () => ({}),
+        onExplicitPause: () => {}
+    });
+
+    for (let index = 0; index < 1001; index++) {
+        service.scriptConsoleLine(script, [`line-${index}`]);
+    }
+    assert.equal(script.output.length, 1001);
+
+    service.scriptConsoleLine(script, ["X".repeat(ResourceLimits.scriptOutputBytes - 1024)]);
+    const outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
+    assert.ok(outputBytes <= ResourceLimits.scriptOutputBytes);
+    assert.ok(script.output.length < 1002);
+    assert.match(script.output.at(-1), /X{100}/);
+    assert.equal(script.running, true);
+
+    service.scriptConsoleLine(script, ["Y".repeat(ResourceLimits.scriptOutputBytes + 1)]);
+    assert.deepEqual(script.output, []);
+    assert.equal(script.running, true);
 });
 
 test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {

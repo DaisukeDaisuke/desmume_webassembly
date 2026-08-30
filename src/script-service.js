@@ -108,9 +108,9 @@ export function createScriptService({
 
     function scriptConsoleLine(script, values) {
         const line = values.map((value) => typeof value === "string" ? value : rawOutputText(value)).join(" ");
-        script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`].slice(-400);
+        script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`];
         let outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
-        while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 1) {
+        while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 0) {
             script.output.shift();
             outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
         }

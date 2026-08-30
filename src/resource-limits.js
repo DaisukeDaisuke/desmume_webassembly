@@ -18,7 +18,7 @@ export const ResourceLimits = Object.freeze({
     persistentMcpParamsBytes: 256 * 1024,
     persistentMcpResultBytes: 1024 * 1024,
     memorySearchCandidates: 1000000,
-    scriptOutputBytes: 256 * 1024,
+    scriptOutputBytes: 150 * 1024,
     scriptSourceOutputChars: 64 * 1024,
     flattenDepth: 12,
     flattenNodes: 2000,
