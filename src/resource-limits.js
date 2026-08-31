@@ -2,7 +2,7 @@ export const ResourceLimits = Object.freeze({
     batchCommands: 64,
     batchResultBytes: 1024 * 1024,
     concurrentEvalWorkers: 4,
-    persistentScripts: 8,
+    persistentScripts: 1024,
     totalScriptRecords: 32,
     totalScriptHistoryBytes: 1024 * 1024,
     persistentEventQueue: 64,
