@@ -1222,45 +1222,6 @@ test("persistent MCP timeout ends caller wait without stopping FIFO state", asyn
     assert.deepEqual(service.listPScriptMcps(), { mcps: [] });
 });
 
-test("persistent console rotation preserves monotonic line numbers across duplicate text", async () => {
-    const { createScriptService } = await bundledScriptServiceModule();
-    const script = {
-        id: 9,
-        name: "rotation",
-        running: true,
-        output: [],
-        outputStartLine: 1,
-        nextOutputLine: 1,
-        code: "",
-        triggers: [],
-        ownedBreakpointIds: new Set()
-    };
-    const state = { scripts: new Map([[script.id, script]]), activeScriptId: script.id };
-    const ui = { scriptRawOutput: { value: "" }, scriptOutput: { textContent: "" } };
-    const service = createScriptService({
-        state,
-        ui,
-        responder,
-        breakpointOwners: {},
-        ensureRomLoaded: () => {},
-        finishPersistentScriptEvent: async () => true,
-        requestPersistentScriptResume: () => true,
-        settlePersistentScriptCallbacks: async () => {},
-        hex: String,
-        parseAddress: Number,
-        rawOutputText: String,
-        runCommand: async () => ({}),
-        getCommands: () => ({}),
-        onExplicitPause: () => {}
-    });
-    for (let index = 0; index < 402; index++) service.scriptConsoleLine(script, ["duplicate"]);
-    assert.equal(script.output.length, 400);
-    assert.equal(script.outputStartLine, 3);
-    assert.equal(script.nextOutputLine, 403);
-    assert.match(script.output[0], /duplicate/);
-    assert.match(script.output[399], /duplicate/);
-});
-
 test("reserved State storage and analysis baseline failures use stable error codes", async () => {
     const reserved = createStateCommands({
         analysisBaselineSlotToken: Symbol("baseline"),

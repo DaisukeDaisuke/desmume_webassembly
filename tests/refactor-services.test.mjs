@@ -1157,8 +1157,8 @@ test("script console commands use stable line numbers and accept id or name sele
     const script = {
         id: 4,
         name: "observer",
-        output: Array(400).fill("duplicate"),
-        outputStartLine: 3,
+        output: Array(4).fill("duplicate"),
+        outputStartLine: 399,
         nextOutputLine: 403
     };
     const commands = createScriptCommands({
@@ -1182,7 +1182,7 @@ test("script console commands use stable line numbers and accept id or name sele
         () => commands.clearScriptPrint({ id: 4, scriptId: 5 }),
         (error) => error.mcpCode === "INVALID_ARGUMENT" && /must match/.test(error.message)
     );
-    assert.equal(script.output.length, 400);
+    assert.equal(script.output.length, 4);
     const cleared = await commands.clearScriptPrint({ name: "observer" });
     assert.deepEqual(cleared.cleared, [4]);
     assert.deepEqual(cleared.consoles, [{ id: 4, nextLine: 403 }]);

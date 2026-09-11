@@ -116,10 +116,6 @@ export function createScriptService({
         }
         script.output.push(`[${new Date().toLocaleTimeString()}] ${line}`);
         script.nextOutputLine += 1;
-        while (script.output.length > 400) {
-            script.output.shift();
-            script.outputStartLine += 1;
-        }
         let outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
         while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 0) {
             script.output.shift();
