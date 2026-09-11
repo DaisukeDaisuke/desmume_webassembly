@@ -311,6 +311,10 @@ export function createScriptCommands({
             const nextOutputLine = Number.isSafeInteger(script.nextOutputLine)
                 ? script.nextOutputLine
                 : outputStartLine + script.output.length;
+            const startIndex = startLine === null
+                ? Math.max(0, script.output.length - max)
+                : Math.max(0, startLine - outputStartLine);
+            const selectedOutput = script.output.slice(startIndex, startIndex + max);
             return {
                 id: script.id,
                 name: script.name,
@@ -318,17 +322,15 @@ export function createScriptCommands({
                 lastLine: nextOutputLine - 1,
                 nextLine: nextOutputLine,
                 lineCount: script.output.length,
-                logs: script.output.map((text, index) => ({
+                logs: selectedOutput.map((text, index) => ({
                     id: script.id,
                     name: script.name,
-                    line: outputStartLine + index,
+                    line: outputStartLine + startIndex + index,
                     text
                 }))
             };
         });
-        const matching = consoles.flatMap((console) => startLine === null
-            ? console.logs.slice(-max)
-            : console.logs.filter((entry) => entry.line >= startLine));
+        const matching = consoles.flatMap((console) => console.logs);
         const logs = startLine === null ? matching.slice(-max) : matching.slice(0, max);
         const selectedConsole = consoles.length === 1 ? consoles[0] : null;
         return {

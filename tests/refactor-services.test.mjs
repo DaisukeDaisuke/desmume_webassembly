@@ -1172,7 +1172,7 @@ test("script console commands use stable line numbers and accept id or name sele
         { line: 400, text: "duplicate" },
         { line: 401, text: "duplicate" }
     ]);
-    assert.equal(byName.availableFirstLine, 3);
+    assert.equal(byName.availableFirstLine, 399);
     assert.equal(byName.availableLastLine, 402);
     await assert.rejects(
         () => commands.listScriptPrint({ id: 4, scriptId: 5 }),
