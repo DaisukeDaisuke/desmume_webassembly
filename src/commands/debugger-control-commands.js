@@ -246,11 +246,19 @@ export function createDebuggerControlCommands(context) {
         async stepOver(params = {}) {
             ensureRomLoaded("step over requires a loaded ROM");
             const cpu = String(params.cpu ?? state.selectedCpu);
+            if (cpu === "arm7") {
+                const result = await runDebuggerInstruction("nativeStepOver", { ...params, cpu });
+                result.kind = "stepOver";
+                result.implementation = "native";
+                return result;
+            }
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
             return runTraceStepper("stepOver", params, ({ depth, startDepth, pc, sameLane, startLanePresent }) => {
-                if ((pc >>> 0) === target) return { stop: "pc", target: hex(target) };
                 if (!startLanePresent || (sameLane && depth < startDepth)) {
                     return { stop: "root", complete: false, target: hex(target) };
+                }
+                if (sameLane && depth === startDepth && (pc >>> 0) === target) {
+                    return { stop: "pc", target: hex(target) };
                 }
                 return false;
             }, { trackLane: true, requireTrackedLane: true });
@@ -374,6 +382,10 @@ export function createDebuggerControlCommands(context) {
         },
 
         async nextCallThisDepth(params = {}) {
+            const cpu = String(params.cpu ?? state.selectedCpu);
+            if (cpu === "arm7") {
+                throw codedError(ErrorCode.STATE_INVALID, "nextCallThisDepth requires ARM9 Stack Trace data");
+            }
             return runTraceStepper("nextCallThisDepth", params, ({ depth, startDepth, sameLane, startLanePresent }) => {
                 if (!startLanePresent) return { stop: "root", complete: false };
                 if (!sameLane) return false;

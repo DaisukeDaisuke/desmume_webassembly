@@ -336,7 +336,8 @@ test("nextCallThisDepth stops on a direct call or the current function root", as
             shouldStop = predicate;
             options = receivedOptions;
             return { label };
-        }
+        },
+        state: { selectedCpu: "arm9" }
     });
 
     assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
@@ -346,17 +347,23 @@ test("nextCallThisDepth stops on a direct call or the current function root", as
     assert.equal(shouldStop({ startDepth: 4, depth: 5, sameLane: false, startLanePresent: true }), false);
     assert.deepEqual(shouldStop({ startDepth: 4, depth: 5, sameLane: false, startLanePresent: false }), { stop: "root", complete: false });
     assert.equal(shouldStop({ startDepth: 4, depth: 4, sameLane: true, startLanePresent: true }), false);
+    await assert.rejects(commands.nextCallThisDepth({ cpu: "arm7" }), /requires ARM9 Stack Trace data/);
 });
 
 test("public stepOver stops only at the sequential PC or below its starting trace depth", async () => {
     let shouldStop;
     let options;
     let instructionWidth = 4;
+    let nativeKind = "";
     const commands = createDebuggerControlCommands({
         ensureRomLoaded: () => {},
         getPc: () => 0x02000000,
         hex: (value) => `0x${Number(value).toString(16)}`,
         instructionWidthForMode: () => instructionWidth,
+        runDebuggerInstruction: async (kind, params) => {
+            nativeKind = kind;
+            return { kind, count: 1, cpu: params.cpu };
+        },
         runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
             options = receivedOptions;
@@ -367,9 +374,11 @@ test("public stepOver stops only at the sequential PC or below its starting trac
 
     assert.deepEqual(await commands.stepOver(), { label: "stepOver" });
     assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
-    assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000004, sameLane: false, startLanePresent: true }), {
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000004, sameLane: true, startLanePresent: true }), {
         stop: "pc", target: "0x2000004"
     });
+    assert.equal(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000004, sameLane: false, startLanePresent: true }), false);
+    assert.equal(shouldStop({ startDepth: 4, depth: 5, pc: 0x02000004, sameLane: true, startLanePresent: true }), false);
     assert.deepEqual(shouldStop({ startDepth: 4, depth: 3, pc: 0x03000000, sameLane: true, startLanePresent: true }), {
         stop: "root", complete: false, target: "0x2000004"
     });
@@ -379,6 +388,10 @@ test("public stepOver stops only at the sequential PC or below its starting trac
     assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000002, sameLane: true, startLanePresent: true }), {
         stop: "pc", target: "0x2000002"
     });
+    const arm7Result = await commands.stepOver({ cpu: "arm7" });
+    assert.equal(nativeKind, "nativeStepOver");
+    assert.equal(arm7Result.kind, "stepOver");
+    assert.equal(arm7Result.implementation, "native");
 });
 
 test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {
