@@ -287,14 +287,20 @@ export function createScriptCommands({
         if (startLine !== null && (!Number.isSafeInteger(startLine) || startLine < 1)) {
             throw codedError(ErrorCode.INVALID_ARGUMENT, "startLine must be a positive safe integer");
         }
-        const hasId = params.id != null || params.scriptId != null;
-        const hasName = params.name != null;
-        if (hasId && hasName) {
+        const hasId = Object.hasOwn(params, "id"), hasScriptId = Object.hasOwn(params, "scriptId");
+        const id = hasId ? positiveScriptId(params.id, "listScriptPrint.id") : undefined;
+        const scriptId = hasScriptId ? positiveScriptId(params.scriptId, "listScriptPrint.scriptId") : undefined;
+        if (id !== undefined && scriptId !== undefined && id !== scriptId) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "listScriptPrint id and scriptId must match");
+        }
+        const hasSelector = hasId || hasScriptId;
+        const hasName = Object.hasOwn(params, "name");
+        if (hasSelector && hasName) {
             throw codedError(ErrorCode.INVALID_ARGUMENT, "listScriptPrint accepts either id/scriptId or name, not both");
         }
-        const selectedId = params.id ?? params.scriptId;
-        const scripts = hasId
-            ? [state.scripts.get(positiveScriptId(selectedId, "listScriptPrint.id"))].filter(Boolean)
+        const selectedId = id ?? scriptId;
+        const scripts = hasSelector
+            ? [state.scripts.get(selectedId)].filter(Boolean)
             : hasName
                 ? [...state.scripts.values()].filter((script) => script.name === requiredScriptName(params.name, "listScriptPrint.name"))
                 : [...state.scripts.values()];
@@ -341,14 +347,20 @@ export function createScriptCommands({
     }
 
     async function clearScriptPrint(params = {}) {
-        const hasId = params.id != null || params.scriptId != null;
-        const hasName = params.name != null;
-        if (hasId && hasName) {
+        const hasId = Object.hasOwn(params, "id"), hasScriptId = Object.hasOwn(params, "scriptId");
+        const id = hasId ? positiveScriptId(params.id, "clearScriptPrint.id") : undefined;
+        const scriptId = hasScriptId ? positiveScriptId(params.scriptId, "clearScriptPrint.scriptId") : undefined;
+        if (id !== undefined && scriptId !== undefined && id !== scriptId) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "clearScriptPrint id and scriptId must match");
+        }
+        const hasSelector = hasId || hasScriptId;
+        const hasName = Object.hasOwn(params, "name");
+        if (hasSelector && hasName) {
             throw codedError(ErrorCode.INVALID_ARGUMENT, "clearScriptPrint accepts either id/scriptId or name, not both");
         }
-        const selectedId = params.id ?? params.scriptId;
-        const scripts = hasId
-            ? [state.scripts.get(positiveScriptId(selectedId, "clearScriptPrint.id"))].filter(Boolean)
+        const selectedId = id ?? scriptId;
+        const scripts = hasSelector
+            ? [state.scripts.get(selectedId)].filter(Boolean)
             : hasName
                 ? [...state.scripts.values()].filter((script) => script.name === requiredScriptName(params.name, "clearScriptPrint.name"))
                 : [...state.scripts.values()];
