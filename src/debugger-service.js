@@ -250,11 +250,21 @@ export function createDebuggerService({
                     );
                 }
                 else if (kind === "stepOver") {
-                    result.count = await stepPastCurrentExecBreakpoint(
+                    const info = await getCurrentInstructionInfo(cpu);
+                    const instructionAddress = info.address ?? pcBefore;
+                    const target = (instructionAddress + instructionWidthForMode("auto", cpu)) >>> 0;
+                    const waited = await commands.runUntil({
                         cpu,
-                        () => native.stepOver(cpu)
-                    );
-                    result.ret = result.count;
+                        pc: target,
+                        timeoutMs: positiveInteger(params.timeoutMs ?? 60000, "timeoutMs", 600000)
+                    });
+                    result = {
+                        kind,
+                        ...waited,
+                        complete: waited?.ok !== false && waited?.complete !== false,
+                        target: hex(target),
+                        instruction: info
+                    };
                 } else throw new Error(`unsupported debugger step: ${kind}`);
             } catch (error) {
                 if (error?.mcpCode === ErrorCode.NATIVE_ERROR
@@ -459,8 +469,8 @@ export function createDebuggerService({
         }
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
-        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
-        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 60000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 1000000, "maxSteps", 1000000);
         native.clearBreakStatus();
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
@@ -478,11 +488,33 @@ export function createDebuggerService({
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
-            if (shouldStop({ startDepth, depth, callStack })) {
-                return attachDebuggerContext({ kind: label, ok: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore);
+            const stop = shouldStop({ startDepth, depth, callStack });
+            if (stop) {
+                return attachDebuggerContext({
+                    kind: label,
+                    ok: true,
+                    steps,
+                    depth,
+                    ...(typeof stop === "object" ? stop : {}),
+                    callStack: publicCallStackData(callStack, { ...params, cpu })
+                }, cpu, pcBefore);
             }
         }
-        throw new Error(`${label} timeout after ${timeoutMs}ms`);
+        const callStack = readCallStackData();
+        const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+        const hitStepLimit = steps >= maxSteps;
+        return attachDebuggerContext({
+            kind: label,
+            ok: true,
+            complete: false,
+            stop: hitStepLimit ? "maxSteps" : "timeout",
+            limitReached: true,
+            steps,
+            depth,
+            timeoutMs,
+            maxSteps,
+            callStack: publicCallStackData(callStack, { ...params, cpu })
+        }, cpu, pcBefore);
     }
     
     function renderMemoryDump(result) {

@@ -230,7 +230,8 @@ function createDebuggerHarness() {
             text: ++disassemblyCalls === 2
                 ? "=>02000004: ea000000 b 02000010"
                 : "=>02000000: e1a00000 mov r0, r0"
-        })
+        }),
+        runUntil: async () => ({ ok: true, complete: true, pc: "0x2000004" })
     };
     const service = createDebuggerService({
         applyFreezes: () => { freezes++; },
@@ -269,11 +270,27 @@ test("debugger service requires and applies freezes for step paths", async () =>
     assert.equal(step.freezes(), 1);
     assert.equal(step.suspensions(), 1);
     const over = createDebuggerHarness();
-    await over.service.runDebuggerInstruction("stepOver");
+    const overResult = await over.service.runDebuggerInstruction("stepOver");
     assert.equal(over.freezes(), 1);
+    assert.equal(overResult.target, "0x2000004");
     const branch = createDebuggerHarness();
     await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
     assert.equal(branch.freezes(), 1);
+});
+
+test("nextCallThisDepth stops on a direct call or the current function root", async () => {
+    let shouldStop;
+    const commands = createDebuggerControlCommands({
+        runTraceStepper: async (label, _params, predicate) => {
+            shouldStop = predicate;
+            return { label };
+        }
+    });
+
+    assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 5 }), { stop: "call" });
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 3 }), { stop: "root", complete: false });
+    assert.equal(shouldStop({ startDepth: 4, depth: 4 }), false);
 });
 
 test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {

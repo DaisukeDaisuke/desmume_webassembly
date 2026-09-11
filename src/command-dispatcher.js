@@ -4,7 +4,7 @@ import { isPlainObject } from "./validation.js";
 const UI_REFRESH_COMMANDS = new Set([
     "pause", "resume", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
     "nextBranchOrReturn", "trueNextBranch", "nextTrueBranch", "runUntilReturn", "returnToPop",
-    "runUntilNextCall", "nextFunctionEnter", "nextCall", "nextFunctionCall", "stepFrames",
+    "runUntilNextCall", "nextFunctionEnter", "nextCall", "nextCallThisDepth", "nextFunctionCall", "stepFrames",
     "setRegister", "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze",
     "setBreakpoint", "removeBreakpoint", "setSpecialBreakpoint", "setStackTraceMode",
     "setStackTracePrivilegeCheck", "loadRomUrl", "loadState", "reloadRecentFile", "setInput",
@@ -16,7 +16,7 @@ const ACTIVITY_COMMANDS = new Set([
     "loadState", "importStateFile", "loadStateBytes", "loadStateUrl", "reloadRecentFile", "pause",
     "resume", "continue", "reset", "reloadRom", "step", "smartStep", "stepOver",
     "stepNextBranchOrReturn", "nextBranchOrReturn", "trueNextBranch", "nextTrueBranch",
-    "runUntilReturn", "returnToPop", "runUntilNextCall", "nextFunctionEnter", "nextCall",
+    "runUntilReturn", "returnToPop", "runUntilNextCall", "nextFunctionEnter", "nextCall", "nextCallThisDepth",
     "nextFunctionCall", "stepFrames", "setInput", "runInputHold", "runInputTap", "runTouchHold",
     "setRegister", "writeMemory", "injectMemoryFile", "injectBytes", "setMemoryFreeze",
     "setCTableSeed", "memorySetRegister", "memoryWriteByte", "memoryWriteWord", "memoryWriteDword"

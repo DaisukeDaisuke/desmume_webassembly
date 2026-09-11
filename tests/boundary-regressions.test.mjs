@@ -1694,7 +1694,11 @@ function createExecStepHarness(instruction = "bl 02000010") {
             text: `=>${pc.toString(16).padStart(8, "0")}: eb000000 ${
                 typeof instruction === "function" ? instruction(pc) : instruction
             }`
-        })
+        }),
+        runUntil: async ({ pc: target }) => {
+            pc = Number(target) >>> 0;
+            return { ok: true, complete: true, pc: `0x${pc.toString(16)}` };
+        }
     };
     const service = createDebuggerService({
         applyFreezes: () => {}, breakpointKindName: () => "", cpsrModeInfo: () => ({ className: "" }),
@@ -1711,14 +1715,14 @@ function createExecStepHarness(instruction = "bl 02000010") {
     return { service, state, pc: () => pc, disables: () => disables, enables: () => enables };
 }
 
-test("stepOver and smartStep leave a current exec breakpoint without re-hitting it", async () => {
+test("stepOver and smartStep target the sequential instruction without altering the current breakpoint", async () => {
     for (const kind of ["stepOver", "smartStep"]) {
         const harness = createExecStepHarness();
         const result = await harness.service.runDebuggerInstruction(kind);
-        assert.equal(result.count, 1);
+        assert.equal(result.complete, true);
         assert.equal(harness.pc(), 0x02000004);
-        assert.equal(harness.disables(), 1);
-        assert.equal(harness.enables(), 2);
+        assert.equal(harness.disables(), 0);
+        assert.equal(harness.enables(), 1);
     }
 });
 

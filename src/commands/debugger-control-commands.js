@@ -365,6 +365,14 @@ export function createDebuggerControlCommands(context) {
             return runTraceStepper("runUntilNextCall", params, ({ depth, startDepth }) => depth > startDepth);
         },
 
+        async nextCallThisDepth(params = {}) {
+            return runTraceStepper("nextCallThisDepth", params, ({ depth, startDepth }) => {
+                if (depth > startDepth) return { stop: "call" };
+                if (depth < startDepth) return { stop: "root", complete: false };
+                return false;
+            });
+        },
+
         async wait(params = {}) {
             const ms = nonNegativeNumber(params.ms ?? params.waitMs ?? 0, "ms", 600000);
             await new Promise((resolve) => setTimeout(resolve, ms));

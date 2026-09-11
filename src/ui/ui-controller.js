@@ -89,11 +89,13 @@ export function bindUi(context) {
     ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").catch((e) => log(e.message)));
     ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.cpuTrueNextBranchDebugBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 60000 }).catch((e) => log(e.message)));
     ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 60000 }).catch((e) => log(e.message)));
+    ui.stackNextCallThisDepthToolbarBtn.addEventListener("click", () => runCommand("nextCallThisDepth", { timeoutMs: 60000 }).catch((e) => log(e.message)));
     ui.stackReturnToolbarBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallDebugBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallDebugBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 60000 }).catch((e) => log(e.message)));
+    ui.stackNextCallThisDepthDebugBtn.addEventListener("click", () => runCommand("nextCallThisDepth", { timeoutMs: 60000 }).catch((e) => log(e.message)));
     ui.stackReturnDebugBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
     ui.stackCopyMdBtn.addEventListener("click", () => runCommand("copyCallStackMarkdown").catch((e) => log(e.message)));

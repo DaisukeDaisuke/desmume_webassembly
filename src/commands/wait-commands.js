@@ -135,9 +135,11 @@ export function registerWaitCommands({
             timeoutDetails: () => hasBreakpoint ? { ...progress } : {},
             task: async (operation) => {
                 let temporaryId = 0;
+                let targetAddress = null;
                 let predicate;
                 if (hasPc) {
                     const address = parseAddress(params.pc, 0, params.cpu);
+                    targetAddress = address;
                     const result = await commands.setBreakpoint(withInternalMetadata({
                         cpu: params.cpu,
                         type: "exec",
@@ -145,7 +147,7 @@ export function registerWaitCommands({
                         enabled: true
                     }, { origin: "operation", operationId: operation.id }));
                     temporaryId = result.id;
-                    predicate = (event) => event.type === "exec" && event.address === address;
+                    predicate = () => true;
                 } else {
                     const id = Number(params.bp);
                     const site = breakpointOwners.findBreakpointById(id);
@@ -182,9 +184,17 @@ export function registerWaitCommands({
                             continue;
                         }
                         await commands.pause(withInternalMetadata({}, { operation: true }));
+                        const reachedTarget = hasPc
+                            && event.type === "exec"
+                            && event.address === targetAddress
+                            && event.owners.some((owner) => owner.id === temporaryId);
                         return responder.ok({
                             pc: hex(event.pc),
                             pauseKind: pauseKindForBreakType(event.type),
+                            ...(hasPc ? {
+                                complete: reachedTarget,
+                                stoppedByBreakpoint: !reachedTarget
+                            } : {}),
                             ...(event.type && event.type !== "exec" ? { breakType: event.type } : {}),
                             ...(hasPc ? {} : { bp: Number(params.bp), hits: progress.hits }),
                             frames: getFrame()
