@@ -204,7 +204,7 @@ test("persistent script pause stops a wait with SCRIPT_PAUSED", async () => {
     assert.equal(operationManager.current(), null);
 });
 
-function createDebuggerHarness() {
+function createDebuggerHarness({ traceEnabled = false, readStack = null } = {}) {
     let freezes = 0;
     let disassemblyCalls = 0;
     let suspensions = 0;
@@ -223,14 +223,16 @@ function createDebuggerHarness() {
         callstackBody: { innerHTML: "" },
         memoryAuto: { value: "0" },
         tracePrivilegeToggle: { checked: false },
-        traceToggle: { checked: false }
+        traceToggle: { checked: traceEnabled }
     };
     const commands = {
         disassemble: async () => ({
             text: ++disassemblyCalls === 2
                 ? "=>02000004: ea000000 b 02000010"
                 : "=>02000000: e1a00000 mov r0, r0"
-        })
+        }),
+        setStackTraceMode: async ({ enabled }) => { ui.traceToggle.checked = enabled; },
+        setStackTracePrivilegeCheck: async ({ enabled }) => { ui.tracePrivilegeToggle.checked = enabled; }
     };
     const service = createDebuggerService({
         applyFreezes: () => { freezes++; },
@@ -244,9 +246,10 @@ function createDebuggerHarness() {
         hasLoadedRom: () => true,
         hex: (value) => `0x${(Number(value) >>> 0).toString(16)}`,
         log: () => {},
-        native: { step: () => 1, stepOver: () => 1, clearBreakStatus: () => {} },
+        native: { step: () => 1, stepOver: () => 1, clearBreakStatus: () => {}, getTraceDepth: () => 1 },
         normalizeCallStackData: (value) => value,
-        readCallStackData: () => ({ enabled: true, frames: [] }),
+        publicCallStackData: (value) => value,
+        readCallStackData: readStack || (() => ({ enabled: true, frames: [] })),
         renderRegisters: () => {},
         setFollowPc: () => {},
         state,
@@ -274,45 +277,108 @@ test("debugger service requires and applies freezes for step paths", async () =>
     const branch = createDebuggerHarness();
     await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
     assert.equal(branch.freezes(), 1);
+    const trace = createDebuggerHarness();
+    await assert.rejects(
+        trace.service.runTraceStepper("stepOver", {}, () => false, { requireTrackedLane: true }),
+        /requires Stack Trace/
+    );
+    const coldTrace = createDebuggerHarness({ traceEnabled: true });
+    await assert.rejects(
+        coldTrace.service.runTraceStepper("stepOver", {}, () => false, { trackLane: true, requireTrackedLane: true }),
+        /requires a recorded active Stack Trace frame/
+    );
+    const publicTrace = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true }] })
+    });
+    const publicCommands = createDebuggerControlCommands({
+        ensureRomLoaded: () => {},
+        getPc: () => 0x02000000,
+        hex: (value) => `0x${Number(value).toString(16)}`,
+        instructionWidthForMode: () => 4,
+        runTraceStepper: publicTrace.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const limitedResult = await publicCommands.stepOver({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(limitedResult.complete, false);
+    assert.equal(limitedResult.stop, "maxSteps");
+    assert.equal(publicTrace.freezes(), 1);
+});
+
+test("trace stepper keeps the starting lane identity when another lane becomes active", async () => {
+    let reads = 0;
+    let observed;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 4, stacks: [{ id: 1, depth: 4, active: true }] }
+            : { enabled: true, activeStackId: 2, depth: 5, stacks: [
+                { id: 1, depth: 4, active: false },
+                { id: 2, depth: 5, active: true }
+            ] }
+    });
+
+    await harness.service.runTraceStepper("lane-test", { maxSteps: 1, timeoutMs: 1000 }, (context) => {
+        observed = context;
+        return true;
+    }, { trackLane: true, requireTrackedLane: true });
+    assert.equal(observed.startStackId, 1);
+    assert.equal(observed.activeStackId, 2);
+    assert.equal(observed.sameLane, false);
+    assert.equal(observed.startLanePresent, true);
 });
 
 test("nextCallThisDepth stops on a direct call or the current function root", async () => {
     let shouldStop;
+    let options;
     const commands = createDebuggerControlCommands({
-        runTraceStepper: async (label, _params, predicate) => {
+        runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
+            options = receivedOptions;
             return { label };
         }
     });
 
     assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
-    assert.deepEqual(shouldStop({ startDepth: 4, depth: 5 }), { stop: "call" });
-    assert.deepEqual(shouldStop({ startDepth: 4, depth: 3 }), { stop: "root", complete: false });
-    assert.equal(shouldStop({ startDepth: 4, depth: 4 }), false);
+    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 5, sameLane: true, startLanePresent: true }), { stop: "call" });
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 3, sameLane: true, startLanePresent: true }), { stop: "root", complete: false });
+    assert.equal(shouldStop({ startDepth: 4, depth: 5, sameLane: false, startLanePresent: true }), false);
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 5, sameLane: false, startLanePresent: false }), { stop: "root", complete: false });
+    assert.equal(shouldStop({ startDepth: 4, depth: 4, sameLane: true, startLanePresent: true }), false);
 });
 
 test("public stepOver stops only at the sequential PC or below its starting trace depth", async () => {
     let shouldStop;
+    let options;
+    let instructionWidth = 4;
     const commands = createDebuggerControlCommands({
         ensureRomLoaded: () => {},
         getPc: () => 0x02000000,
         hex: (value) => `0x${Number(value).toString(16)}`,
-        instructionWidthForMode: () => 4,
-        runTraceStepper: async (label, _params, predicate) => {
+        instructionWidthForMode: () => instructionWidth,
+        runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
+            options = receivedOptions;
             return { label };
         },
         state: { selectedCpu: "arm9" }
     });
 
     assert.deepEqual(await commands.stepOver(), { label: "stepOver" });
-    assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000004 }), {
+    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000004, sameLane: false, startLanePresent: true }), {
         stop: "pc", target: "0x2000004"
     });
-    assert.deepEqual(shouldStop({ startDepth: 4, depth: 3, pc: 0x03000000 }), {
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 3, pc: 0x03000000, sameLane: true, startLanePresent: true }), {
         stop: "root", complete: false, target: "0x2000004"
     });
-    assert.equal(shouldStop({ startDepth: 4, depth: 5, pc: 0x03000000 }), false);
+    assert.equal(shouldStop({ startDepth: 4, depth: 3, pc: 0x03000000, sameLane: false, startLanePresent: true }), false);
+    instructionWidth = 2;
+    await commands.stepOver();
+    assert.deepEqual(shouldStop({ startDepth: 4, depth: 4, pc: 0x02000002, sameLane: true, startLanePresent: true }), {
+        stop: "pc", target: "0x2000002"
+    });
 });
 
 test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {

@@ -451,7 +451,7 @@ export function createDebuggerService({
         }, Math.max(50, Math.round(1000 / hz)));
     }
     
-    async function runTraceStepper(label, params = {}, shouldStop) {
+    async function runTraceStepper(label, params = {}, shouldStop, options = {}) {
         ensureRomLoaded(`${label} requires a loaded ROM`);
         if (state.traceStateSynchronized === false) {
             const error = new Error("Stateロード後のactive stackはCPU状態と同期していません。Stack Traceをoff/onして再同期してから実行してください。");
@@ -463,23 +463,55 @@ export function createDebuggerService({
         const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
         const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
         native.clearBreakStatus();
+        if (options.requireTrackedLane && !ui.traceToggle.checked) {
+            const error = new Error(`${label} requires Stack Trace to be enabled with a recorded active frame`);
+            error.mcpCode = ErrorCode.STATE_INVALID;
+            throw error;
+        }
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
             await commands.setStackTracePrivilegeCheck({ enabled: true });
         }
-        const startDepth = native.getTraceDepth();
+        const startCallStack = readCallStackData();
+        const startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
+        const startStackId = Number(startCallStack?.activeStackId ?? startStacks.find((stack) => stack.active)?.id);
+        const startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        const startDepth = options.trackLane
+            ? Number(startStack?.depth ?? startCallStack?.depth ?? native.getTraceDepth())
+            : native.getTraceDepth();
+        if (options.requireTrackedLane && (!Number.isFinite(startStackId) || !startStack || startDepth <= 0)) {
+            const error = new Error(`${label} requires a recorded active Stack Trace frame`);
+            error.mcpCode = ErrorCode.STATE_INVALID;
+            throw error;
+        }
         const deadline = performance.now() + timeoutMs;
         let steps = 0;
         while (performance.now() < deadline && steps < maxSteps) {
             await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
             steps++;
+            applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
             const callStack = readCallStackData();
-            const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+            const stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+            const activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+            const activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+            const startLanePresent = !options.trackLane
+                || stacks.some((stack) => Number(stack.id) === startStackId);
+            const sameLane = !options.trackLane || activeStackId === startStackId;
+            const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
-            const stop = shouldStop({ startDepth, depth, callStack, pc: getPc(cpu) });
+            const stop = shouldStop({
+                startDepth,
+                depth,
+                callStack,
+                pc: getPc(cpu),
+                startStackId,
+                activeStackId,
+                sameLane,
+                startLanePresent
+            });
             if (stop) {
                 return attachDebuggerContext({
                     kind: label,

@@ -247,11 +247,13 @@ export function createDebuggerControlCommands(context) {
             ensureRomLoaded("step over requires a loaded ROM");
             const cpu = String(params.cpu ?? state.selectedCpu);
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
-            return runTraceStepper("stepOver", params, ({ depth, startDepth, pc }) => {
+            return runTraceStepper("stepOver", params, ({ depth, startDepth, pc, sameLane, startLanePresent }) => {
                 if ((pc >>> 0) === target) return { stop: "pc", target: hex(target) };
-                if (depth < startDepth) return { stop: "root", complete: false, target: hex(target) };
+                if (!startLanePresent || (sameLane && depth < startDepth)) {
+                    return { stop: "root", complete: false, target: hex(target) };
+                }
                 return false;
-            });
+            }, { trackLane: true, requireTrackedLane: true });
         },
 
         async stepNextBranchOrReturn(params = {}) {
@@ -372,11 +374,13 @@ export function createDebuggerControlCommands(context) {
         },
 
         async nextCallThisDepth(params = {}) {
-            return runTraceStepper("nextCallThisDepth", params, ({ depth, startDepth }) => {
+            return runTraceStepper("nextCallThisDepth", params, ({ depth, startDepth, sameLane, startLanePresent }) => {
+                if (!startLanePresent) return { stop: "root", complete: false };
+                if (!sameLane) return false;
                 if (depth > startDepth) return { stop: "call" };
                 if (depth < startDepth) return { stop: "root", complete: false };
                 return false;
-            });
+            }, { trackLane: true, requireTrackedLane: true });
         },
 
         async wait(params = {}) {
