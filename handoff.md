@@ -281,6 +281,6 @@ Purpose: fix only the reported State transaction/callback races, State save comp
 
 ## 2026-09-11 Step control addendum
 
-- JS `stepOver` now runs to a temporary execute breakpoint at the sequential instruction address, regardless of whether the current instruction branches. An unrelated breakpoint stops it early; a non-returning path stops on its 60-second timeout.
+- Public/API/UI `stepOver` now JS trace-steps until PC reaches the sequential instruction address or trace depth drops below its starting depth. `smartStep` deliberately retains the previous native `dbgStepOver` path for call/bx handling.
 - `nextCallThisDepth` uses stack-trace depth and stops at the next direct call, or at the current function's root/return boundary if it returns first. Trace steppers report `timeout`/`maxSteps` limits as an honest incomplete stopped result instead of throwing after the bounded JS loop.
 - The Disassembly and Breakpoints toolbars expose `Next Call This Depth`; its command description makes it available through the existing WebMCP command surface.

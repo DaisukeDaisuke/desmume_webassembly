@@ -69,7 +69,7 @@ export function createApiDescriptions() {
         clearBreakStatus: "最後にヒットしたブレークポイント表示をクリアします。",
         step: "CPUステップを指定回数実行します。",
         smartStep: "現在命令を見て、通常命令はStep、bx/bl/blxはStep Overで進めます。b系やpc書き換え系はそのまま1命令進めます。",
-        stepOver: "現在命令の直後へ一時実行ブレークポイントを置いて再開します。分岐先に留まる場合も直後へ戻るまで待ち、timeout時は停止します。",
+        stepOver: "JS trace stepで現在命令の逐次PCまで進めます。先に開始時のスタック深度より浅くなった場合はroot境界で停止し、上限到達時も停止理由を返します。",
         stepNextBranchOrReturn: "分岐またはreturnらしいPC操作命令の直前まで進めます。途中の関数呼び出しはstep overします。",
         trueNextBranch: "条件不成立の分岐を通過し、実際にPCを変更した次の分岐を実行した直後で停止します。",
         continue: "デバッグ停止から再開します。",

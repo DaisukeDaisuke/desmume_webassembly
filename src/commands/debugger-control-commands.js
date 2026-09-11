@@ -8,8 +8,9 @@ export function createDebuggerControlCommands(context) {
         copyText,
         ensureReady,
         ensureRomLoaded,
+        getPc,
         hex,
-        log,
+        instructionWidthForMode,
         native,
         parseAddress,
         publicCallStackData,
@@ -244,8 +245,13 @@ export function createDebuggerControlCommands(context) {
 
         async stepOver(params = {}) {
             ensureRomLoaded("step over requires a loaded ROM");
-            log("step over can still collide with other breakpoints; plain step is safer.");
-            return runDebuggerInstruction("stepOver", params);
+            const cpu = String(params.cpu ?? state.selectedCpu);
+            const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
+            return runTraceStepper("stepOver", params, ({ depth, startDepth, pc }) => {
+                if ((pc >>> 0) === target) return { stop: "pc", target: hex(target) };
+                if (depth < startDepth) return { stop: "root", complete: false, target: hex(target) };
+                return false;
+            });
         },
 
         async stepNextBranchOrReturn(params = {}) {

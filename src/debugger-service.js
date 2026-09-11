@@ -236,7 +236,8 @@ export function createDebuggerService({
         if (kind === "smartStep") {
             const info = await getCurrentInstructionInfo(cpu);
             const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
-            result = await runDebuggerInstruction(chosen, { ...params, cpu });
+            const implementation = chosen === "stepOver" ? "nativeStepOver" : chosen;
+            result = await runDebuggerInstruction(implementation, { ...params, cpu });
             result.kind = "smartStep";
             result.chosen = chosen;
             result.instruction = info;
@@ -249,22 +250,12 @@ export function createDebuggerService({
                         () => native.step(cpu, stepCount)
                     );
                 }
-                else if (kind === "stepOver") {
-                    const info = await getCurrentInstructionInfo(cpu);
-                    const instructionAddress = info.address ?? pcBefore;
-                    const target = (instructionAddress + instructionWidthForMode("auto", cpu)) >>> 0;
-                    const waited = await commands.runUntil({
+                else if (kind === "nativeStepOver") {
+                    result.count = await stepPastCurrentExecBreakpoint(
                         cpu,
-                        pc: target,
-                        timeoutMs: positiveInteger(params.timeoutMs ?? 60000, "timeoutMs", 600000)
-                    });
-                    result = {
-                        kind,
-                        ...waited,
-                        complete: waited?.ok !== false && waited?.complete !== false,
-                        target: hex(target),
-                        instruction: info
-                    };
+                        () => native.stepOver(cpu)
+                    );
+                    result.ret = result.count;
                 } else throw new Error(`unsupported debugger step: ${kind}`);
             } catch (error) {
                 if (error?.mcpCode === ErrorCode.NATIVE_ERROR
@@ -488,7 +479,7 @@ export function createDebuggerService({
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
-            const stop = shouldStop({ startDepth, depth, callStack });
+            const stop = shouldStop({ startDepth, depth, callStack, pc: getPc(cpu) });
             if (stop) {
                 return attachDebuggerContext({
                     kind: label,
