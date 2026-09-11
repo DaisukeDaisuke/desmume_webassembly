@@ -981,7 +981,7 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
     );
 });
 
-test("listScriptPrint preserves the fixed 1000-line response ceiling", async () => {
+test("listScriptPrint has no fixed line-count ceiling", async () => {
     const output = Array.from({ length: 1201 }, (_, index) => `line-${index}`);
     const commands = createScriptCommands({
         state: {
@@ -991,8 +991,8 @@ test("listScriptPrint preserves the fixed 1000-line response ceiling", async () 
         ui: {}
     });
     const result = await commands.listScriptPrint({ id: 7, max: 1201 });
-    assert.equal(result.logs.length, 1000);
-    assert.equal(result.logs[0].text, "line-201");
+    assert.equal(result.logs.length, 1201);
+    assert.equal(result.logs[0].text, "line-0");
     assert.equal(result.logs.at(-1).text, "line-1200");
 });
 
