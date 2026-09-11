@@ -870,6 +870,8 @@ test("supervisors and sandbox Workers are prebundled with shared boundary code",
     assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
     assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
   }
+  const persistentWorkerSource = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
+  assert.match(persistentWorkerSource, /"nextCallThisDepth"[\s\S]+mcp\.call\(command, params\)/);
 
   const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
   assert.match(buildSource, /bundledWorkers/);
