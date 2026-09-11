@@ -41,6 +41,7 @@ import { createInputTaskManager } from "./input-task-manager.js";
 import { withInternalMetadata } from "./internal-command-metadata.js";
 import { createScreenInvalidNotice } from "./screen-invalid-notice.js";
 import { createFileTransactionService } from "./file-transaction-service.js";
+import { createUiInteractionLock } from "./ui/interaction-lock.js";
 import evalSupervisorWorkerSource from "./workers/eval-supervisor.worker.js";
 import evalSandboxWorkerSource from "./workers/eval.worker.js";
 import parserWorkerSource from "./workers/parser.worker.js";
@@ -53,6 +54,7 @@ if (initializedRuntimeApi) return initializedRuntimeApi;
 const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map((el) => [el.id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), el]));
 const DESMUME_SCRIPT_URL = "desmume.js?v=20260731-singlethread-recovery";
 const state = createAppState();
+const uiInteractionLock = createUiInteractionLock();
 state.emulatorBundleLoaded = true;
 state.scale = Number(ui.scaleSelect?.value || state.scale);
 state.rotation = Number(ui.rotationSelect?.value || state.rotation);
@@ -557,6 +559,7 @@ const commands = createCommands({
     u16FromBytes,
     u32FromBytes,
     ui,
+    uiInteractionLock,
     updateStatus,
     wakeEmulationLoop: () => wakeTick,
     waitChecked,

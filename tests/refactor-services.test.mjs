@@ -20,6 +20,7 @@ import { createDebuggerControlCommands } from "../src/commands/debugger-control-
 import { withInternalMetadata } from "../src/internal-command-metadata.js";
 import { createScriptRunner } from "../src/script-runner.js";
 import { createMemoryCommands } from "../src/commands/memory-commands.js";
+import { createBinaryTools } from "../src/binary-tools.js";
 import { createInputController } from "../src/ui/input-controller.js";
 import { createEmulationLoop } from "../src/emulation-loop.js";
 import { createBreakpointService } from "../src/breakpoint-service.js";
@@ -1564,6 +1565,77 @@ test("memory and input boundaries reject invalid sizes, lengths, and buttons", a
         ui: {}
     });
     assert.throws(() => controller.toButtonList({ button: "A\"]" }), (error) => error.mcpCode === "INVALID_ARGUMENT");
+});
+
+test("byte injection refreshes a prefetched instruction only after all overlapping bytes are written", async () => {
+    let currentPc = 0x020f9104;
+    let currentCpsr = 0x10;
+    const events = [];
+    const binary = createBinaryTools({
+        getPc: () => currentPc,
+        getSelectedCpu: () => "arm9"
+    });
+    const memory = createMemoryCommands({
+        applyFreezes: () => {},
+        bigEndianValue: binary.bigEndianValue,
+        bytesFromFlexibleParams: binary.bytesFromFlexibleParams,
+        ensureRomLoaded: () => {},
+        hex: (value) => `0x${Number(value).toString(16)}`,
+        log: () => {},
+        matchSearchCondition: () => false,
+        memorySearchRangeKey: () => "",
+        memorySearchRanges: () => [],
+        native: {
+            dumpMemory: () => new Uint8Array(16),
+            getPc: () => currentPc,
+            getRegister: (_cpu, register) => register === 16 ? currentCpsr : 0,
+            setRegister: (cpu, register, value) => events.push({ type: "register", cpu, register, value }),
+            writeMemory: (cpu, address, value, size) => events.push({ type: "write", cpu, address, value, size })
+        },
+        openPicker: async () => { throw new Error("picker must not be used"); },
+        parseAddress: binary.parseAddress,
+        parseNumber: binary.parseNumber,
+        readFileFromInput: async () => { throw new Error("file input must not be used"); },
+        readSized: () => 0,
+        renderFreezes: () => {},
+        renderMemoryDump: () => {},
+        state: { selectedCpu: "arm9", freezes: [], search: {} },
+        swap16: binary.swap16,
+        swap32: binary.swap32,
+        ui: {
+            memoryAddress: { value: "03000000" },
+            memoryLength: { value: "16" },
+            memoryView: { value: "bytes" },
+            memoryInjectFile: { files: [] },
+            searchSize: { value: "1" },
+            searchCondition: { value: "equal" },
+            searchValue: { value: "0" },
+            searchLimit: { value: "10" }
+        }
+    });
+
+    await memory.injectBytes({ cpu: "arm9", address: currentPc, hex: "1e ff 2f e1" });
+    assert.deepEqual(events, [
+        { type: "write", cpu: "arm9", address: 0x020f9104, value: 0x1e, size: 1 },
+        { type: "write", cpu: "arm9", address: 0x020f9105, value: 0xff, size: 1 },
+        { type: "write", cpu: "arm9", address: 0x020f9106, value: 0x2f, size: 1 },
+        { type: "write", cpu: "arm9", address: 0x020f9107, value: 0xe1, size: 1 },
+        { type: "register", cpu: "arm9", register: 15, value: 0x020f9104 }
+    ]);
+
+    events.length = 0;
+    currentCpsr = 0x30;
+    await memory.injectBytes({ cpu: "arm9", address: currentPc + 1, bytes: [0x70] });
+    assert.deepEqual(events, [
+        { type: "write", cpu: "arm9", address: 0x020f9105, value: 0x70, size: 1 },
+        { type: "register", cpu: "arm9", register: 15, value: 0x020f9105 }
+    ]);
+
+    events.length = 0;
+    await memory.injectBytes({ cpu: "arm9", address: currentPc + 0x100, bytes: [0xaa] });
+    assert.deepEqual(events, [
+        { type: "write", cpu: "arm9", address: 0x020f9204, value: 0xaa, size: 1 }
+    ]);
 });
 
 test("frame comparison preserves cancellation and internal failure classifications", async () => {

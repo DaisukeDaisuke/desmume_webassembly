@@ -121,7 +121,7 @@ export function createScriptService({
             script.outputStartLine += 1;
         }
         let outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
-        while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 1) {
+        while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 0) {
             script.output.shift();
             script.outputStartLine += 1;
             outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;

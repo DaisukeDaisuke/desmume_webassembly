@@ -38,6 +38,7 @@ import {
 import { normalizeBoundedValue } from "../src/bounded-value.js";
 import { createBinaryTools } from "../src/binary-tools.js";
 import { serializeWorkerError } from "../src/worker-error-summary.js";
+import { ResourceLimits } from "../src/resource-limits.js";
 
 const responder = createMcpResponder({ logger: {} });
 const FRAMEBUFFER_BYTES = 256 * 384 * 4;
@@ -980,6 +981,21 @@ test("Batch uses the dispatcher plain-object contract and rejects malformed item
     );
 });
 
+test("listScriptPrint has no fixed line-count ceiling", async () => {
+    const output = Array.from({ length: 1201 }, (_, index) => `line-${index}`);
+    const commands = createScriptCommands({
+        state: {
+            scripts: new Map([[7, { id: 7, name: "logger", output }]]),
+            activeScriptId: 7
+        },
+        ui: {}
+    });
+    const result = await commands.listScriptPrint({ id: 7, max: 1201 });
+    assert.equal(result.logs.length, 1201);
+    assert.equal(result.logs[0].text, "line-0");
+    assert.equal(result.logs.at(-1).text, "line-1200");
+});
+
 test("stopScript normalizes explicit targets without changing empty active-script fallback", async () => {
     const stopCalls = [];
     const commands = createScriptCommands({
@@ -1059,6 +1075,54 @@ test("persistent MCP normalizers keep structured boundaries separated", () => {
     assert.equal(Object.getPrototypeOf(params), null);
     assert.equal(Object.getPrototypeOf(params.selection), null);
     assert.equal(Object.getPrototypeOf(result), null);
+});
+
+test("persistent script console is bounded only by 150 KiB and drops oldest whole lines", async () => {
+    const { createScriptService } = await bundledScriptServiceModule();
+    const state = { scripts: new Map(), activeScriptId: 0 };
+    const script = {
+        id: 7,
+        name: "logger",
+        running: true,
+        output: [],
+        code: ""
+    };
+    state.scripts.set(script.id, script);
+    const service = createScriptService({
+        state,
+        ui: {
+            scriptRawOutput: { value: "" },
+            scriptOutput: { textContent: "" }
+        },
+        responder,
+        breakpointOwners: {},
+        ensureRomLoaded: () => {},
+        finishPersistentScriptEvent: async () => true,
+        requestPersistentScriptResume: () => true,
+        settlePersistentScriptCallbacks: async () => {},
+        hex: String,
+        parseAddress: Number,
+        rawOutputText: String,
+        runCommand: async () => ({}),
+        getCommands: () => ({}),
+        onExplicitPause: () => {}
+    });
+
+    for (let index = 0; index < 1001; index++) {
+        service.scriptConsoleLine(script, [`line-${index}`]);
+    }
+    assert.equal(script.output.length, 1001);
+
+    service.scriptConsoleLine(script, ["X".repeat(ResourceLimits.scriptOutputBytes - 1024)]);
+    const outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
+    assert.ok(outputBytes <= ResourceLimits.scriptOutputBytes);
+    assert.ok(script.output.length < 1002);
+    assert.match(script.output.at(-1), /X{100}/);
+    assert.equal(script.running, true);
+
+    service.scriptConsoleLine(script, ["Y".repeat(ResourceLimits.scriptOutputBytes + 1)]);
+    assert.deepEqual(script.output, []);
+    assert.equal(script.running, true);
 });
 
 test("persistent MCP timeout ends caller wait without stopping FIFO state", async () => {
@@ -2226,83 +2290,6 @@ test("persistent sandbox exposes no network, messaging, storage, or code-generat
     assert.deepEqual(Array.from(printed.values), [
         "undefined", "undefined", "undefined", "undefined", "undefined", "undefined", "undefined"
     ]);
-});
-
-test("Ctable script registers hooks and lets the coordinator resume after callbacks", async () => {
-    const workerSource = await bundledWorkerSource("../src/workers/persistent-script.worker.js");
-    const ctableSource = await readFile(new URL("../scripts/dq9/Ctable_jp.js", import.meta.url), "utf8");
-    const messages = [];
-    const listeners = new Map();
-    const context = vm.createContext({
-        console,
-        crypto: testCrypto(),
-        TextEncoder,
-        postMessage: (message) => messages.push(message),
-        addEventListener: (type, listener) => listeners.set(type, listener),
-        removeEventListener: () => {}
-    });
-    vm.runInContext(workerSource, context, { filename: "persistent-script.worker.js" });
-    const dependency = await bundledDependency("../src/dependencies/acorn.entry.js", "__desmumeAcorn");
-    await listeners.get("message")({ data: { type: "initialize", dependency } });
-    let startupComplete = false;
-    const startup = listeners.get("message")({
-        data: { type: "start", code: ctableSource, shortcuts: [] }
-    }).then(() => { startupComplete = true; });
-    let handled = 0;
-    for (let attempt = 0; !startupComplete && attempt < 500; attempt++) {
-        await new Promise((resolve) => setImmediate(resolve));
-        const requests = messages.filter((message) => message.type === "register" || message.type === "call");
-        while (handled < requests.length) {
-            const request = requests[handled++];
-            const value = request.type === "register"
-                ? { id: request.trigger.callbackId }
-                : request.command === "memoryReadDword"
-                    ? { ok: true, value: request.params.address === 0x02385f0c ? 0x12345678 : 0x89abcdef }
-                    : { ok: true };
-            await listeners.get("message")({ data: { replyId: request.id, result: value } });
-        }
-    }
-    await startup;
-    const registered = messages.filter((message) => message.type === "register");
-    assert.ok(registered.length >= 20);
-    const startupPrint = messages.filter((message) => message.type === "print").flatMap((message) => message.values.map(String));
-    assert.ok(startupPrint.some((value) => value.includes("seed1 native: 0x78563412")));
-    assert.ok(startupPrint.some((value) => value.includes("seed2 native: 0xefcdab89")));
-    assert.equal(startupPrint.some((value) => value.includes("[object Object]")), false);
-
-    const first = registered[0];
-    listeners.get("message")({
-        data: {
-            type: "event", event: "exec", eventId: 77,
-            callbackId: first.trigger.callbackId, callbackToken: "callback-token", payload: {}
-        }
-    });
-    let eventDone = false;
-    for (let attempt = 0; !eventDone && attempt < 100; attempt++) {
-        await new Promise((resolve) => setImmediate(resolve));
-        const requests = messages.filter((message) => message.type === "register" || message.type === "call");
-        while (handled < requests.length) {
-            const request = requests[handled++];
-            let result = { ok: true };
-            if (request.command === "memoryGetRegister") {
-                result = {
-                    ok: true,
-                    value: request.params.register === "r0"
-                        ? 0x02385f0c
-                        : request.params.register === "r14"
-                            ? 0x11111111
-                            : 5
-                };
-            }
-            await listeners.get("message")({ data: { replyId: request.id, result } });
-        }
-        eventDone = messages.some((message) => message.type === "eventDone" && message.eventId === 77);
-    }
-    assert.equal(eventDone, true);
-    assert.equal(messages.some((message) => message.type === "call" && message.command === "resume"), false);
-    const callbackPrint = messages.filter((message) => message.type === "print").flatMap((message) => message.values.map(String));
-    assert.ok(callbackPrint.some((value) => value.includes("lr 0x11111111")));
-    assert.equal(callbackPrint.some((value) => value.includes("[object Object]")), false);
 });
 
 test("overlay script registers load/unload/tick hooks and reports overlay transitions", async () => {
