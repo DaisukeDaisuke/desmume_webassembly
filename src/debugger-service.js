@@ -460,8 +460,8 @@ export function createDebuggerService({
         }
         const cpu = String(params.cpu ?? state.selectedCpu);
         const pcBefore = getPc(cpu);
-        const timeoutMs = positiveInteger(params.timeoutMs ?? 60000, "timeoutMs", 600000);
-        const maxSteps = positiveInteger(params.maxSteps ?? 1000000, "maxSteps", 1000000);
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
         native.clearBreakStatus();
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
