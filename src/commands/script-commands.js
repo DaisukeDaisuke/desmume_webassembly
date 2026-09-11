@@ -283,27 +283,90 @@ export function createScriptCommands({
 
     async function listScriptPrint(params = {}) {
         const max = Math.max(1, Math.min(1000, Number(params.max ?? 10)));
-        const scripts = params.id == null
-            ? [...state.scripts.values()]
-            : [state.scripts.get(Number(params.id))].filter(Boolean);
-        return {
-            logs: scripts.flatMap((script) => script.output.slice(-max).map((text) => ({
+        const startLine = params.startLine == null ? null : Number(params.startLine);
+        if (startLine !== null && (!Number.isSafeInteger(startLine) || startLine < 1)) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "startLine must be a positive safe integer");
+        }
+        const hasId = params.id != null || params.scriptId != null;
+        const hasName = params.name != null;
+        if (hasId && hasName) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "listScriptPrint accepts either id/scriptId or name, not both");
+        }
+        const selectedId = params.id ?? params.scriptId;
+        const scripts = hasId
+            ? [state.scripts.get(positiveScriptId(selectedId, "listScriptPrint.id"))].filter(Boolean)
+            : hasName
+                ? [...state.scripts.values()].filter((script) => script.name === requiredScriptName(params.name, "listScriptPrint.name"))
+                : [...state.scripts.values()];
+        const consoles = scripts.map((script) => {
+            const outputStartLine = Number.isSafeInteger(script.outputStartLine)
+                ? script.outputStartLine
+                : 1;
+            const nextOutputLine = Number.isSafeInteger(script.nextOutputLine)
+                ? script.nextOutputLine
+                : outputStartLine + script.output.length;
+            return {
                 id: script.id,
                 name: script.name,
-                text
-            }))).slice(-max)
+                firstLine: outputStartLine,
+                lastLine: nextOutputLine - 1,
+                nextLine: nextOutputLine,
+                lineCount: script.output.length,
+                logs: script.output.map((text, index) => ({
+                    id: script.id,
+                    name: script.name,
+                    line: outputStartLine + index,
+                    text
+                }))
+            };
+        });
+        const matching = consoles.flatMap((console) => startLine === null
+            ? console.logs.slice(-max)
+            : console.logs.filter((entry) => entry.line >= startLine));
+        const logs = startLine === null ? matching.slice(-max) : matching.slice(0, max);
+        const selectedConsole = consoles.length === 1 ? consoles[0] : null;
+        return {
+            logs,
+            firstLine: logs[0]?.line ?? null,
+            lastLine: logs.at(-1)?.line ?? null,
+            ...(selectedConsole ? {
+                id: selectedConsole.id,
+                name: selectedConsole.name,
+                availableFirstLine: selectedConsole.firstLine,
+                availableLastLine: selectedConsole.lastLine,
+                nextLine: selectedConsole.nextLine,
+                lineCount: selectedConsole.lineCount
+            } : { consoles: consoles.map(({ logs: _logs, ...console }) => console) })
         };
     }
 
     async function clearScriptPrint(params = {}) {
-        const scripts = params.id == null
-            ? [...state.scripts.values()]
-            : [state.scripts.get(Number(params.id))].filter(Boolean);
+        const hasId = params.id != null || params.scriptId != null;
+        const hasName = params.name != null;
+        if (hasId && hasName) {
+            throw codedError(ErrorCode.INVALID_ARGUMENT, "clearScriptPrint accepts either id/scriptId or name, not both");
+        }
+        const selectedId = params.id ?? params.scriptId;
+        const scripts = hasId
+            ? [state.scripts.get(positiveScriptId(selectedId, "clearScriptPrint.id"))].filter(Boolean)
+            : hasName
+                ? [...state.scripts.values()].filter((script) => script.name === requiredScriptName(params.name, "clearScriptPrint.name"))
+                : [...state.scripts.values()];
         scripts.forEach((script) => {
             script.output = [];
+            script.outputStartLine = Number.isSafeInteger(script.nextOutputLine)
+                ? script.nextOutputLine
+                : 1;
         });
         renderScriptConsole();
-        return { ok: true, cleared: scripts.map((script) => script.id) };
+        return {
+            ok: true,
+            cleared: scripts.map((script) => script.id),
+            consoles: scripts.map((script) => ({
+                id: script.id,
+                nextLine: script.outputStartLine
+            }))
+        };
     }
 
     async function evaluate(params = {}) {

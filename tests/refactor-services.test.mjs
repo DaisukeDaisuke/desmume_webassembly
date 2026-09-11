@@ -1151,6 +1151,38 @@ test("callPScriptMcp accepts MCP-only lookup and defaults its caller timeout to 
     }]);
 });
 
+test("script console commands use stable line numbers and accept id or name selectors", async () => {
+    let renders = 0;
+    const script = {
+        id: 4,
+        name: "observer",
+        output: Array(400).fill("duplicate"),
+        outputStartLine: 3,
+        nextOutputLine: 403
+    };
+    const commands = createScriptCommands({
+        state: { scripts: new Map([[script.id, script]]), activeScriptId: script.id },
+        ui: {},
+        renderScriptConsole: () => { renders++; }
+    });
+
+    const byName = await commands.listScriptPrint({ name: "observer", startLine: 400, max: 2 });
+    assert.deepEqual(byName.logs.map(({ line, text }) => ({ line, text })), [
+        { line: 400, text: "duplicate" },
+        { line: 401, text: "duplicate" }
+    ]);
+    assert.equal(byName.availableFirstLine, 3);
+    assert.equal(byName.availableLastLine, 402);
+    const cleared = await commands.clearScriptPrint({ name: "observer" });
+    assert.deepEqual(cleared.cleared, [4]);
+    assert.deepEqual(cleared.consoles, [{ id: 4, nextLine: 403 }]);
+    assert.equal(renders, 1);
+    const empty = await commands.listScriptPrint({ id: 4, startLine: 403, max: 2 });
+    assert.deepEqual(empty.logs, []);
+    assert.equal(empty.availableFirstLine, 403);
+    assert.equal(empty.availableLastLine, 402);
+});
+
 test("clearBreakpoints removes logical owners before one native reconciliation", async () => {
     let nativeClears = 0;
     const registered = [];

@@ -278,3 +278,9 @@ Purpose: fix only the reported State transaction/callback races, State save comp
   analysis-baseline commands without a duplicated command allowlist. Per user
   instruction, verification is delegated to GitHub Actions rather than run
   locally for this change.
+
+## 2026-09-12 Persistent startup and console cursor addendum
+
+- Harness `start_analyze` / `restart_analyze` may validate and launch up to eight absolute UTF-8 `.js` persistent scripts after the baseline is saved. Starts are concurrent, wait for registration, and retry only failed items once without discarding successful scripts.
+- Persistent console lines now have monotonic per-script numbers that survive the 400-line rotation and same-id restart. `listScriptPrint` and `clearScriptPrint` accept numeric or name selectors; clear reports the next line number so harness unread cursors remain synchronized.
+- Harness console reads are unread-first by default and support explicit start, bounded partial reads, explicit mark-read, and post-read clear. `analysis_context` exposes only unread booleans/counts, never console text.
