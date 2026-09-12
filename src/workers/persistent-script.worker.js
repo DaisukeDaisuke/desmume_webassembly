@@ -310,7 +310,7 @@ const emu_onstateload = (callback, options) => register("stateLoad", 0, callback
 const emu_onstatesave = (callback, options) => register("stateSave", 0, callback, options);
 const emu = Object.fromEntries([
     "pause", "resume", "status", "step", "smartStep", "stepOver", "stepNextBranchOrReturn",
-    "trueNextBranch", "runUntilReturn", "runUntilNextCall", "stepFrames", "setInput",
+    "trueNextBranch", "runUntilReturn", "runUntilNextCall", "nextCallThisDepth", "stepFrames", "setInput",
     "runTouchHold", "setSpeed", "setRenderEnabled", "setAudio", "saveState", "loadState",
     "reloadRecentFile"
 ].map((command) => [command, (params = {}) => mcp.call(command, params)]));

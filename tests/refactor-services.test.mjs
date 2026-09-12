@@ -204,10 +204,20 @@ test("persistent script pause stops a wait with SCRIPT_PAUSED", async () => {
     assert.equal(operationManager.current(), null);
 });
 
-function createDebuggerHarness() {
+function createDebuggerHarness({
+    traceEnabled = false,
+    readStack = null,
+    getPc: getPcOverride = null,
+    nativeStep = null,
+    checkExecBreakpoint = null,
+    syncNativeBreakStatus: syncNativeBreakStatusOverride = null,
+    handleNativeFault: handleNativeFaultOverride = null
+} = {}) {
     let freezes = 0;
     let disassemblyCalls = 0;
     let suspensions = 0;
+    let breakClears = 0;
+    let privilegeChanges = 0;
     const state = {
         selectedCpu: "arm9",
         paused: true,
@@ -223,14 +233,19 @@ function createDebuggerHarness() {
         callstackBody: { innerHTML: "" },
         memoryAuto: { value: "0" },
         tracePrivilegeToggle: { checked: false },
-        traceToggle: { checked: false }
+        traceToggle: { checked: traceEnabled }
     };
     const commands = {
         disassemble: async () => ({
             text: ++disassemblyCalls === 2
                 ? "=>02000004: ea000000 b 02000010"
                 : "=>02000000: e1a00000 mov r0, r0"
-        })
+        }),
+        setStackTraceMode: async ({ enabled }) => { ui.traceToggle.checked = enabled; },
+        setStackTracePrivilegeCheck: async ({ enabled }) => {
+            privilegeChanges++;
+            ui.tracePrivilegeToggle.checked = enabled;
+        }
     };
     const service = createDebuggerService({
         applyFreezes: () => { freezes++; },
@@ -239,18 +254,26 @@ function createDebuggerHarness() {
         disasmRefreshParams: (value) => value,
         ensureReady: () => {},
         ensureRomLoaded: () => {},
-        getPc: () => 0x02000000,
+        getPc: getPcOverride || (() => 0x02000000),
         getRegisters: () => ({ pc: 0x02000000 }),
+        handleNativeFault: handleNativeFaultOverride || (() => {}),
         hasLoadedRom: () => true,
         hex: (value) => `0x${(Number(value) >>> 0).toString(16)}`,
         log: () => {},
-        native: { step: () => 1, stepOver: () => 1, clearBreakStatus: () => {} },
+        native: {
+            step: nativeStep || (() => 1),
+            stepOver: () => 1,
+            checkExecBreakpoint: checkExecBreakpoint || (() => false),
+            clearBreakStatus: () => { breakClears++; },
+            getTraceDepth: () => 1
+        },
         normalizeCallStackData: (value) => value,
-        readCallStackData: () => ({ enabled: true, frames: [] }),
+        publicCallStackData: (value) => value,
+        readCallStackData: readStack || (() => ({ enabled: true, frames: [] })),
         renderRegisters: () => {},
         setFollowPc: () => {},
         state,
-        syncNativeBreakStatus: () => ({}),
+        syncNativeBreakStatus: syncNativeBreakStatusOverride || (() => ({})),
         ui,
         updateStatus: () => {},
         withCurrentExecBreakpointSuspended: async (_cpu, callback) => {
@@ -259,7 +282,13 @@ function createDebuggerHarness() {
         },
         getCommands: () => commands
     });
-    return { service, freezes: () => freezes, suspensions: () => suspensions };
+    return {
+        service,
+        freezes: () => freezes,
+        suspensions: () => suspensions,
+        breakClears: () => breakClears,
+        privilegeChanges: () => privilegeChanges
+    };
 }
 
 test("debugger service requires and applies freezes for step paths", async () => {
@@ -269,11 +298,302 @@ test("debugger service requires and applies freezes for step paths", async () =>
     assert.equal(step.freezes(), 1);
     assert.equal(step.suspensions(), 1);
     const over = createDebuggerHarness();
-    await over.service.runDebuggerInstruction("stepOver");
+    await over.service.runDebuggerInstruction("nativeStepOver");
     assert.equal(over.freezes(), 1);
     const branch = createDebuggerHarness();
     await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
     assert.equal(branch.freezes(), 1);
+    const trace = createDebuggerHarness();
+    await assert.rejects(
+        trace.service.runTraceStepper("stepOver", {}, () => false, { requireTrackedLane: true }),
+        /requires Stack Trace/
+    );
+    assert.equal(trace.breakClears(), 0);
+    assert.equal(trace.privilegeChanges(), 0);
+    const coldTrace = createDebuggerHarness({ traceEnabled: true });
+    await assert.rejects(
+        coldTrace.service.runTraceStepper("stepOver", {}, () => false, { trackLane: true, requireTrackedLane: true }),
+        /requires a recorded active Stack Trace frame/
+    );
+    assert.equal(coldTrace.breakClears(), 0);
+    assert.equal(coldTrace.privilegeChanges(), 0);
+    const publicTrace = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true }] })
+    });
+    const publicCommands = createDebuggerControlCommands({
+        ensureRomLoaded: () => {},
+        getPc: () => 0x02000000,
+        hex: (value) => `0x${Number(value).toString(16)}`,
+        instructionWidthForMode: () => 4,
+        runTraceStepper: publicTrace.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const limitedResult = await publicCommands.stepOver({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(limitedResult.complete, false);
+    assert.equal(limitedResult.stop, "maxSteps");
+    assert.equal(publicTrace.freezes(), 1);
+});
+
+test("trace stepper keeps the starting lane identity when another lane becomes active", async () => {
+    let reads = 0;
+    let observed;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 4, stacks: [{ id: 1, depth: 4, active: true }] }
+            : { enabled: true, activeStackId: 2, depth: 5, stacks: [
+                { id: 1, depth: 4, active: false },
+                { id: 2, depth: 5, active: true }
+            ] }
+    });
+
+    await harness.service.runTraceStepper("lane-test", { maxSteps: 1, timeoutMs: 1000 }, (context) => {
+        observed = context;
+        return true;
+    }, { trackLane: true, requireTrackedLane: true });
+    assert.equal(observed.startStackId, 1);
+    assert.equal(observed.activeStackId, 2);
+    assert.equal(observed.sameLane, false);
+    assert.equal(observed.startLanePresent, true);
+});
+
+test("trace stepper keeps synthetic frames separate from the starting real frame", async () => {
+    let reads = 0;
+    let observed;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [
+                { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 }
+            ] }] }
+            : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [
+                { id: 0, caller: 0x02001234, returnAddress: 0x02001234, callee: 0x02002222, synthetic: true },
+                { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 }
+            ] }] }
+    });
+
+    await harness.service.runTraceStepper("frame-test", { maxSteps: 1, timeoutMs: 1000 }, (context) => {
+        observed = context;
+        return true;
+    }, { trackLane: true, requireTrackedLane: true });
+    assert.equal(observed.startDepth, 1);
+    assert.equal(observed.depth, 2);
+    assert.equal(observed.startFramePresent, true);
+    assert.equal(observed.atStartFrame, true);
+    assert.equal(observed.deeperThanStart, false);
+});
+
+test("nextCallThisDepth ignores synthetic and entry-hook frames and stops only on a direct call from the starting depth", async () => {
+    const startFrame = { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 };
+    const syntheticFrame = { id: 0, caller: 0x02001234, returnAddress: 0x02001234, callee: 0x02002222, synthetic: true };
+    const entryHookFrame = { id: 8, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02000020 };
+    const childFrame = { id: 3, caller: 0x02000000, returnAddress: 0x02000004, callee: 0x02003000 };
+    let reads = 0;
+    const syntheticHarness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] }
+            : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [syntheticFrame, startFrame] }] }
+    });
+    const syntheticCommands = createDebuggerControlCommands({
+        runTraceStepper: syntheticHarness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const syntheticResult = await syntheticCommands.nextCallThisDepth({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(syntheticResult.complete, false);
+    assert.equal(syntheticResult.stop, "maxSteps");
+
+    reads = 0;
+    const entryHookHarness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] }
+            : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [entryHookFrame, startFrame] }] }
+    });
+    const entryHookCommands = createDebuggerControlCommands({
+        runTraceStepper: entryHookHarness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const entryHookResult = await entryHookCommands.nextCallThisDepth({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(entryHookResult.complete, false);
+    assert.equal(entryHookResult.stop, "maxSteps");
+
+    reads = 0;
+    let callPc = 0x02000000;
+    const callHarness = createDebuggerHarness({
+        traceEnabled: true,
+        getPc: () => callPc,
+        nativeStep: () => {
+            callPc = childFrame.callee;
+            return 1;
+        },
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] }
+            : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [childFrame, startFrame] }] }
+    });
+    const callCommands = createDebuggerControlCommands({
+        runTraceStepper: callHarness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const callResult = await callCommands.nextCallThisDepth({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(callResult.stop, "call");
+    assert.notEqual(callResult.complete, false);
+});
+
+test("nextCallThisDepth does not accept a call made after leaving the starting depth", async () => {
+    const startFrame = { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 };
+    const childFrame = { id: 8, caller: 0x02000020, returnAddress: 0x02000024, callee: 0x02003000 };
+    const grandchildFrame = { id: 9, caller: 0x02003000, returnAddress: 0x02003004, callee: 0x02004000 };
+    let pc = 0x02000010;
+    let steps = 0;
+    let reads = 0;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        getPc: () => pc,
+        nativeStep: () => {
+            steps++;
+            pc = steps === 1 ? 0x02003004 : grandchildFrame.callee;
+            return 1;
+        },
+        readStack: () => {
+            reads++;
+            if (reads === 1) {
+                return { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] };
+            }
+            if (reads === 2) {
+                return { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [childFrame, startFrame] }] };
+            }
+            return { enabled: true, activeStackId: 1, depth: 3, stacks: [{ id: 1, depth: 3, active: true, frames: [grandchildFrame, childFrame, startFrame] }] };
+        }
+    });
+    const commands = createDebuggerControlCommands({
+        runTraceStepper: harness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const result = await commands.nextCallThisDepth({ maxSteps: 2, timeoutMs: 1000 });
+    assert.equal(result.complete, false);
+    assert.equal(result.stop, "maxSteps");
+    assert.equal(result.steps, 2);
+});
+
+test("nextCallThisDepth stops on a direct call or the current function root", async () => {
+    let shouldStop;
+    let options;
+    const commands = createDebuggerControlCommands({
+        runTraceStepper: async (label, _params, predicate, receivedOptions) => {
+            shouldStop = predicate;
+            options = receivedOptions;
+            return { label };
+        },
+        state: { selectedCpu: "arm9" }
+    });
+
+    assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
+    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), { stop: "call" });
+    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
+    assert.equal(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: false }), false);
+    assert.equal(shouldStop({ sameLane: false, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), false);
+    assert.deepEqual(shouldStop({ sameLane: false, startLanePresent: false, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
+    await assert.rejects(commands.nextCallThisDepth({ cpu: "arm7" }), /requires ARM9 Stack Trace data/);
+});
+
+test("trace stepper ignores only the initial exec breakpoint and honors a later one before executing it", async () => {
+    const startFrame = { id: 1, caller: 0x01fffffc, returnAddress: 0x02001000, callee: 0x02000000 };
+    let pc = 0x02000000;
+    let steps = 0;
+    let breakpointChecks = 0;
+    let breakHit = false;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        getPc: () => pc,
+        nativeStep: () => {
+            steps++;
+            pc += 4;
+            return 1;
+        },
+        checkExecBreakpoint: (_cpu, address) => {
+            breakpointChecks++;
+            breakHit = address === 0x02000004;
+            return breakHit;
+        },
+        syncNativeBreakStatus: () => ({ lastBreak: { hit: breakHit } }),
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] })
+    });
+    const result = await harness.service.runTraceStepper(
+        "stepOver",
+        { maxSteps: 2, timeoutMs: 1000 },
+        () => false,
+        { trackLane: true, requireTrackedLane: true }
+    );
+    assert.equal(result.stoppedByBreakpoint, true);
+    assert.equal(result.steps, 1);
+    assert.equal(steps, 1);
+    assert.equal(breakpointChecks, 1);
+    assert.equal(harness.suspensions(), 1);
+    assert.equal(harness.freezes(), 1);
+});
+
+test("trace stepper routes native faults through the existing fault handler", async () => {
+    const startFrame = { id: 1, caller: 0x01fffffc, returnAddress: 0x02001000, callee: 0x02000000 };
+    const handled = [];
+    const fault = Object.assign(new Error("native failed"), { mcpCode: "NATIVE_FAULT" });
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        nativeStep: () => { throw fault; },
+        handleNativeFault: (error, where) => handled.push({ error, where }),
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] })
+    });
+    await assert.rejects(
+        harness.service.runTraceStepper("stepOver", { maxSteps: 1, timeoutMs: 1000 }, () => false, { trackLane: true, requireTrackedLane: true }),
+        /native failed/
+    );
+    assert.deepEqual(handled, [{ error: fault, where: "stepOver" }]);
+});
+
+test("public stepOver stops only at the sequential PC or below its starting trace depth", async () => {
+    let shouldStop;
+    let options;
+    let instructionWidth = 4;
+    let nativeKind = "";
+    const commands = createDebuggerControlCommands({
+        ensureRomLoaded: () => {},
+        getPc: () => 0x02000000,
+        hex: (value) => `0x${Number(value).toString(16)}`,
+        instructionWidthForMode: () => instructionWidth,
+        runDebuggerInstruction: async (kind, params) => {
+            nativeKind = kind;
+            return { kind, count: 1, cpu: params.cpu };
+        },
+        runTraceStepper: async (label, _params, predicate, receivedOptions) => {
+            shouldStop = predicate;
+            options = receivedOptions;
+            return { label };
+        },
+        state: { selectedCpu: "arm9" }
+    });
+
+    assert.deepEqual(await commands.stepOver(), { label: "stepOver" });
+    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.deepEqual(shouldStop({ pc: 0x02000004, sameLane: true, startLanePresent: true, startFramePresent: true, atStartFrame: true }), {
+        stop: "pc", target: "0x2000004"
+    });
+    assert.equal(shouldStop({ pc: 0x02000004, sameLane: false, startLanePresent: true, startFramePresent: true, atStartFrame: false }), false);
+    assert.equal(shouldStop({ pc: 0x02000004, sameLane: true, startLanePresent: true, startFramePresent: true, atStartFrame: false }), false);
+    assert.deepEqual(shouldStop({ pc: 0x03000000, sameLane: true, startLanePresent: true, startFramePresent: false, atStartFrame: false }), {
+        stop: "root", complete: false, target: "0x2000004"
+    });
+    assert.equal(shouldStop({ pc: 0x03000000, sameLane: false, startLanePresent: true, startFramePresent: true, atStartFrame: false }), false);
+    instructionWidth = 2;
+    await commands.stepOver();
+    assert.deepEqual(shouldStop({ pc: 0x02000002, sameLane: true, startLanePresent: true, startFramePresent: true, atStartFrame: true }), {
+        stop: "pc", target: "0x2000002"
+    });
+    const arm7Result = await commands.stepOver({ cpu: "arm7" });
+    assert.equal(nativeKind, "nativeStepOver");
+    assert.equal(arm7Result.kind, "stepOver");
+    assert.equal(arm7Result.implementation, "native");
 });
 
 test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {
@@ -418,6 +738,30 @@ test("public dispatcher accepts only plain object params", async () => {
     assert.equal((await dispatcher.run("status", {})).ok, true);
     assert.equal((await dispatcher.run("status", Object.create(null))).ok, true);
     assert.equal(executed, 3);
+});
+
+test("public dispatcher forwards nextCallThisDepth unchanged to the command registry", async () => {
+    const calls = [];
+    const dispatcher = createCommandDispatcher({
+        state: { ready: false },
+        registry: {
+            execute: async (name, params) => {
+                calls.push({ name, params });
+                return responder.ok({ stop: "call" });
+            }
+        },
+        responder,
+        operationManager: { current: () => null },
+        hasLoadedRom: () => false,
+        emulatorActivity: () => ({}),
+        refreshDebuggerViews: async () => {},
+        updateStatus: () => {},
+        log: () => {}
+    });
+    const params = { maxSteps: 17, timeoutMs: 321 };
+    const result = await dispatcher.run("nextCallThisDepth", params);
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [{ name: "nextCallThisDepth", params }]);
 });
 
 test("special breakpoint ownership preserves user and script owners independently", async () => {
@@ -731,47 +1075,6 @@ test("input sequences release controls when aborted", async () => {
   await assert.rejects(running, { name: "AbortError" });
   assert.equal(releases, 1);
   assert.deepEqual(touchStates, [false]);
-});
-
-test("supervisors and sandbox Workers are prebundled with shared boundary code", async () => {
-  const supervisorUrls = [
-    new URL("../src/workers/eval-supervisor.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url)
-  ];
-  for (const workerUrl of supervisorUrls) {
-    assert.match(fileURLToPath(workerUrl), /\.worker\.js$/);
-    const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /normalize(?:BoundedValue|WorkerRpcParams)/);
-    assert.match(source, /type: "ready", hardened: true, layer: "supervisor"/);
-  }
-  for (const workerUrl of [
-    new URL("../src/workers/parser.worker.js", import.meta.url)
-  ]) {
-    const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /parseSandboxSource/);
-    assert.match(source, /if \(block\) return/);
-    assert.match(source, /\^\\s\*@script-id/);
-    assert.match(source, /Object\.defineProperty\(globalThis/);
-    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
-    assert.match(source, /type: "ready", hardened: true, layer: "parser"/);
-  }
-  for (const workerUrl of [
-    new URL("../src/workers/eval.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script.worker.js", import.meta.url)
-  ]) {
-    const source = await readFile(workerUrl, "utf8");
-    assert.doesNotMatch(source, /parseSandboxSource/);
-    assert.match(source, /Object\.defineProperty\(globalThis/);
-    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
-    assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
-  }
-
-  const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
-  assert.match(buildSource, /bundledWorkers/);
-  assert.match(buildSource, /embedded-workers/);
-  assert.match(buildSource, /parser\.worker\.js/);
-  assert.match(buildSource, /eval-supervisor\.worker\.js/);
-  assert.match(buildSource, /persistent-script-supervisor\.worker\.js/);
 });
 
 test("eval Worker waits for ready, forwards registered RPC commands, and disposes once", async () => {

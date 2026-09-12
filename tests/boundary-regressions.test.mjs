@@ -1574,6 +1574,13 @@ test("dispatcher owns one debugger refresh per command cycle", async () => {
     assert.doesNotMatch(uiSource, /runCommand\("setRegister"[^\n]*\.then\(\(\) => refreshDebuggerViews/);
 });
 
+test("trace UI commands log responder failures instead of relying on promise rejection", async () => {
+    const uiSource = await readFile(new URL("../src/ui/ui-controller.js", import.meta.url), "utf8");
+    assert.match(uiSource, /result\?\.ok === false/);
+    assert.match(uiSource, /log\(result\.error\?\.message \|\| `\$\{name\} failed`\)/);
+    assert.match(uiSource, /else if \(result\?\.complete === false\)/);
+});
+
 test("NaN and undefined command names return UNKNOWN_COMMAND without corrupting state", async () => {
     const state = { ready: false, paused: true, running: false, marker: "preserve" };
     const registry = createCommandRegistry({ responder });
@@ -1711,8 +1718,8 @@ function createExecStepHarness(instruction = "bl 02000010") {
     return { service, state, pc: () => pc, disables: () => disables, enables: () => enables };
 }
 
-test("stepOver and smartStep leave a current exec breakpoint without re-hitting it", async () => {
-    for (const kind of ["stepOver", "smartStep"]) {
+test("native stepOver and smartStep leave a current exec breakpoint without re-hitting it", async () => {
+    for (const kind of ["nativeStepOver", "smartStep"]) {
         const harness = createExecStepHarness();
         const result = await harness.service.runDebuggerInstruction(kind);
         assert.equal(result.count, 1);
@@ -1977,6 +1984,17 @@ async function runPersistentScalarSandbox(
         })
     };
 }
+
+test("persistent emu.nextCallThisDepth sends the exact RPC command and params", async () => {
+    const harness = await runPersistentScalarSandbox(
+        "await emu.nextCallThisDepth({ maxSteps: 17, timeoutMs: 321 });",
+        [{ stop: "call" }]
+    );
+    const calls = harness.messages.filter((message) => message.type === "call");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "nextCallThisDepth");
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0].params)), { maxSteps: 17, timeoutMs: 321 });
+});
 
 async function bundledScriptServiceModule() {
     if (!scriptServiceModulePromise) {
