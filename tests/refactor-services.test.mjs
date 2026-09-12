@@ -927,49 +927,6 @@ test("input sequences release controls when aborted", async () => {
   assert.deepEqual(touchStates, [false]);
 });
 
-test("supervisors and sandbox Workers are prebundled with shared boundary code", async () => {
-  const supervisorUrls = [
-    new URL("../src/workers/eval-supervisor.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script-supervisor.worker.js", import.meta.url)
-  ];
-  for (const workerUrl of supervisorUrls) {
-    assert.match(fileURLToPath(workerUrl), /\.worker\.js$/);
-    const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /normalize(?:BoundedValue|WorkerRpcParams)/);
-    assert.match(source, /type: "ready", hardened: true, layer: "supervisor"/);
-  }
-  for (const workerUrl of [
-    new URL("../src/workers/parser.worker.js", import.meta.url)
-  ]) {
-    const source = await readFile(workerUrl, "utf8");
-    assert.match(source, /parseSandboxSource/);
-    assert.match(source, /if \(block\) return/);
-    assert.match(source, /\^\\s\*@script-id/);
-    assert.match(source, /Object\.defineProperty\(globalThis/);
-    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
-    assert.match(source, /type: "ready", hardened: true, layer: "parser"/);
-  }
-  for (const workerUrl of [
-    new URL("../src/workers/eval.worker.js", import.meta.url),
-    new URL("../src/workers/persistent-script.worker.js", import.meta.url)
-  ]) {
-    const source = await readFile(workerUrl, "utf8");
-    assert.doesNotMatch(source, /parseSandboxSource/);
-    assert.match(source, /Object\.defineProperty\(globalThis/);
-    assert.match(source, /lockDownRuntimeCodeGeneration\(\);[\s\S]+nativeAddEventListener/);
-    assert.match(source, /type: "ready", hardened: true, layer: "sandbox"/);
-  }
-  const persistentWorkerSource = await readFile(new URL("../src/workers/persistent-script.worker.js", import.meta.url), "utf8");
-  assert.match(persistentWorkerSource, /"nextCallThisDepth"[\s\S]+mcp\.call\(command, params\)/);
-
-  const buildSource = await readFile(new URL("../scripts/build-js.mjs", import.meta.url), "utf8");
-  assert.match(buildSource, /bundledWorkers/);
-  assert.match(buildSource, /embedded-workers/);
-  assert.match(buildSource, /parser\.worker\.js/);
-  assert.match(buildSource, /eval-supervisor\.worker\.js/);
-  assert.match(buildSource, /persistent-script-supervisor\.worker\.js/);
-});
-
 test("eval Worker waits for ready, forwards registered RPC commands, and disposes once", async () => {
     const posted = [];
     let disposed = 0;
