@@ -69,7 +69,7 @@ export function createApiDescriptions() {
         clearBreakStatus: "最後にヒットしたブレークポイント表示をクリアします。",
         step: "CPUステップを指定回数実行します。",
         smartStep: "現在命令を見て、通常命令はStep、bx/bl/blxはStep Overで進めます。b系やpc書き換え系はそのまま1命令進めます。",
-        stepOver: "ARM9は利用可能ならactive Stack Trace laneをJS stepし、同じlane・開始depthで逐次PCへ戻るまで進めます。Stack TraceがOFFなら有効化してdepthから開始し、すでにONなのにactive laneが無い場合だけnative step overへフォールバックします。ARM7はnative step overを使います。",
+        stepOver: "ARM9は利用可能ならactive Stack Trace laneをJS stepし、同じlane・開始depthで逐次PCへ戻るまで進めます。Stack TraceがOFFなら有効化してdepthから開始し、すでにONなのにactive laneが無い場合はbounded native step overへフォールバックします。ARM7はnative step overを使います。",
         stepNextBranchOrReturn: "分岐またはreturnらしいPC操作命令の直前まで進めます。途中の関数呼び出しはstep overします。",
         trueNextBranch: "条件不成立の分岐を通過し、実際にPCを変更した次の分岐を実行した直後で停止します。",
         continue: "デバッグ停止から再開します。",

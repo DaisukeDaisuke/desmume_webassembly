@@ -246,16 +246,22 @@ export function createDebuggerControlCommands(context) {
         async stepOver(params = {}) {
             ensureRomLoaded("step over requires a loaded ROM");
             const cpu = String(params.cpu ?? state.selectedCpu);
-            const nativeFallback = async () => {
+            const legacyNativeFallback = async () => {
                 const result = await runDebuggerInstruction("nativeStepOver", { ...params, cpu });
                 result.kind = "stepOver";
                 result.implementation = "native";
                 return result;
             };
             if (cpu === "arm7") {
-                return nativeFallback();
+                return legacyNativeFallback();
             }
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
+            const boundedNativeFallback = async () => {
+                const result = await runDebuggerInstruction("nativeStepOverBounded", { ...params, cpu });
+                result.kind = "stepOver";
+                result.implementation = "native";
+                return result;
+            };
             return runTraceStepper("stepOver", params, ({ pc, sameLane, startLanePresent, startFramePresent, atStartFrame }) => {
                 if (!startLanePresent || (sameLane && !startFramePresent)) {
                     return { stop: "root", complete: false, target: hex(target) };
@@ -264,7 +270,7 @@ export function createDebuggerControlCommands(context) {
                     return { stop: "pc", target: hex(target) };
                 }
                 return false;
-            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: nativeFallback });
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: boundedNativeFallback });
         },
 
         async stepNextBranchOrReturn(params = {}) {
@@ -393,6 +399,7 @@ export function createDebuggerControlCommands(context) {
                 const result = await debuggerCommands.runUntilNextCall({ ...params, cpu });
                 result.kind = "nextCallThisDepth";
                 result.implementation = "depth";
+                if (result.complete !== false && !result.stoppedByBreakpoint && !result.stop) result.stop = "call";
                 return result;
             };
             return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, directCallFromStartDepth }) => {

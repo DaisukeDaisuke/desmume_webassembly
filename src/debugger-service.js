@@ -223,6 +223,83 @@ export function createDebuggerService({
             return operation();
         });
     }
+
+    async function runBoundedNativeStepOver(params, cpu, pcBefore) {
+        const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
+        const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
+        const target = (pcBefore + instructionWidthForMode("auto", cpu)) >>> 0;
+        const deadline = performance.now() + timeoutMs;
+        let steps = 0;
+        native.clearBreakStatus();
+        while (performance.now() < deadline && steps < maxSteps) {
+            try {
+                if (steps > 0 && native.checkExecBreakpoint(cpu, getPc(cpu))) {
+                    const nativeStatus = syncNativeBreakStatus();
+                    updateStatus();
+                    return attachDebuggerContext({
+                        kind: "nativeStepOverBounded",
+                        count: steps,
+                        ret: steps,
+                        steps,
+                        complete: false,
+                        stoppedByBreakpoint: true,
+                        paused: state.paused
+                    }, cpu, pcBefore, nativeStatus);
+                }
+                const executed = steps === 0
+                    ? await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1))
+                    : native.step(cpu, 1);
+                steps += Number(executed) || 0;
+            } catch (error) {
+                if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                    || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                    handleNativeFault(error, "stepOver");
+                }
+                throw error;
+            }
+            applyFreezes();
+            const nativeStatus = syncNativeBreakStatus();
+            if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
+                updateStatus();
+                return attachDebuggerContext({
+                    kind: "nativeStepOverBounded",
+                    count: steps,
+                    ret: steps,
+                    steps,
+                    complete: false,
+                    stoppedByBreakpoint: true,
+                    paused: state.paused
+                }, cpu, pcBefore, nativeStatus);
+            }
+            if ((getPc(cpu) >>> 0) === target) {
+                updateStatus();
+                return attachDebuggerContext({
+                    kind: "nativeStepOverBounded",
+                    count: steps,
+                    ret: steps,
+                    steps,
+                    stop: "pc",
+                    target: hex(target),
+                    paused: state.paused
+                }, cpu, pcBefore, nativeStatus);
+            }
+        }
+        const hitStepLimit = steps >= maxSteps;
+        const nativeStatus = syncNativeBreakStatus();
+        updateStatus();
+        return attachDebuggerContext({
+            kind: "nativeStepOverBounded",
+            count: steps,
+            ret: steps,
+            steps,
+            complete: false,
+            stop: hitStepLimit ? "maxSteps" : "timeout",
+            limitReached: true,
+            timeoutMs,
+            maxSteps,
+            paused: state.paused
+        }, cpu, pcBefore, nativeStatus);
+    }
     
     async function runDebuggerInstruction(kind, params = {}) {
         ensureRomLoaded("debugger step requires a loaded ROM");
@@ -233,6 +310,9 @@ export function createDebuggerService({
         const pcBefore = getPc(cpu);
         let result = { kind, count: 0 };
         state.breakRefreshKey = "";
+        if (kind === "nativeStepOverBounded") {
+            return runBoundedNativeStepOver(params, cpu, pcBefore);
+        }
         if (kind === "smartStep") {
             const info = await getCurrentInstructionInfo(cpu);
             const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
