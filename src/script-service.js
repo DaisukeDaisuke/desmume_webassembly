@@ -108,10 +108,18 @@ export function createScriptService({
 
     function scriptConsoleLine(script, values) {
         const line = values.map((value) => typeof value === "string" ? value : rawOutputText(value)).join(" ");
-        script.output = [...script.output, `[${new Date().toLocaleTimeString()}] ${line}`];
+        if (!Number.isSafeInteger(script.outputStartLine) || script.outputStartLine < 1) {
+            script.outputStartLine = 1;
+        }
+        if (!Number.isSafeInteger(script.nextOutputLine) || script.nextOutputLine < script.outputStartLine) {
+            script.nextOutputLine = script.outputStartLine + script.output.length;
+        }
+        script.output.push(`[${new Date().toLocaleTimeString()}] ${line}`);
+        script.nextOutputLine += 1;
         let outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
         while (outputBytes > ResourceLimits.scriptOutputBytes && script.output.length > 0) {
             script.output.shift();
+            script.outputStartLine += 1;
             outputBytes = new TextEncoder().encode(script.output.join("\n")).byteLength;
         }
         pruneStoppedScripts();
@@ -792,6 +800,8 @@ export function createScriptService({
             topLevelRunning: false,
             registrationComplete: false,
             output: [],
+            outputStartLine: existing?.nextOutputLine ?? 1,
+            nextOutputLine: existing?.nextOutputLine ?? 1,
             triggers: [],
             ownedBreakpointIds: new Set(),
             eventQueue: [],
@@ -838,9 +848,20 @@ export function createScriptService({
             return true;
         };
         const handleWorkerFailure = async (result, message) => {
-            settleScriptRegistrationWaiters(script, result);
+            const identifiedResult = result?.ok === false ? {
+                ...result,
+                error: {
+                    ...result.error,
+                    details: {
+                        ...(result.error?.details || {}),
+                        scriptId: script.id,
+                        scriptName: script.name
+                    }
+                }
+            } : result;
+            settleScriptRegistrationWaiters(script, identifiedResult);
             await failPersistentScript(script, message);
-            settleResult(result);
+            settleResult(identifiedResult);
         };
         const startupTimer = setTimeout(() => {
             const result = responder.fail(
@@ -1110,6 +1131,9 @@ export function createScriptService({
             mcpNames: mcpNames.slice(0, 16),
             mcpNamesTruncated: mcpNames.length > 16,
             mcpPublished: script.pscriptMcpPublished,
+            consoleFirstLine: script.outputStartLine,
+            consoleLastLine: script.nextOutputLine - 1,
+            consoleLineCount: script.output.length,
             duplicate
         };
     }

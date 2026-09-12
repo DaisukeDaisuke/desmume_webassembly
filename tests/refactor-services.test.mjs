@@ -1515,6 +1515,47 @@ test("callPScriptMcp accepts MCP-only lookup and defaults its caller timeout to 
     }]);
 });
 
+test("script console commands use stable line numbers and accept id or name selectors", async () => {
+    let renders = 0;
+    const script = {
+        id: 4,
+        name: "observer",
+        output: Array(4).fill("duplicate"),
+        outputStartLine: 399,
+        nextOutputLine: 403
+    };
+    const commands = createScriptCommands({
+        state: { scripts: new Map([[script.id, script]]), activeScriptId: script.id },
+        ui: {},
+        renderScriptConsole: () => { renders++; }
+    });
+
+    const byName = await commands.listScriptPrint({ name: "observer", startLine: 400, max: 2 });
+    assert.deepEqual(byName.logs.map(({ line, text }) => ({ line, text })), [
+        { line: 400, text: "duplicate" },
+        { line: 401, text: "duplicate" }
+    ]);
+    assert.equal(byName.availableFirstLine, 399);
+    assert.equal(byName.availableLastLine, 402);
+    await assert.rejects(
+        () => commands.listScriptPrint({ id: 4, scriptId: 5 }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /must match/.test(error.message)
+    );
+    await assert.rejects(
+        () => commands.clearScriptPrint({ id: 4, scriptId: 5 }),
+        (error) => error.mcpCode === "INVALID_ARGUMENT" && /must match/.test(error.message)
+    );
+    assert.equal(script.output.length, 4);
+    const cleared = await commands.clearScriptPrint({ name: "observer" });
+    assert.deepEqual(cleared.cleared, [4]);
+    assert.deepEqual(cleared.consoles, [{ id: 4, nextLine: 403 }]);
+    assert.equal(renders, 1);
+    const empty = await commands.listScriptPrint({ id: 4, startLine: 403, max: 2 });
+    assert.deepEqual(empty.logs, []);
+    assert.equal(empty.availableFirstLine, 403);
+    assert.equal(empty.availableLastLine, 402);
+});
+
 test("clearBreakpoints removes logical owners before one native reconciliation", async () => {
     let nativeClears = 0;
     const registered = [];
