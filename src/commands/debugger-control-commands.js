@@ -256,12 +256,6 @@ export function createDebuggerControlCommands(context) {
                 return legacyNativeFallback();
             }
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
-            const boundedNativeFallback = async () => {
-                const result = await runDebuggerInstruction("nativeStepOverBounded", { ...params, cpu });
-                result.kind = "stepOver";
-                result.implementation = "native";
-                return result;
-            };
             return runTraceStepper("stepOver", params, ({ pc, sameLane, startLanePresent, startFramePresent, atStartFrame }) => {
                 if (!startLanePresent || (sameLane && !startFramePresent)) {
                     return { stop: "root", complete: false, target: hex(target) };
@@ -270,7 +264,7 @@ export function createDebuggerControlCommands(context) {
                     return { stop: "pc", target: hex(target) };
                 }
                 return false;
-            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: boundedNativeFallback });
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: legacyNativeFallback });
         },
 
         async stepNextBranchOrReturn(params = {}) {

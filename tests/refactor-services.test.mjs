@@ -612,9 +612,7 @@ test("public stepOver stops only at the sequential PC or below its starting trac
         instructionWidthForMode: () => instructionWidth,
         runDebuggerInstruction: async (kind, params) => {
             nativeKind = kind;
-            return kind === "nativeStepOverBounded"
-                ? { kind, complete: false, stop: "maxSteps", limitReached: true, count: 1, cpu: params.cpu }
-                : { kind, count: 1, cpu: params.cpu };
+            return { kind, count: 1, cpu: params.cpu };
         },
         runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
@@ -647,88 +645,15 @@ test("public stepOver stops only at the sequential PC or below its starting trac
     });
     useMissingFallback = true;
     const missingLaneResult = await commands.stepOver();
-    assert.equal(nativeKind, "nativeStepOverBounded");
+    assert.equal(nativeKind, "nativeStepOver");
     assert.equal(missingLaneResult.kind, "stepOver");
     assert.equal(missingLaneResult.implementation, "native");
-    assert.equal(missingLaneResult.complete, false);
-    assert.equal(missingLaneResult.stop, "maxSteps");
-    assert.equal(missingLaneResult.limitReached, true);
+    assert.equal(missingLaneResult.count, 1);
     useMissingFallback = false;
     const arm7Result = await commands.stepOver({ cpu: "arm7" });
     assert.equal(nativeKind, "nativeStepOver");
     assert.equal(arm7Result.kind, "stepOver");
     assert.equal(arm7Result.implementation, "native");
-});
-
-test("ARM9 stepOver missing-lane fallback preserves maxSteps instead of entering legacy native stepOver", async () => {
-    let pc = 0x02000000;
-    let steps = 0;
-    const harness = createDebuggerHarness({
-        traceEnabled: true,
-        getPc: () => pc,
-        nativeStep: () => {
-            steps++;
-            pc = steps === 1 ? 0x02001000 : pc + 4;
-            return 1;
-        },
-        readStack: () => ({ enabled: true, frames: [], stacks: [] })
-    });
-    const commands = createDebuggerControlCommands({
-        ensureRomLoaded: () => {},
-        getPc: () => pc,
-        hex: (value) => `0x${Number(value).toString(16)}`,
-        instructionWidthForMode: () => 4,
-        runDebuggerInstruction: harness.service.runDebuggerInstruction,
-        runTraceStepper: harness.service.runTraceStepper,
-        state: { selectedCpu: "arm9" }
-    });
-
-    const result = await commands.stepOver({ maxSteps: 2, timeoutMs: 1000 });
-    assert.equal(result.kind, "stepOver");
-    assert.equal(result.implementation, "native");
-    assert.equal(result.complete, false);
-    assert.equal(result.stop, "maxSteps");
-    assert.equal(result.limitReached, true);
-    assert.equal(result.steps, 2);
-    assert.equal(steps, 2);
-});
-
-test("ARM9 stepOver missing-lane fallback reports a later exec breakpoint as incomplete", async () => {
-    let pc = 0x02000000;
-    let steps = 0;
-    let breakHit = false;
-    const harness = createDebuggerHarness({
-        traceEnabled: true,
-        getPc: () => pc,
-        nativeStep: () => {
-            steps++;
-            pc = 0x02001000;
-            return 1;
-        },
-        checkExecBreakpoint: (_cpu, address) => {
-            breakHit = address === 0x02001000;
-            return breakHit;
-        },
-        syncNativeBreakStatus: () => ({ lastBreak: { hit: breakHit } }),
-        readStack: () => ({ enabled: true, frames: [], stacks: [] })
-    });
-    const commands = createDebuggerControlCommands({
-        ensureRomLoaded: () => {},
-        getPc: () => pc,
-        hex: (value) => `0x${Number(value).toString(16)}`,
-        instructionWidthForMode: () => 4,
-        runDebuggerInstruction: harness.service.runDebuggerInstruction,
-        runTraceStepper: harness.service.runTraceStepper,
-        state: { selectedCpu: "arm9" }
-    });
-
-    const result = await commands.stepOver({ maxSteps: 10, timeoutMs: 1000 });
-    assert.equal(result.kind, "stepOver");
-    assert.equal(result.implementation, "native");
-    assert.equal(result.complete, false);
-    assert.equal(result.stoppedByBreakpoint, true);
-    assert.equal(result.steps, 1);
-    assert.equal(steps, 1);
 });
 
 test("re-enabling a suspended synchronized trace does not resume native tracing", async () => {
