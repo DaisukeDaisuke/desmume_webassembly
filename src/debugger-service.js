@@ -462,28 +462,53 @@ export function createDebuggerService({
         const pcBefore = getPc(cpu);
         const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
         const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
-        native.clearBreakStatus();
         if (options.requireTrackedLane && !ui.traceToggle.checked) {
             const error = new Error(`${label} requires Stack Trace to be enabled with a recorded active frame`);
             error.mcpCode = ErrorCode.STATE_INVALID;
             throw error;
         }
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
-        if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
-            await commands.setStackTracePrivilegeCheck({ enabled: true });
-        }
-        const startCallStack = readCallStackData();
-        const startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
+        const stackFramesComplete = (stack) => {
+            const frames = Array.isArray(stack?.frames) ? stack.frames : [];
+            return frames.length >= Number(stack?.depth ?? frames.length);
+        };
+        const realFrameMarker = (frame) => frame && !frame.synthetic ? {
+            id: Number(frame.id),
+            caller: Number(frame.caller) >>> 0,
+            callee: Number(frame.callee) >>> 0,
+            returnAddress: Number(frame.returnAddress) >>> 0
+        } : null;
+        const frameMatchesMarker = (frame, marker) => !!frame && !frame.synthetic && !!marker
+            && Number(frame.id) === marker.id
+            && (Number(frame.caller) >>> 0) === marker.caller
+            && (Number(frame.callee) >>> 0) === marker.callee
+            && (Number(frame.returnAddress) >>> 0) === marker.returnAddress;
+        const newestRealFrame = (stack) => (Array.isArray(stack?.frames) ? stack.frames : [])
+            .find((frame) => !frame.synthetic) || null;
+        const containsFrameMarker = (stack, marker) => !marker
+            || (Array.isArray(stack?.frames) ? stack.frames : []).some((frame) => frameMatchesMarker(frame, marker));
+        let startCallStack = readCallStackData();
+        let startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
         const startStackId = Number(startCallStack?.activeStackId ?? startStacks.find((stack) => stack.active)?.id);
-        const startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        let startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        if (options.trackLane && startStack && !newestRealFrame(startStack) && !stackFramesComplete(startStack)) {
+            startCallStack = readCallStackData({ limit: 1024 });
+            startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
+            startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        }
         const startDepth = options.trackLane
             ? Number(startStack?.depth ?? startCallStack?.depth ?? native.getTraceDepth())
             : native.getTraceDepth();
+        const startFrameMarker = options.trackLane ? realFrameMarker(newestRealFrame(startStack)) : null;
         if (options.requireTrackedLane && (!Number.isFinite(startStackId) || !startStack || startDepth <= 0)) {
             const error = new Error(`${label} requires a recorded active Stack Trace frame`);
             error.mcpCode = ErrorCode.STATE_INVALID;
             throw error;
         }
+        if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
+            await commands.setStackTracePrivilegeCheck({ enabled: true });
+        }
+        native.clearBreakStatus();
         const deadline = performance.now() + timeoutMs;
         let steps = 0;
         while (performance.now() < deadline && steps < maxSteps) {
@@ -491,14 +516,36 @@ export function createDebuggerService({
             steps++;
             applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
-            const callStack = readCallStackData();
-            const stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
-            const activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
-            const activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+            let callStack = readCallStackData();
+            let stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+            let activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+            let activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+            let startLaneStack = options.trackLane
+                ? stacks.find((stack) => Number(stack.id) === startStackId)
+                : activeStack;
+            if (options.trackLane && startLaneStack && startFrameMarker
+                && !containsFrameMarker(startLaneStack, startFrameMarker)
+                && !stackFramesComplete(startLaneStack)) {
+                callStack = readCallStackData({ limit: 1024 });
+                stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+                activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+                activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+                startLaneStack = stacks.find((stack) => Number(stack.id) === startStackId);
+            }
             const startLanePresent = !options.trackLane
-                || stacks.some((stack) => Number(stack.id) === startStackId);
+                || !!startLaneStack;
             const sameLane = !options.trackLane || activeStackId === startStackId;
             const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
+            const currentRealFrame = options.trackLane && sameLane ? newestRealFrame(activeStack) : null;
+            const startFramePresent = !options.trackLane || !startFrameMarker
+                ? startLanePresent
+                : containsFrameMarker(startLaneStack, startFrameMarker);
+            const atStartFrame = !options.trackLane
+                ? depth === startDepth
+                : sameLane && (startFrameMarker
+                    ? frameMatchesMarker(currentRealFrame, startFrameMarker)
+                    : currentRealFrame == null);
+            const deeperThanStart = options.trackLane && sameLane && startFramePresent && !atStartFrame && !!currentRealFrame;
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
@@ -510,7 +557,10 @@ export function createDebuggerService({
                 startStackId,
                 activeStackId,
                 sameLane,
-                startLanePresent
+                startLanePresent,
+                startFramePresent,
+                atStartFrame,
+                deeperThanStart
             });
             if (stop) {
                 return attachDebuggerContext({

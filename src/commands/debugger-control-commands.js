@@ -253,11 +253,11 @@ export function createDebuggerControlCommands(context) {
                 return result;
             }
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
-            return runTraceStepper("stepOver", params, ({ depth, startDepth, pc, sameLane, startLanePresent }) => {
-                if (!startLanePresent || (sameLane && depth < startDepth)) {
+            return runTraceStepper("stepOver", params, ({ pc, sameLane, startLanePresent, startFramePresent, atStartFrame }) => {
+                if (!startLanePresent || (sameLane && !startFramePresent)) {
                     return { stop: "root", complete: false, target: hex(target) };
                 }
-                if (sameLane && depth === startDepth && (pc >>> 0) === target) {
+                if (sameLane && atStartFrame && (pc >>> 0) === target) {
                     return { stop: "pc", target: hex(target) };
                 }
                 return false;
@@ -386,11 +386,11 @@ export function createDebuggerControlCommands(context) {
             if (cpu === "arm7") {
                 throw codedError(ErrorCode.STATE_INVALID, "nextCallThisDepth requires ARM9 Stack Trace data");
             }
-            return runTraceStepper("nextCallThisDepth", params, ({ depth, startDepth, sameLane, startLanePresent }) => {
+            return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, deeperThanStart }) => {
                 if (!startLanePresent) return { stop: "root", complete: false };
                 if (!sameLane) return false;
-                if (depth > startDepth) return { stop: "call" };
-                if (depth < startDepth) return { stop: "root", complete: false };
+                if (!startFramePresent) return { stop: "root", complete: false };
+                if (deeperThanStart) return { stop: "call" };
                 return false;
             }, { trackLane: true, requireTrackedLane: true });
         },
