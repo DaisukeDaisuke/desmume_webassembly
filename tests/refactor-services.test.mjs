@@ -304,16 +304,37 @@ test("debugger service requires and applies freezes for step paths", async () =>
     await branch.service.runUntilNextBranchOrReturn({ maxSteps: 2, timeoutMs: 1000 });
     assert.equal(branch.freezes(), 1);
     const trace = createDebuggerHarness();
-    await assert.rejects(
-        trace.service.runTraceStepper("stepOver", {}, () => false, { requireTrackedLane: true }),
-        /requires Stack Trace/
+    const traceResult = await trace.service.runTraceStepper(
+        "stepOver",
+        { maxSteps: 1, timeoutMs: 1000 },
+        () => false,
+        { trackLane: true, requireTrackedLane: true }
     );
-    assert.equal(trace.breakClears(), 0);
-    assert.equal(trace.privilegeChanges(), 0);
+    assert.equal(traceResult.complete, false);
+    assert.equal(traceResult.stop, "maxSteps");
+    assert.equal(trace.freezes(), 1);
+    assert.equal(trace.breakClears(), 2);
+    assert.equal(trace.privilegeChanges(), 1);
     const coldTrace = createDebuggerHarness({ traceEnabled: true });
     await assert.rejects(
         coldTrace.service.runTraceStepper("stepOver", {}, () => false, { trackLane: true, requireTrackedLane: true }),
         /requires a recorded active Stack Trace frame/
+    );
+    assert.equal(coldTrace.breakClears(), 0);
+    assert.equal(coldTrace.privilegeChanges(), 0);
+    let fallbackCalls = 0;
+    assert.deepEqual(
+        await coldTrace.service.runTraceStepper(
+            "stepOver",
+            {},
+            () => false,
+            {
+                trackLane: true,
+                requireTrackedLane: true,
+                onMissingTrackedLane: async () => ({ fallback: ++fallbackCalls })
+            }
+        ),
+        { fallback: 1 }
     );
     assert.equal(coldTrace.breakClears(), 0);
     assert.equal(coldTrace.privilegeChanges(), 0);
@@ -480,22 +501,34 @@ test("nextCallThisDepth does not accept a call made after leaving the starting d
 test("nextCallThisDepth stops on a direct call or the current function root", async () => {
     let shouldStop;
     let options;
+    let useMissingFallback = false;
     const commands = createDebuggerControlCommands({
         runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
             options = receivedOptions;
+            if (useMissingFallback && typeof receivedOptions?.onMissingTrackedLane === "function") {
+                return receivedOptions.onMissingTrackedLane();
+            }
             return { label };
         },
         state: { selectedCpu: "arm9" }
     });
 
     assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
-    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.equal(options.trackLane, true);
+    assert.equal(options.requireTrackedLane, true);
+    assert.equal(typeof options.onMissingTrackedLane, "function");
     assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), { stop: "call" });
     assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
     assert.equal(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: false }), false);
     assert.equal(shouldStop({ sameLane: false, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), false);
     assert.deepEqual(shouldStop({ sameLane: false, startLanePresent: false, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
+    useMissingFallback = true;
+    assert.deepEqual(await commands.nextCallThisDepth(), {
+        label: "runUntilNextCall",
+        kind: "nextCallThisDepth",
+        implementation: "depth"
+    });
     await assert.rejects(commands.nextCallThisDepth({ cpu: "arm7" }), /requires ARM9 Stack Trace data/);
 });
 
@@ -557,6 +590,7 @@ test("public stepOver stops only at the sequential PC or below its starting trac
     let options;
     let instructionWidth = 4;
     let nativeKind = "";
+    let useMissingFallback = false;
     const commands = createDebuggerControlCommands({
         ensureRomLoaded: () => {},
         getPc: () => 0x02000000,
@@ -569,13 +603,18 @@ test("public stepOver stops only at the sequential PC or below its starting trac
         runTraceStepper: async (label, _params, predicate, receivedOptions) => {
             shouldStop = predicate;
             options = receivedOptions;
+            if (useMissingFallback && typeof receivedOptions?.onMissingTrackedLane === "function") {
+                return receivedOptions.onMissingTrackedLane();
+            }
             return { label };
         },
         state: { selectedCpu: "arm9" }
     });
 
     assert.deepEqual(await commands.stepOver(), { label: "stepOver" });
-    assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
+    assert.equal(options.trackLane, true);
+    assert.equal(options.requireTrackedLane, true);
+    assert.equal(typeof options.onMissingTrackedLane, "function");
     assert.deepEqual(shouldStop({ pc: 0x02000004, sameLane: true, startLanePresent: true, startFramePresent: true, atStartFrame: true }), {
         stop: "pc", target: "0x2000004"
     });
@@ -590,6 +629,12 @@ test("public stepOver stops only at the sequential PC or below its starting trac
     assert.deepEqual(shouldStop({ pc: 0x02000002, sameLane: true, startLanePresent: true, startFramePresent: true, atStartFrame: true }), {
         stop: "pc", target: "0x2000002"
     });
+    useMissingFallback = true;
+    const missingLaneResult = await commands.stepOver();
+    assert.equal(nativeKind, "nativeStepOver");
+    assert.equal(missingLaneResult.kind, "stepOver");
+    assert.equal(missingLaneResult.implementation, "native");
+    useMissingFallback = false;
     const arm7Result = await commands.stepOver({ cpu: "arm7" });
     assert.equal(nativeKind, "nativeStepOver");
     assert.equal(arm7Result.kind, "stepOver");
