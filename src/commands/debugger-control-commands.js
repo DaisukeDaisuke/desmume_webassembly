@@ -386,11 +386,11 @@ export function createDebuggerControlCommands(context) {
             if (cpu === "arm7") {
                 throw codedError(ErrorCode.STATE_INVALID, "nextCallThisDepth requires ARM9 Stack Trace data");
             }
-            return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, deeperThanStart }) => {
+            return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, directCallFromStartDepth }) => {
                 if (!startLanePresent) return { stop: "root", complete: false };
                 if (!sameLane) return false;
                 if (!startFramePresent) return { stop: "root", complete: false };
-                if (deeperThanStart) return { stop: "call" };
+                if (directCallFromStartDepth) return { stop: "call" };
                 return false;
             }, { trackLane: true, requireTrackedLane: true });
         },

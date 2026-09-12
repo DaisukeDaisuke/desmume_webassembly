@@ -7,6 +7,7 @@ export function createDebuggerService({
     applyFreezes,
     breakpointKindName,
     cpsrModeInfo,
+    currentExecBreakpoint,
     disasmRefreshParams,
     ensureReady,
     ensureRomLoaded,
@@ -487,6 +488,15 @@ export function createDebuggerService({
             .find((frame) => !frame.synthetic) || null;
         const containsFrameMarker = (stack, marker) => !marker
             || (Array.isArray(stack?.frames) ? stack.frames : []).some((frame) => frameMatchesMarker(frame, marker));
+        const atTrackedStartDepth = (stack, marker) => {
+            if (!stack) return false;
+            if (!marker) return newestRealFrame(stack) == null;
+            if (!containsFrameMarker(stack, marker)) return false;
+            const current = newestRealFrame(stack);
+            if (!current) return false;
+            return frameMatchesMarker(current, marker)
+                || (Number(current.returnAddress) >>> 0) === marker.returnAddress;
+        };
         let startCallStack = readCallStackData();
         let startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
         const startStackId = Number(startCallStack?.activeStackId ?? startStacks.find((stack) => stack.active)?.id);
@@ -511,8 +521,48 @@ export function createDebuggerService({
         native.clearBreakStatus();
         const deadline = performance.now() + timeoutMs;
         let steps = 0;
+        let beforeSameLane = true;
+        let beforeStartFramePresent = !startFrameMarker || containsFrameMarker(startStack, startFrameMarker);
+        let beforeAtStartDepth = !options.trackLane || atTrackedStartDepth(startStack, startFrameMarker);
         while (performance.now() < deadline && steps < maxSteps) {
-            await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
+            try {
+                const currentPc = getPc(cpu);
+                if (steps > 0 && currentExecBreakpoint(cpu, currentPc)) {
+                    const nativeStatus = syncNativeBreakStatus({
+                        lastBreak: {
+                            hit: true,
+                            cpu: String(cpu),
+                            kind: 0,
+                            address: Number(currentPc) >>> 0,
+                            size: 0,
+                            value: 0,
+                            pc: Number(currentPc) >>> 0,
+                            cpsr: 0
+                        }
+                    });
+                    const callStack = readCallStackData();
+                    const stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+                    const activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+                    const activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+                    const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
+                    return attachDebuggerContext({
+                        kind: label,
+                        ok: true,
+                        complete: false,
+                        stoppedByBreakpoint: true,
+                        steps,
+                        depth,
+                        callStack: publicCallStackData(callStack, { ...params, cpu })
+                    }, cpu, pcBefore, nativeStatus);
+                }
+                await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
+            } catch (error) {
+                if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                    || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                    handleNativeFault(error, label);
+                }
+                throw error;
+            }
             steps++;
             applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
@@ -545,7 +595,19 @@ export function createDebuggerService({
                 : sameLane && (startFrameMarker
                     ? frameMatchesMarker(currentRealFrame, startFrameMarker)
                     : currentRealFrame == null);
+            const atStartDepth = !options.trackLane
+                ? depth === startDepth
+                : sameLane && startFramePresent && atTrackedStartDepth(activeStack, startFrameMarker);
             const deeperThanStart = options.trackLane && sameLane && startFramePresent && !atStartFrame && !!currentRealFrame;
+            const directCallFromStartDepth = options.trackLane
+                && beforeSameLane
+                && beforeStartFramePresent
+                && beforeAtStartDepth
+                && sameLane
+                && startFramePresent
+                && !!currentRealFrame
+                && !frameMatchesMarker(currentRealFrame, startFrameMarker)
+                && ((Number(currentRealFrame.callee) >>> 0) & ~1) === ((getPc(cpu) >>> 0) & ~1);
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
@@ -560,7 +622,9 @@ export function createDebuggerService({
                 startLanePresent,
                 startFramePresent,
                 atStartFrame,
-                deeperThanStart
+                atStartDepth,
+                deeperThanStart,
+                directCallFromStartDepth
             });
             if (stop) {
                 return attachDebuggerContext({
@@ -572,6 +636,9 @@ export function createDebuggerService({
                     callStack: publicCallStackData(callStack, { ...params, cpu })
                 }, cpu, pcBefore);
             }
+            beforeSameLane = sameLane;
+            beforeStartFramePresent = startFramePresent;
+            beforeAtStartDepth = atStartDepth;
         }
         const callStack = readCallStackData();
         const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);

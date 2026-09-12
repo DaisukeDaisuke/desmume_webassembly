@@ -204,7 +204,15 @@ test("persistent script pause stops a wait with SCRIPT_PAUSED", async () => {
     assert.equal(operationManager.current(), null);
 });
 
-function createDebuggerHarness({ traceEnabled = false, readStack = null } = {}) {
+function createDebuggerHarness({
+    traceEnabled = false,
+    readStack = null,
+    getPc: getPcOverride = null,
+    nativeStep = null,
+    currentExecBreakpoint = null,
+    syncNativeBreakStatus: syncNativeBreakStatusOverride = null,
+    handleNativeFault: handleNativeFaultOverride = null
+} = {}) {
     let freezes = 0;
     let disassemblyCalls = 0;
     let suspensions = 0;
@@ -243,22 +251,29 @@ function createDebuggerHarness({ traceEnabled = false, readStack = null } = {}) 
         applyFreezes: () => { freezes++; },
         breakpointKindName: () => "",
         cpsrModeInfo: () => ({ className: "" }),
+        currentExecBreakpoint: currentExecBreakpoint || (() => null),
         disasmRefreshParams: (value) => value,
         ensureReady: () => {},
         ensureRomLoaded: () => {},
-        getPc: () => 0x02000000,
+        getPc: getPcOverride || (() => 0x02000000),
         getRegisters: () => ({ pc: 0x02000000 }),
+        handleNativeFault: handleNativeFaultOverride || (() => {}),
         hasLoadedRom: () => true,
         hex: (value) => `0x${(Number(value) >>> 0).toString(16)}`,
         log: () => {},
-        native: { step: () => 1, stepOver: () => 1, clearBreakStatus: () => { breakClears++; }, getTraceDepth: () => 1 },
+        native: {
+            step: nativeStep || (() => 1),
+            stepOver: () => 1,
+            clearBreakStatus: () => { breakClears++; },
+            getTraceDepth: () => 1
+        },
         normalizeCallStackData: (value) => value,
         publicCallStackData: (value) => value,
         readCallStackData: readStack || (() => ({ enabled: true, frames: [] })),
         renderRegisters: () => {},
         setFollowPc: () => {},
         state,
-        syncNativeBreakStatus: () => ({}),
+        syncNativeBreakStatus: syncNativeBreakStatusOverride || (() => ({})),
         ui,
         updateStatus: () => {},
         withCurrentExecBreakpointSuspended: async (_cpu, callback) => {
@@ -369,10 +384,11 @@ test("trace stepper keeps synthetic frames separate from the starting real frame
     assert.equal(observed.deeperThanStart, false);
 });
 
-test("nextCallThisDepth ignores a synthetic frame and stops on the next real call", async () => {
+test("nextCallThisDepth ignores synthetic and entry-hook frames and stops only on a direct call from the starting depth", async () => {
     const startFrame = { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 };
     const syntheticFrame = { id: 0, caller: 0x02001234, returnAddress: 0x02001234, callee: 0x02002222, synthetic: true };
-    const childFrame = { id: 3, caller: 0x02002004, returnAddress: 0x02002008, callee: 0x02003000 };
+    const entryHookFrame = { id: 8, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02000020 };
+    const childFrame = { id: 3, caller: 0x02000000, returnAddress: 0x02000004, callee: 0x02003000 };
     let reads = 0;
     const syntheticHarness = createDebuggerHarness({
         traceEnabled: true,
@@ -389,8 +405,29 @@ test("nextCallThisDepth ignores a synthetic frame and stops on the next real cal
     assert.equal(syntheticResult.stop, "maxSteps");
 
     reads = 0;
+    const entryHookHarness = createDebuggerHarness({
+        traceEnabled: true,
+        readStack: () => ++reads === 1
+            ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] }
+            : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [entryHookFrame, startFrame] }] }
+    });
+    const entryHookCommands = createDebuggerControlCommands({
+        runTraceStepper: entryHookHarness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const entryHookResult = await entryHookCommands.nextCallThisDepth({ maxSteps: 1, timeoutMs: 1000 });
+    assert.equal(entryHookResult.complete, false);
+    assert.equal(entryHookResult.stop, "maxSteps");
+
+    reads = 0;
+    let callPc = 0x02000000;
     const callHarness = createDebuggerHarness({
         traceEnabled: true,
+        getPc: () => callPc,
+        nativeStep: () => {
+            callPc = childFrame.callee;
+            return 1;
+        },
         readStack: () => ++reads === 1
             ? { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] }
             : { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [childFrame, startFrame] }] }
@@ -402,6 +439,42 @@ test("nextCallThisDepth ignores a synthetic frame and stops on the next real cal
     const callResult = await callCommands.nextCallThisDepth({ maxSteps: 1, timeoutMs: 1000 });
     assert.equal(callResult.stop, "call");
     assert.notEqual(callResult.complete, false);
+});
+
+test("nextCallThisDepth does not accept a call made after leaving the starting depth", async () => {
+    const startFrame = { id: 7, caller: 0x02000004, returnAddress: 0x02000008, callee: 0x02001000 };
+    const childFrame = { id: 8, caller: 0x02000020, returnAddress: 0x02000024, callee: 0x02003000 };
+    const grandchildFrame = { id: 9, caller: 0x02003000, returnAddress: 0x02003004, callee: 0x02004000 };
+    let pc = 0x02000010;
+    let steps = 0;
+    let reads = 0;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        getPc: () => pc,
+        nativeStep: () => {
+            steps++;
+            pc = steps === 1 ? 0x02003004 : grandchildFrame.callee;
+            return 1;
+        },
+        readStack: () => {
+            reads++;
+            if (reads === 1) {
+                return { enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] };
+            }
+            if (reads === 2) {
+                return { enabled: true, activeStackId: 1, depth: 2, stacks: [{ id: 1, depth: 2, active: true, frames: [childFrame, startFrame] }] };
+            }
+            return { enabled: true, activeStackId: 1, depth: 3, stacks: [{ id: 1, depth: 3, active: true, frames: [grandchildFrame, childFrame, startFrame] }] };
+        }
+    });
+    const commands = createDebuggerControlCommands({
+        runTraceStepper: harness.service.runTraceStepper,
+        state: { selectedCpu: "arm9" }
+    });
+    const result = await commands.nextCallThisDepth({ maxSteps: 2, timeoutMs: 1000 });
+    assert.equal(result.complete, false);
+    assert.equal(result.stop, "maxSteps");
+    assert.equal(result.steps, 2);
 });
 
 test("nextCallThisDepth stops on a direct call or the current function root", async () => {
@@ -418,12 +491,65 @@ test("nextCallThisDepth stops on a direct call or the current function root", as
 
     assert.deepEqual(await commands.nextCallThisDepth(), { label: "nextCallThisDepth" });
     assert.deepEqual(options, { trackLane: true, requireTrackedLane: true });
-    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, deeperThanStart: true }), { stop: "call" });
-    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: false, deeperThanStart: false }), { stop: "root", complete: false });
-    assert.equal(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, deeperThanStart: false }), false);
-    assert.equal(shouldStop({ sameLane: false, startLanePresent: true, startFramePresent: true, deeperThanStart: true }), false);
-    assert.deepEqual(shouldStop({ sameLane: false, startLanePresent: false, startFramePresent: false, deeperThanStart: false }), { stop: "root", complete: false });
+    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), { stop: "call" });
+    assert.deepEqual(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
+    assert.equal(shouldStop({ sameLane: true, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: false }), false);
+    assert.equal(shouldStop({ sameLane: false, startLanePresent: true, startFramePresent: true, directCallFromStartDepth: true }), false);
+    assert.deepEqual(shouldStop({ sameLane: false, startLanePresent: false, startFramePresent: false, directCallFromStartDepth: false }), { stop: "root", complete: false });
     await assert.rejects(commands.nextCallThisDepth({ cpu: "arm7" }), /requires ARM9 Stack Trace data/);
+});
+
+test("trace stepper ignores only the initial exec breakpoint and honors a later one before executing it", async () => {
+    const startFrame = { id: 1, caller: 0x01fffffc, returnAddress: 0x02001000, callee: 0x02000000 };
+    let pc = 0x02000000;
+    let steps = 0;
+    let breakpointChecks = 0;
+    let breakHit = false;
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        getPc: () => pc,
+        nativeStep: () => {
+            steps++;
+            pc += 4;
+            return 1;
+        },
+        currentExecBreakpoint: (_cpu, address) => {
+            breakpointChecks++;
+            breakHit = address === 0x02000004;
+            return breakHit ? { type: "exec", cpu: "arm9", address } : null;
+        },
+        syncNativeBreakStatus: () => ({ lastBreak: { hit: breakHit } }),
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] })
+    });
+    const result = await harness.service.runTraceStepper(
+        "stepOver",
+        { maxSteps: 2, timeoutMs: 1000 },
+        () => false,
+        { trackLane: true, requireTrackedLane: true }
+    );
+    assert.equal(result.stoppedByBreakpoint, true);
+    assert.equal(result.steps, 1);
+    assert.equal(steps, 1);
+    assert.equal(breakpointChecks, 1);
+    assert.equal(harness.suspensions(), 1);
+    assert.equal(harness.freezes(), 1);
+});
+
+test("trace stepper routes native faults through the existing fault handler", async () => {
+    const startFrame = { id: 1, caller: 0x01fffffc, returnAddress: 0x02001000, callee: 0x02000000 };
+    const handled = [];
+    const fault = Object.assign(new Error("native failed"), { mcpCode: "NATIVE_FAULT" });
+    const harness = createDebuggerHarness({
+        traceEnabled: true,
+        nativeStep: () => { throw fault; },
+        handleNativeFault: (error, where) => handled.push({ error, where }),
+        readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] })
+    });
+    await assert.rejects(
+        harness.service.runTraceStepper("stepOver", { maxSteps: 1, timeoutMs: 1000 }, () => false, { trackLane: true, requireTrackedLane: true }),
+        /native failed/
+    );
+    assert.deepEqual(handled, [{ error: fault, where: "stepOver" }]);
 });
 
 test("public stepOver stops only at the sequential PC or below its starting trace depth", async () => {
@@ -612,6 +738,30 @@ test("public dispatcher accepts only plain object params", async () => {
     assert.equal((await dispatcher.run("status", {})).ok, true);
     assert.equal((await dispatcher.run("status", Object.create(null))).ok, true);
     assert.equal(executed, 3);
+});
+
+test("public dispatcher forwards nextCallThisDepth unchanged to the command registry", async () => {
+    const calls = [];
+    const dispatcher = createCommandDispatcher({
+        state: { ready: false },
+        registry: {
+            execute: async (name, params) => {
+                calls.push({ name, params });
+                return responder.ok({ stop: "call" });
+            }
+        },
+        responder,
+        operationManager: { current: () => null },
+        hasLoadedRom: () => false,
+        emulatorActivity: () => ({}),
+        refreshDebuggerViews: async () => {},
+        updateStatus: () => {},
+        log: () => {}
+    });
+    const params = { maxSteps: 17, timeoutMs: 321 };
+    const result = await dispatcher.run("nextCallThisDepth", params);
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [{ name: "nextCallThisDepth", params }]);
 });
 
 test("special breakpoint ownership preserves user and script owners independently", async () => {

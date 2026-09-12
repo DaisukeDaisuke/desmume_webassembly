@@ -16,7 +16,7 @@ This inventory records the pre-refactor browser surface. Every item remains comp
 
 Aliases `reg`, `regw`, `read8`, `read16`, `read32`, `write8`, `write16`, and `write32` remain available.
 
-Additive commands from the 2026-07-28 implementation are `getOperation`, `cancelOperation`, `waitForPause`, `waitForStateLoad`, `waitForFileTransaction`, `waitForFrameMatch`, `waitForScreenStable`, `runUntilMemoryRead`, `runUntilMemoryWrite`, `getInputState`, `releaseInput`, `clearBreakpoints`, `listStateSlots`, `deleteStateSlot`, `listSaveSlots`, `deleteSaveSlot`, `listAnalysisBaselines`, `deleteAnalysisBaseline`, `recordInput`, `replayInput`, `listInputRecordings`, and `deleteInputRecording`.
+Additive commands from the 2026-07-28 implementation are `getOperation`, `cancelOperation`, `waitForPause`, `waitForStateLoad`, `waitForFileTransaction`, `waitForFrameMatch`, `waitForScreenStable`, `runUntilMemoryRead`, `runUntilMemoryWrite`, `getInputState`, `releaseInput`, `clearBreakpoints`, `listStateSlots`, `deleteStateSlot`, `listSaveSlots`, `deleteSaveSlot`, `listAnalysisBaselines`, `deleteAnalysisBaseline`, `recordInput`, `replayInput`, `listInputRecordings`, and `deleteInputRecording`. The additive 2026-09-11 step-control command is `nextCallThisDepth`.
 
 `listPScriptMcp` and `callPScriptMcp` are additive persistent-script orchestration commands. They reuse `desmume.call` and `desmume.eval`; no per-script Browser WebMCP tools are registered dynamically. Handler functions remain inside their sandbox Worker, and only normalized metadata, params, results, and errors cross Worker boundaries.
 

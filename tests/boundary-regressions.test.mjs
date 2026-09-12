@@ -1978,6 +1978,17 @@ async function runPersistentScalarSandbox(
     };
 }
 
+test("persistent emu.nextCallThisDepth sends the exact RPC command and params", async () => {
+    const harness = await runPersistentScalarSandbox(
+        "await emu.nextCallThisDepth({ maxSteps: 17, timeoutMs: 321 });",
+        [{ stop: "call" }]
+    );
+    const calls = harness.messages.filter((message) => message.type === "call");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "nextCallThisDepth");
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0].params)), { maxSteps: 17, timeoutMs: 321 });
+});
+
 async function bundledScriptServiceModule() {
     if (!scriptServiceModulePromise) {
         scriptServiceModulePromise = (async () => {
