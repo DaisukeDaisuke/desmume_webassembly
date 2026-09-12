@@ -209,7 +209,7 @@ function createDebuggerHarness({
     readStack = null,
     getPc: getPcOverride = null,
     nativeStep = null,
-    currentExecBreakpoint = null,
+    checkExecBreakpoint = null,
     syncNativeBreakStatus: syncNativeBreakStatusOverride = null,
     handleNativeFault: handleNativeFaultOverride = null
 } = {}) {
@@ -251,7 +251,6 @@ function createDebuggerHarness({
         applyFreezes: () => { freezes++; },
         breakpointKindName: () => "",
         cpsrModeInfo: () => ({ className: "" }),
-        currentExecBreakpoint: currentExecBreakpoint || (() => null),
         disasmRefreshParams: (value) => value,
         ensureReady: () => {},
         ensureRomLoaded: () => {},
@@ -264,6 +263,7 @@ function createDebuggerHarness({
         native: {
             step: nativeStep || (() => 1),
             stepOver: () => 1,
+            checkExecBreakpoint: checkExecBreakpoint || (() => false),
             clearBreakStatus: () => { breakClears++; },
             getTraceDepth: () => 1
         },
@@ -513,10 +513,10 @@ test("trace stepper ignores only the initial exec breakpoint and honors a later 
             pc += 4;
             return 1;
         },
-        currentExecBreakpoint: (_cpu, address) => {
+        checkExecBreakpoint: (_cpu, address) => {
             breakpointChecks++;
             breakHit = address === 0x02000004;
-            return breakHit ? { type: "exec", cpu: "arm9", address } : null;
+            return breakHit;
         },
         syncNativeBreakStatus: () => ({ lastBreak: { hit: breakHit } }),
         readStack: () => ({ enabled: true, activeStackId: 1, depth: 1, stacks: [{ id: 1, depth: 1, active: true, frames: [startFrame] }] })

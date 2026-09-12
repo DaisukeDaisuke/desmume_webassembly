@@ -269,7 +269,6 @@ const debuggerCoordinator = createDebuggerCoordinator({
 const {
     breakpointKindName,
     cancelAllPersistentScriptEvents,
-    currentExecBreakpoint,
     finishPersistentScriptEvent,
     getNativeStatus,
     getRegisters,
@@ -392,7 +391,6 @@ const debuggerService = createDebuggerService({
     applyFreezes,
     breakpointKindName,
     cpsrModeInfo,
-    currentExecBreakpoint,
     disasmRefreshParams,
     ensureReady,
     ensureRomLoaded,

@@ -7,7 +7,6 @@ export function createDebuggerService({
     applyFreezes,
     breakpointKindName,
     cpsrModeInfo,
-    currentExecBreakpoint,
     disasmRefreshParams,
     ensureReady,
     ensureRomLoaded,
@@ -526,20 +525,8 @@ export function createDebuggerService({
         let beforeAtStartDepth = !options.trackLane || atTrackedStartDepth(startStack, startFrameMarker);
         while (performance.now() < deadline && steps < maxSteps) {
             try {
-                const currentPc = getPc(cpu);
-                if (steps > 0 && currentExecBreakpoint(cpu, currentPc)) {
-                    const nativeStatus = syncNativeBreakStatus({
-                        lastBreak: {
-                            hit: true,
-                            cpu: String(cpu),
-                            kind: 0,
-                            address: Number(currentPc) >>> 0,
-                            size: 0,
-                            value: 0,
-                            pc: Number(currentPc) >>> 0,
-                            cpsr: 0
-                        }
-                    });
+                if (steps > 0 && native.checkExecBreakpoint(cpu, getPc(cpu))) {
+                    const nativeStatus = syncNativeBreakStatus();
                     const callStack = readCallStackData();
                     const stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
                     const activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
