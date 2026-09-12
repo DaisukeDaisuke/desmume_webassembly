@@ -223,7 +223,7 @@ export function createDebuggerService({
             return operation();
         });
     }
-    
+
     async function runDebuggerInstruction(kind, params = {}) {
         ensureRomLoaded("debugger step requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
@@ -462,12 +462,9 @@ export function createDebuggerService({
         const pcBefore = getPc(cpu);
         const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
         const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
-        if (options.requireTrackedLane && !ui.traceToggle.checked) {
-            const error = new Error(`${label} requires Stack Trace to be enabled with a recorded active frame`);
-            error.mcpCode = ErrorCode.STATE_INVALID;
-            throw error;
-        }
+        const traceWasEnabled = !!ui.traceToggle.checked;
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
+        let trackLane = !!options.trackLane;
         const stackFramesComplete = (stack) => {
             const frames = Array.isArray(stack?.frames) ? stack.frames : [];
             return frames.length >= Number(stack?.depth ?? frames.length);
@@ -500,19 +497,27 @@ export function createDebuggerService({
         let startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
         const startStackId = Number(startCallStack?.activeStackId ?? startStacks.find((stack) => stack.active)?.id);
         let startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
-        if (options.trackLane && startStack && !newestRealFrame(startStack) && !stackFramesComplete(startStack)) {
+        if (trackLane && startStack && !newestRealFrame(startStack) && !stackFramesComplete(startStack)) {
             startCallStack = readCallStackData({ limit: 1024 });
             startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
             startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
         }
-        const startDepth = options.trackLane
+        let startDepth = trackLane
             ? Number(startStack?.depth ?? startCallStack?.depth ?? native.getTraceDepth())
             : native.getTraceDepth();
-        const startFrameMarker = options.trackLane ? realFrameMarker(newestRealFrame(startStack)) : null;
+        let startFrameMarker = trackLane ? realFrameMarker(newestRealFrame(startStack)) : null;
         if (options.requireTrackedLane && (!Number.isFinite(startStackId) || !startStack || startDepth <= 0)) {
-            const error = new Error(`${label} requires a recorded active Stack Trace frame`);
-            error.mcpCode = ErrorCode.STATE_INVALID;
-            throw error;
+            if (!traceWasEnabled) {
+                trackLane = false;
+                startDepth = native.getTraceDepth();
+                startFrameMarker = null;
+            } else if (typeof options.onMissingTrackedLane === "function") {
+                return options.onMissingTrackedLane();
+            } else {
+                const error = new Error(`${label} requires a recorded active Stack Trace frame`);
+                error.mcpCode = ErrorCode.STATE_INVALID;
+                throw error;
+            }
         }
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
             await commands.setStackTracePrivilegeCheck({ enabled: true });
@@ -522,7 +527,7 @@ export function createDebuggerService({
         let steps = 0;
         let beforeSameLane = true;
         let beforeStartFramePresent = !startFrameMarker || containsFrameMarker(startStack, startFrameMarker);
-        let beforeAtStartDepth = !options.trackLane || atTrackedStartDepth(startStack, startFrameMarker);
+        let beforeAtStartDepth = !trackLane || atTrackedStartDepth(startStack, startFrameMarker);
         while (performance.now() < deadline && steps < maxSteps) {
             try {
                 if (steps > 0 && native.checkExecBreakpoint(cpu, getPc(cpu))) {
@@ -557,10 +562,10 @@ export function createDebuggerService({
             let stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
             let activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
             let activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
-            let startLaneStack = options.trackLane
+            let startLaneStack = trackLane
                 ? stacks.find((stack) => Number(stack.id) === startStackId)
                 : activeStack;
-            if (options.trackLane && startLaneStack && startFrameMarker
+            if (trackLane && startLaneStack && startFrameMarker
                 && !containsFrameMarker(startLaneStack, startFrameMarker)
                 && !stackFramesComplete(startLaneStack)) {
                 callStack = readCallStackData({ limit: 1024 });
@@ -569,32 +574,33 @@ export function createDebuggerService({
                 activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
                 startLaneStack = stacks.find((stack) => Number(stack.id) === startStackId);
             }
-            const startLanePresent = !options.trackLane
+            const startLanePresent = !trackLane
                 || !!startLaneStack;
-            const sameLane = !options.trackLane || activeStackId === startStackId;
+            const sameLane = !trackLane || activeStackId === startStackId;
             const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
-            const currentRealFrame = options.trackLane && sameLane ? newestRealFrame(activeStack) : null;
-            const startFramePresent = !options.trackLane || !startFrameMarker
+            const currentRealFrame = trackLane && sameLane ? newestRealFrame(activeStack) : null;
+            const startFramePresent = !trackLane || !startFrameMarker
                 ? startLanePresent
                 : containsFrameMarker(startLaneStack, startFrameMarker);
-            const atStartFrame = !options.trackLane
+            const atStartFrame = !trackLane
                 ? depth === startDepth
                 : sameLane && (startFrameMarker
                     ? frameMatchesMarker(currentRealFrame, startFrameMarker)
                     : currentRealFrame == null);
-            const atStartDepth = !options.trackLane
+            const atStartDepth = !trackLane
                 ? depth === startDepth
                 : sameLane && startFramePresent && atTrackedStartDepth(activeStack, startFrameMarker);
-            const deeperThanStart = options.trackLane && sameLane && startFramePresent && !atStartFrame && !!currentRealFrame;
-            const directCallFromStartDepth = options.trackLane
-                && beforeSameLane
-                && beforeStartFramePresent
-                && beforeAtStartDepth
-                && sameLane
-                && startFramePresent
-                && !!currentRealFrame
-                && !frameMatchesMarker(currentRealFrame, startFrameMarker)
-                && ((Number(currentRealFrame.callee) >>> 0) & ~1) === ((getPc(cpu) >>> 0) & ~1);
+            const deeperThanStart = trackLane && sameLane && startFramePresent && !atStartFrame && !!currentRealFrame;
+            const directCallFromStartDepth = trackLane
+                ? beforeSameLane
+                    && beforeStartFramePresent
+                    && beforeAtStartDepth
+                    && sameLane
+                    && startFramePresent
+                    && !!currentRealFrame
+                    && !frameMatchesMarker(currentRealFrame, startFrameMarker)
+                    && ((Number(currentRealFrame.callee) >>> 0) & ~1) === ((getPc(cpu) >>> 0) & ~1)
+                : beforeAtStartDepth && depth > startDepth;
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
