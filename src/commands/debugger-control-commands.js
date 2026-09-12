@@ -246,11 +246,14 @@ export function createDebuggerControlCommands(context) {
         async stepOver(params = {}) {
             ensureRomLoaded("step over requires a loaded ROM");
             const cpu = String(params.cpu ?? state.selectedCpu);
-            if (cpu === "arm7") {
+            const nativeFallback = async () => {
                 const result = await runDebuggerInstruction("nativeStepOver", { ...params, cpu });
                 result.kind = "stepOver";
                 result.implementation = "native";
                 return result;
+            };
+            if (cpu === "arm7") {
+                return nativeFallback();
             }
             const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
             return runTraceStepper("stepOver", params, ({ pc, sameLane, startLanePresent, startFramePresent, atStartFrame }) => {
@@ -261,7 +264,7 @@ export function createDebuggerControlCommands(context) {
                     return { stop: "pc", target: hex(target) };
                 }
                 return false;
-            }, { trackLane: true, requireTrackedLane: true });
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: nativeFallback });
         },
 
         async stepNextBranchOrReturn(params = {}) {
@@ -386,13 +389,19 @@ export function createDebuggerControlCommands(context) {
             if (cpu === "arm7") {
                 throw codedError(ErrorCode.STATE_INVALID, "nextCallThisDepth requires ARM9 Stack Trace data");
             }
+            const depthFallback = async () => {
+                const result = await debuggerCommands.runUntilNextCall({ ...params, cpu });
+                result.kind = "nextCallThisDepth";
+                result.implementation = "depth";
+                return result;
+            };
             return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, directCallFromStartDepth }) => {
                 if (!startLanePresent) return { stop: "root", complete: false };
                 if (!sameLane) return false;
                 if (!startFramePresent) return { stop: "root", complete: false };
                 if (directCallFromStartDepth) return { stop: "call" };
                 return false;
-            }, { trackLane: true, requireTrackedLane: true });
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: depthFallback });
         },
 
         async wait(params = {}) {
