@@ -52,7 +52,9 @@ export function bindUi(context) {
     } = context;
 
     const runTraceCommand = (name, params = {}) => runCommand(name, params).then((result) => {
-        if (result?.complete === false) {
+        if (result?.ok === false) {
+            log(result.error?.message || `${name} failed`);
+        } else if (result?.complete === false) {
             const detail = result.steps == null ? "" : ` after ${result.steps} steps`;
             log(`${name} stopped: ${result.stop || (result.stoppedByBreakpoint ? "breakpoint" : "incomplete")}${detail}`);
         }

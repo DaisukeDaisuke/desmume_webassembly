@@ -1574,6 +1574,13 @@ test("dispatcher owns one debugger refresh per command cycle", async () => {
     assert.doesNotMatch(uiSource, /runCommand\("setRegister"[^\n]*\.then\(\(\) => refreshDebuggerViews/);
 });
 
+test("trace UI commands log responder failures instead of relying on promise rejection", async () => {
+    const uiSource = await readFile(new URL("../src/ui/ui-controller.js", import.meta.url), "utf8");
+    assert.match(uiSource, /result\?\.ok === false/);
+    assert.match(uiSource, /log\(result\.error\?\.message \|\| `\$\{name\} failed`\)/);
+    assert.match(uiSource, /else if \(result\?\.complete === false\)/);
+});
+
 test("NaN and undefined command names return UNKNOWN_COMMAND without corrupting state", async () => {
     const state = { ready: false, paused: true, running: false, marker: "preserve" };
     const registry = createCommandRegistry({ responder });
