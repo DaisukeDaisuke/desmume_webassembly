@@ -223,7 +223,7 @@ export function createDebuggerService({
             return operation();
         });
     }
-    
+
     async function runDebuggerInstruction(kind, params = {}) {
         ensureRomLoaded("debugger step requires a loaded ROM");
         const cpu = String(params.cpu ?? state.selectedCpu);
@@ -236,7 +236,8 @@ export function createDebuggerService({
         if (kind === "smartStep") {
             const info = await getCurrentInstructionInfo(cpu);
             const chosen = info.kind === "call" || info.kind === "bx" ? "stepOver" : "step";
-            result = await runDebuggerInstruction(chosen, { ...params, cpu });
+            const implementation = chosen === "stepOver" ? "nativeStepOver" : chosen;
+            result = await runDebuggerInstruction(implementation, { ...params, cpu });
             result.kind = "smartStep";
             result.chosen = chosen;
             result.instruction = info;
@@ -249,7 +250,7 @@ export function createDebuggerService({
                         () => native.step(cpu, stepCount)
                     );
                 }
-                else if (kind === "stepOver") {
+                else if (kind === "nativeStepOver") {
                     result.count = await stepPastCurrentExecBreakpoint(
                         cpu,
                         () => native.stepOver(cpu)
@@ -450,7 +451,7 @@ export function createDebuggerService({
         }, Math.max(50, Math.round(1000 / hz)));
     }
     
-    async function runTraceStepper(label, params = {}, shouldStop) {
+    async function runTraceStepper(label, params = {}, shouldStop, options = {}) {
         ensureRomLoaded(`${label} requires a loaded ROM`);
         if (state.traceStateSynchronized === false) {
             const error = new Error("Stateロード後のactive stackはCPU状態と同期していません。Stack Traceをoff/onして再同期してから実行してください。");
@@ -461,28 +462,192 @@ export function createDebuggerService({
         const pcBefore = getPc(cpu);
         const timeoutMs = positiveInteger(params.timeoutMs ?? 1000, "timeoutMs", 600000);
         const maxSteps = positiveInteger(params.maxSteps ?? 200000, "maxSteps", 1000000);
-        native.clearBreakStatus();
+        const traceWasEnabled = !!ui.traceToggle.checked;
         if (!ui.traceToggle.checked) await commands.setStackTraceMode({ enabled: true });
+        let trackLane = !!options.trackLane;
+        const stackFramesComplete = (stack) => {
+            const frames = Array.isArray(stack?.frames) ? stack.frames : [];
+            return frames.length >= Number(stack?.depth ?? frames.length);
+        };
+        const realFrameMarker = (frame) => frame && !frame.synthetic ? {
+            id: Number(frame.id),
+            caller: Number(frame.caller) >>> 0,
+            callee: Number(frame.callee) >>> 0,
+            returnAddress: Number(frame.returnAddress) >>> 0
+        } : null;
+        const frameMatchesMarker = (frame, marker) => !!frame && !frame.synthetic && !!marker
+            && Number(frame.id) === marker.id
+            && (Number(frame.caller) >>> 0) === marker.caller
+            && (Number(frame.callee) >>> 0) === marker.callee
+            && (Number(frame.returnAddress) >>> 0) === marker.returnAddress;
+        const newestRealFrame = (stack) => (Array.isArray(stack?.frames) ? stack.frames : [])
+            .find((frame) => !frame.synthetic) || null;
+        const containsFrameMarker = (stack, marker) => !marker
+            || (Array.isArray(stack?.frames) ? stack.frames : []).some((frame) => frameMatchesMarker(frame, marker));
+        const atTrackedStartDepth = (stack, marker) => {
+            if (!stack) return false;
+            if (!marker) return newestRealFrame(stack) == null;
+            if (!containsFrameMarker(stack, marker)) return false;
+            const current = newestRealFrame(stack);
+            if (!current) return false;
+            return frameMatchesMarker(current, marker)
+                || (Number(current.returnAddress) >>> 0) === marker.returnAddress;
+        };
+        let startCallStack = readCallStackData();
+        let startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
+        const startStackId = Number(startCallStack?.activeStackId ?? startStacks.find((stack) => stack.active)?.id);
+        let startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        if (trackLane && startStack && !newestRealFrame(startStack) && !stackFramesComplete(startStack)) {
+            startCallStack = readCallStackData({ limit: 1024 });
+            startStacks = Array.isArray(startCallStack?.stacks) ? startCallStack.stacks : [];
+            startStack = startStacks.find((stack) => Number(stack.id) === startStackId);
+        }
+        let startDepth = trackLane
+            ? Number(startStack?.depth ?? startCallStack?.depth ?? native.getTraceDepth())
+            : native.getTraceDepth();
+        let startFrameMarker = trackLane ? realFrameMarker(newestRealFrame(startStack)) : null;
+        if (options.requireTrackedLane && (!Number.isFinite(startStackId) || !startStack || startDepth <= 0)) {
+            if (!traceWasEnabled) {
+                trackLane = false;
+                startDepth = native.getTraceDepth();
+                startFrameMarker = null;
+            } else if (typeof options.onMissingTrackedLane === "function") {
+                return options.onMissingTrackedLane();
+            } else {
+                const error = new Error(`${label} requires a recorded active Stack Trace frame`);
+                error.mcpCode = ErrorCode.STATE_INVALID;
+                throw error;
+            }
+        }
         if ((params.skipIrq ?? true) && !ui.tracePrivilegeToggle.checked) {
             await commands.setStackTracePrivilegeCheck({ enabled: true });
         }
-        const startDepth = native.getTraceDepth();
+        native.clearBreakStatus();
         const deadline = performance.now() + timeoutMs;
         let steps = 0;
+        let beforeSameLane = true;
+        let beforeStartFramePresent = !startFrameMarker || containsFrameMarker(startStack, startFrameMarker);
+        let beforeAtStartDepth = !trackLane || atTrackedStartDepth(startStack, startFrameMarker);
         while (performance.now() < deadline && steps < maxSteps) {
-            await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
+            try {
+                if (steps > 0 && native.checkExecBreakpoint(cpu, getPc(cpu))) {
+                    const nativeStatus = syncNativeBreakStatus();
+                    const callStack = readCallStackData();
+                    const stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+                    const activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+                    const activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+                    const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
+                    return attachDebuggerContext({
+                        kind: label,
+                        ok: true,
+                        complete: false,
+                        stoppedByBreakpoint: true,
+                        steps,
+                        depth,
+                        callStack: publicCallStackData(callStack, { ...params, cpu })
+                    }, cpu, pcBefore, nativeStatus);
+                }
+                await stepPastCurrentExecBreakpoint(cpu, () => native.step(cpu, 1));
+            } catch (error) {
+                if (error?.mcpCode === ErrorCode.NATIVE_ERROR
+                    || error?.mcpCode === ErrorCode.NATIVE_FAULT) {
+                    handleNativeFault(error, label);
+                }
+                throw error;
+            }
             steps++;
+            applyFreezes();
             const nativeStatus = syncNativeBreakStatus();
-            const callStack = readCallStackData();
-            const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+            let callStack = readCallStackData();
+            let stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+            let activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+            let activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+            let startLaneStack = trackLane
+                ? stacks.find((stack) => Number(stack.id) === startStackId)
+                : activeStack;
+            if (trackLane && startLaneStack && startFrameMarker
+                && !containsFrameMarker(startLaneStack, startFrameMarker)
+                && !stackFramesComplete(startLaneStack)) {
+                callStack = readCallStackData({ limit: 1024 });
+                stacks = Array.isArray(callStack?.stacks) ? callStack.stacks : [];
+                activeStackId = Number(callStack?.activeStackId ?? stacks.find((stack) => stack.active)?.id);
+                activeStack = stacks.find((stack) => Number(stack.id) === activeStackId);
+                startLaneStack = stacks.find((stack) => Number(stack.id) === startStackId);
+            }
+            const startLanePresent = !trackLane
+                || !!startLaneStack;
+            const sameLane = !trackLane || activeStackId === startStackId;
+            const depth = Number(activeStack?.depth ?? callStack.depth ?? callStack.frames?.length ?? 0);
+            const currentRealFrame = trackLane && sameLane ? newestRealFrame(activeStack) : null;
+            const startFramePresent = !trackLane || !startFrameMarker
+                ? startLanePresent
+                : containsFrameMarker(startLaneStack, startFrameMarker);
+            const atStartFrame = !trackLane
+                ? depth === startDepth
+                : sameLane && (startFrameMarker
+                    ? frameMatchesMarker(currentRealFrame, startFrameMarker)
+                    : currentRealFrame == null);
+            const atStartDepth = !trackLane
+                ? depth === startDepth
+                : sameLane && startFramePresent && atTrackedStartDepth(activeStack, startFrameMarker);
+            const deeperThanStart = trackLane && sameLane && startFramePresent && !atStartFrame && !!currentRealFrame;
+            const directCallFromStartDepth = trackLane
+                ? beforeSameLane
+                    && beforeStartFramePresent
+                    && beforeAtStartDepth
+                    && sameLane
+                    && startFramePresent
+                    && !!currentRealFrame
+                    && !frameMatchesMarker(currentRealFrame, startFrameMarker)
+                    && ((Number(currentRealFrame.callee) >>> 0) & ~1) === ((getPc(cpu) >>> 0) & ~1)
+                : beforeAtStartDepth && depth > startDepth;
             if (nativeStatus && nativeStatus.lastBreak && nativeStatus.lastBreak.hit) {
                 return attachDebuggerContext({ kind: label, ok: true, complete: false, stoppedByBreakpoint: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore, nativeStatus);
             }
-            if (shouldStop({ startDepth, depth, callStack })) {
-                return attachDebuggerContext({ kind: label, ok: true, steps, depth, callStack: publicCallStackData(callStack, { ...params, cpu }) }, cpu, pcBefore);
+            const stop = shouldStop({
+                startDepth,
+                depth,
+                callStack,
+                pc: getPc(cpu),
+                startStackId,
+                activeStackId,
+                sameLane,
+                startLanePresent,
+                startFramePresent,
+                atStartFrame,
+                atStartDepth,
+                deeperThanStart,
+                directCallFromStartDepth
+            });
+            if (stop) {
+                return attachDebuggerContext({
+                    kind: label,
+                    ok: true,
+                    steps,
+                    depth,
+                    ...(typeof stop === "object" ? stop : {}),
+                    callStack: publicCallStackData(callStack, { ...params, cpu })
+                }, cpu, pcBefore);
             }
+            beforeSameLane = sameLane;
+            beforeStartFramePresent = startFramePresent;
+            beforeAtStartDepth = atStartDepth;
         }
-        throw new Error(`${label} timeout after ${timeoutMs}ms`);
+        const callStack = readCallStackData();
+        const depth = Number(callStack.depth ?? callStack.frames?.length ?? 0);
+        const hitStepLimit = steps >= maxSteps;
+        return attachDebuggerContext({
+            kind: label,
+            ok: true,
+            complete: false,
+            stop: hitStepLimit ? "maxSteps" : "timeout",
+            limitReached: true,
+            steps,
+            depth,
+            timeoutMs,
+            maxSteps,
+            callStack: publicCallStackData(callStack, { ...params, cpu })
+        }, cpu, pcBefore);
     }
     
     function renderMemoryDump(result) {

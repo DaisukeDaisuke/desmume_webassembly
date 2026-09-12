@@ -41,6 +41,7 @@ const NATIVE_FUNCTIONS = Object.freeze([
     ["dbgSetSpecialBreakpoint", "number", ["number", "number"]],
     ["dbgClearBreakStatus", "number", []],
     ["dbgClearAllBreakpoints", "number", []],
+    ["wasmDebuggerShouldBreak", "number", ["number", "number", "number", "number", "number"]],
     ["dbgStep", "number", ["number", "number"]],
     ["dbgStepOver", "number", ["number"]],
     ["dbgGetStatusJson", "string", []],
@@ -439,6 +440,13 @@ export function createNativeBridge({
         );
     }
 
+    function checkExecBreakpoint(cpu, address) {
+        return checkResult(
+            state.fns.wasmDebuggerShouldBreak(cpuIndex(cpu), 0, Number(address) >>> 0, 0, 0),
+            "check exec breakpoint"
+        ) === 1;
+    }
+
     function step(cpu, count = 1) {
         if (state.breakpointsInSync !== true) throw Object.assign(new Error("step requires synchronized breakpoints"), { mcpCode: ErrorCode.NATIVE_ERROR });
         return checkResult(state.fns.dbgStep(cpuIndex(cpu), Number(count)), "step");
@@ -479,6 +487,7 @@ export function createNativeBridge({
         captureFramePixels,
         checkResult,
         checkText,
+        checkExecBreakpoint,
         clearAllBreakpoints,
         clearBreakStatus,
         cpuIndex,

@@ -8,8 +8,9 @@ export function createDebuggerControlCommands(context) {
         copyText,
         ensureReady,
         ensureRomLoaded,
+        getPc,
         hex,
-        log,
+        instructionWidthForMode,
         native,
         parseAddress,
         publicCallStackData,
@@ -244,8 +245,26 @@ export function createDebuggerControlCommands(context) {
 
         async stepOver(params = {}) {
             ensureRomLoaded("step over requires a loaded ROM");
-            log("step over can still collide with other breakpoints; plain step is safer.");
-            return runDebuggerInstruction("stepOver", params);
+            const cpu = String(params.cpu ?? state.selectedCpu);
+            const legacyNativeFallback = async () => {
+                const result = await runDebuggerInstruction("nativeStepOver", { ...params, cpu });
+                result.kind = "stepOver";
+                result.implementation = "native";
+                return result;
+            };
+            if (cpu === "arm7") {
+                return legacyNativeFallback();
+            }
+            const target = (getPc(cpu) + instructionWidthForMode("auto", cpu)) >>> 0;
+            return runTraceStepper("stepOver", params, ({ pc, sameLane, startLanePresent, startFramePresent, atStartFrame }) => {
+                if (!startLanePresent || (sameLane && !startFramePresent)) {
+                    return { stop: "root", complete: false, target: hex(target) };
+                }
+                if (sameLane && atStartFrame && (pc >>> 0) === target) {
+                    return { stop: "pc", target: hex(target) };
+                }
+                return false;
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: legacyNativeFallback });
         },
 
         async stepNextBranchOrReturn(params = {}) {
@@ -363,6 +382,27 @@ export function createDebuggerControlCommands(context) {
 
         async runUntilNextCall(params = {}) {
             return runTraceStepper("runUntilNextCall", params, ({ depth, startDepth }) => depth > startDepth);
+        },
+
+        async nextCallThisDepth(params = {}) {
+            const cpu = String(params.cpu ?? state.selectedCpu);
+            if (cpu === "arm7") {
+                throw codedError(ErrorCode.STATE_INVALID, "nextCallThisDepth requires ARM9 Stack Trace data");
+            }
+            const depthFallback = async () => {
+                const result = await debuggerCommands.runUntilNextCall({ ...params, cpu });
+                result.kind = "nextCallThisDepth";
+                result.implementation = "depth";
+                if (result.complete !== false && !result.stoppedByBreakpoint && !result.stop) result.stop = "call";
+                return result;
+            };
+            return runTraceStepper("nextCallThisDepth", params, ({ sameLane, startLanePresent, startFramePresent, directCallFromStartDepth }) => {
+                if (!startLanePresent) return { stop: "root", complete: false };
+                if (!sameLane) return false;
+                if (!startFramePresent) return { stop: "root", complete: false };
+                if (directCallFromStartDepth) return { stop: "call" };
+                return false;
+            }, { trackLane: true, requireTrackedLane: true, onMissingTrackedLane: depthFallback });
         },
 
         async wait(params = {}) {

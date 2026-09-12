@@ -51,6 +51,16 @@ export function bindUi(context) {
         updateTouch
     } = context;
 
+    const runTraceCommand = (name, params = {}) => runCommand(name, params).then((result) => {
+        if (result?.ok === false) {
+            log(result.error?.message || `${name} failed`);
+        } else if (result?.complete === false) {
+            const detail = result.steps == null ? "" : ` after ${result.steps} steps`;
+            log(`${name} stopped: ${result.stop || (result.stoppedByBreakpoint ? "breakpoint" : "incomplete")}${detail}`);
+        }
+        return result;
+    });
+
     ui.romFile.closest("label").addEventListener("click", () => {});
     ui.saveExportBtn.addEventListener("click", () => runCommand("exportSaveFile").catch((e) => log(e.message)));
     ui.stateExportBtn.addEventListener("click", () => runCommand("exportStateFile").catch((e) => log(e.message)));
@@ -81,20 +91,22 @@ export function bindUi(context) {
     });
     ui.cpuStepBtn.addEventListener("click", () => runCommand("step", { count: 1 }).catch((e) => log(e.message)));
     ui.cpuSmartStepBtn.addEventListener("click", () => runCommand("smartStep").catch((e) => log(e.message)));
-    ui.cpuStepOverBtn.addEventListener("click", () => runCommand("stepOver").catch((e) => log(e.message)));
+    ui.cpuStepOverBtn.addEventListener("click", () => runTraceCommand("stepOver").catch((e) => log(e.message)));
     ui.cpuNextBranchReturnBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.cpuTrueNextBranchBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.cpuStepDebugBtn.addEventListener("click", () => runCommand("step", { count: 1 }).catch((e) => log(e.message)));
     ui.cpuSmartStepDebugBtn.addEventListener("click", () => runCommand("smartStep").catch((e) => log(e.message)));
-    ui.cpuStepOverDebugBtn.addEventListener("click", () => runCommand("stepOver").catch((e) => log(e.message)));
+    ui.cpuStepOverDebugBtn.addEventListener("click", () => runTraceCommand("stepOver").catch((e) => log(e.message)));
     ui.cpuNextBranchReturnDebugBtn.addEventListener("click", () => runCommand("stepNextBranchOrReturn", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.cpuTrueNextBranchDebugBtn.addEventListener("click", () => runCommand("trueNextBranch", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackReturnBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallToolbarBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackReturnToolbarBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackNextCallDebugBtn.addEventListener("click", () => runCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
-    ui.stackReturnDebugBtn.addEventListener("click", () => runCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallBtn.addEventListener("click", () => runTraceCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnBtn.addEventListener("click", () => runTraceCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallToolbarBtn.addEventListener("click", () => runTraceCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallThisDepthToolbarBtn.addEventListener("click", () => runTraceCommand("nextCallThisDepth", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnToolbarBtn.addEventListener("click", () => runTraceCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallDebugBtn.addEventListener("click", () => runTraceCommand("nextCall", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackNextCallThisDepthDebugBtn.addEventListener("click", () => runTraceCommand("nextCallThisDepth", { timeoutMs: 1000 }).catch((e) => log(e.message)));
+    ui.stackReturnDebugBtn.addEventListener("click", () => runTraceCommand("returnToPop", { timeoutMs: 1000 }).catch((e) => log(e.message)));
     ui.stackClearBtn.addEventListener("click", () => runCommand("setStackTraceMode", { enabled: false }).then(() => runCommand("setStackTraceMode", { enabled: true })).catch((e) => log(e.message)));
     ui.stackCopyMdBtn.addEventListener("click", () => runCommand("copyCallStackMarkdown").catch((e) => log(e.message)));
     ui.stackCopyCsvBtn.addEventListener("click", () => runCommand("copyCallStackCsv").catch((e) => log(e.message)));
